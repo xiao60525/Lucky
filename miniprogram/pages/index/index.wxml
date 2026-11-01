@@ -1,0 +1,52 @@
+<view class="page">
+  <view class="brand">
+    <image wx:if="{{brand.logo}}" class="brand-logo" src="{{brand.logo}}" mode="aspectFill" />
+    <view wx:else class="brand-logo brand-logo--text">{{brand.initial}}</view>
+    <view class="brand-info">
+      <view class="brand-name">{{brand.name}}</view>
+      <view class="brand-tagline" wx:if="{{brand.tagline}}">{{brand.tagline}}</view>
+    </view>
+  </view>
+
+  <block wx:if="{{loading}}">
+    <view class="skeleton">
+      <view class="skeleton-line w60"></view>
+      <view class="skeleton-line"></view>
+      <view class="skeleton-line w40"></view>
+    </view>
+    <view class="skeleton">
+      <view class="skeleton-line w60"></view>
+      <view class="skeleton-line w40"></view>
+    </view>
+  </block>
+
+  <block wx:elif="{{error}}">
+    <view class="error-box">{{error}}</view>
+    <view class="btn-ghost" bindtap="onRetry">重新加载</view>
+  </block>
+
+  <block wx:elif="{{products.length === 0}}">
+    <view class="state">
+      <view class="state-title">还没有商品</view>
+      <view class="state-desc">内容位已预留，等你想好要卖什么，加进来就会显示在这里</view>
+    </view>
+  </block>
+
+  <block wx:else>
+    <view class="section-title">全部商品</view>
+    <view class="card product" wx:for="{{products}}" wx:key="id">
+      <view class="product-top">
+        <view class="product-info">
+          <view class="product-title-line">
+            <text class="product-title">{{item.title}}</text>
+            <text class="badge" wx:if="{{item.tag}}">{{item.tag}}</text>
+          </view>
+          <view class="product-desc" wx:if="{{item.description}}">{{item.description}}</view>
+        </view>
+        <view class="product-price"><text class="price-symbol">¥</text>{{item.amountText}}</view>
+      </view>
+      <view class="product-action" data-id="{{item.id}}" bindtap="onTapProduct">立即购买</view>
+    </view>
+    <view class="foot-note">支付功能开发中，下单后暂不会扣款</view>
+  </block>
+</view>

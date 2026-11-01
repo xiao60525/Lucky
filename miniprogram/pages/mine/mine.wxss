@@ -1,0 +1,95 @@
+.login-title {
+    font-size: 32rpx;
+    font-weight: 600;
+    color: #1f2329;
+}
+
+.login-sub {
+    margin-top: 10rpx;
+    line-height: 1.6;
+}
+
+.user-card {
+    display: flex;
+    align-items: center;
+}
+
+.avatar {
+    width: 88rpx;
+    height: 88rpx;
+    border-radius: 50%;
+    background: #eef1fe;
+    color: #4f6ef7;
+    font-size: 36rpx;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.user-meta {
+    flex: 1;
+    margin-left: 20rpx;
+}
+
+.user-name {
+    font-size: 30rpx;
+    font-weight: 600;
+    color: #1f2329;
+}
+
+.logout {
+    font-size: 26rpx;
+    color: #8a8f99;
+    padding: 10rpx 20rpx;
+    border: 1rpx solid #e5e8ef;
+    border-radius: 30rpx;
+}
+
+.order-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.order-title {
+    font-size: 30rpx;
+    font-weight: 600;
+    color: #1f2329;
+}
+
+.order-amount {
+    font-size: 30rpx;
+    font-weight: 600;
+    color: #1f2329;
+}
+
+.order-bottom {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-top: 12rpx;
+}
+
+.order-no {
+    font-size: 22rpx;
+    color: #a3a9b8;
+}
+
+.order-status {
+    font-size: 24rpx;
+    color: #d08316;
+    background: #fdf3e3;
+    padding: 4rpx 16rpx;
+    border-radius: 20rpx;
+}
+
+.order-time {
+    margin-top: 10rpx;
+    font-size: 22rpx;
+    color: #a3a9b8;
+}
+
+.order-empty-action {
+    margin-top: 20rpx;
+}

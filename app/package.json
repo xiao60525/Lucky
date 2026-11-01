@@ -1,0 +1,20 @@
+{
+  "name": "mobile-app-skeleton",
+  "version": "0.2.0",
+  "private": true,
+  "description": "手机应用骨架：空内容 + 完整支付闭环（微信支付 V3 / 模拟渠道）",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js",
+    "pay:check": "node scripts/pay-check.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@tencent-ai/workbuddy-cloud-sdk": "^0.1.4-dev.ca27990.202610161713",
+    "qrcode": "^1.5.4",
+    "sharp": "^0.35.5"
+  }
+}

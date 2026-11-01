@@ -1,0 +1,26 @@
+# 依赖
+node_modules/
+
+# 密钥与本地配置（绝不入库）
+app/.env
+app/.env.local
+*.pem
+*.p8
+certs/
+
+# Capacitor / Xcode 生成物（云构建时重新生成）
+app-ios/www/
+app-ios/ios/App/App/public/
+app-ios/ios/App/Pods/
+app-ios/ios/App/build/
+app-ios/ios/App/App.xcworkspace/xcuserdata/
+app-ios/ios/App/App.xcodeproj/xcuserdata/
+app-ios/build/
+
+# WorkBuddy 本地数据
+.workbuddy/
+*.genie
+
+# 系统
+.DS_Store
+Thumbs.db

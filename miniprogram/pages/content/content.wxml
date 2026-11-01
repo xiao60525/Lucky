@@ -1,0 +1,12 @@
+<view class="page">
+  <view class="state">
+    <view class="state-title">内容暂空</view>
+    <view class="state-desc">这一页先留白。等你想好要放什么，下面是已经预留好的位置。</view>
+  </view>
+
+  <view class="card slot" wx:for="{{placeholders}}" wx:key="id">
+    <view class="slot-title">{{item.title}}</view>
+    <view class="slot-desc">{{item.desc}}</view>
+    <view class="slot-line"></view>
+  </view>
+</view>

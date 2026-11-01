@@ -1,0 +1,108 @@
+# Codemagic 云构建配置
+# 文档：https://docs.codemagic.io/yaml/yaml-getting-started/
+#
+# 用法：把本仓库推到 GitHub（私有库也行）→ Codemagic 里 Add application 选中该仓库
+#      → Codemagic 会自动识别本文件 → 选工作流 → Start new build。
+#
+# 现在可跑：ios-compile-check（不需要苹果开发者账号，只验证能不能编译通过）
+# 拿到账号后：按文末「签名版工作流」的注释填 3 个凭据变量即可出 ipa。
+
+workflows:
+  # ------------------------------------------------------------------
+  # 1) 免签名编译验证：没有开发者账号也能跑，验证工程能编译通过
+  # ------------------------------------------------------------------
+  ios-compile-check:
+    name: iOS 编译验证（无需签名）
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      node: 20.11.0
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: 安装依赖
+        script: |
+          cd app-ios
+          npm ci --no-audit --no-fund
+      - name: 同步网页资源到 www/
+        script: |
+          cd app-ios
+          npm run sync:web
+      - name: 生成 App 图标（拉取线上后台当前图标，1024 无透明通道）
+        script: |
+          cd app-ios
+          npm run icons
+      - name: 生成 Xcode 工程并安装 Pods
+        script: |
+          cd app-ios
+          npx cap sync ios
+      - name: 编译 Release（不签名）
+        script: |
+          cd app-ios/ios/App
+          xcodebuild -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            | xcbeautify || xcodebuild -workspace App.xcworkspace -scheme App -configuration Release -sdk iphoneos -derivedDataPath build CODE_SIGNING_ALLOWED=NO
+    artifacts:
+      - app-ios/ios/App/build/Build/Products/Release-iphoneos/*.app
+      - app-ios/ios/App/build/**/*.xcarchive
+
+  # ------------------------------------------------------------------
+  # 2) 签名打包 ipa（拿到苹果开发者账号后启用）
+  #    需要先在 Codemagic 完成两件事：
+  #      a) 应用设置 → Code signing identities → 上传 iOS Distribution 证书 + Provisioning Profile
+  #         （Codemagic 有向导，可用 App Store Connect API Key 自动生成）
+  #      b) 应用设置 → Environment variables → 建变量组 appstore_credentials，放入：
+  #           APP_STORE_CONNECT_ISSUER_ID
+  #           APP_STORE_CONNECT_KEY_IDENTIFIER
+  #           APP_STORE_CONNECT_PRIVATE_KEY   （.p8 文件内容）
+  # ------------------------------------------------------------------
+  ios-signed-ipa:
+    name: iOS 签名打包 ipa（需开发者账号）
+    instance_type: mac_mini_m2
+    max_build_duration: 90
+    environment:
+      node: 20.11.0
+      xcode: latest
+      cocoapods: default
+      ios_signing:
+        distribution_type: app_store
+        bundle_identifier: host.workbuddy.xiaogua
+      groups:
+        - appstore_credentials
+    scripts:
+      - name: 安装依赖
+        script: |
+          cd app-ios
+          npm ci --no-audit --no-fund
+      - name: 同步网页资源 + 图标 + 工程
+        script: |
+          cd app-ios
+          npm run sync:web
+          npm run icons
+          npx cap sync ios
+      - name: 应用签名配置
+        script: |
+          cd app-ios
+          xcode-project use-profiles
+      - name: 打包 ipa
+        script: |
+          cd app-ios
+          xcode-project build-ipa \
+            --workspace ios/App/App.xcworkspace \
+            --scheme App \
+            --config Release
+    artifacts:
+      - app-ios/build/ios/ipa/*.ipa
+      - app-ios/build/ios/xcodebuild*.log
+    publishing:
+      app_store_connect:
+        api_key: $APP_STORE_CONNECT_PRIVATE_KEY
+        key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
+        issuer_id: $APP_STORE_CONNECT_ISSUER_ID
+        submit_to_testflight: true

@@ -1,0 +1,195 @@
+page {
+    min-height: 100%;
+    background: #f5f7fa;
+    color: #1f2329;
+    font-family: -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif;
+}
+
+button {
+    border-radius: 12rpx;
+}
+
+.page {
+    padding: 24rpx 28rpx 48rpx;
+    box-sizing: border-box;
+}
+
+.card {
+    background: #ffffff;
+    border-radius: 24rpx;
+    padding: 28rpx;
+    margin-bottom: 20rpx;
+}
+
+.section-title {
+    font-size: 30rpx;
+    font-weight: 600;
+    color: #1f2329;
+    margin: 8rpx 0 20rpx;
+}
+
+.muted {
+    color: #8a8f99;
+    font-size: 24rpx;
+}
+
+.price {
+    color: #1f2329;
+    font-weight: 600;
+}
+
+.price-symbol {
+    font-size: 24rpx;
+    margin-right: 2rpx;
+}
+
+.btn-primary {
+    background: #4f6ef7;
+    color: #ffffff;
+    font-size: 30rpx;
+    height: 88rpx;
+    line-height: 88rpx;
+    border-radius: 16rpx;
+    text-align: center;
+}
+
+.btn-primary[disabled] {
+    background: #c3ccf8;
+    color: #ffffff;
+}
+
+.btn-ghost {
+    background: #ffffff;
+    color: #4f6ef7;
+    font-size: 28rpx;
+    height: 80rpx;
+    line-height: 80rpx;
+    border: 1rpx solid #d7dcef;
+    border-radius: 16rpx;
+    text-align: center;
+}
+
+.state {
+    padding: 120rpx 40rpx;
+    text-align: center;
+}
+
+.state-title {
+    font-size: 30rpx;
+    color: #1f2329;
+    margin-bottom: 12rpx;
+}
+
+.state-desc {
+    font-size: 26rpx;
+    color: #8a8f99;
+    line-height: 1.6;
+}
+
+.skeleton {
+    background: #ffffff;
+    border-radius: 24rpx;
+    padding: 28rpx;
+    margin-bottom: 20rpx;
+}
+
+.skeleton-line {
+    height: 24rpx;
+    border-radius: 12rpx;
+    background: #eef0f5;
+    margin-bottom: 16rpx;
+}
+
+.skeleton-line.w60 {
+    width: 60%;
+}
+
+.skeleton-line.w40 {
+    width: 40%;
+}
+
+.error-box {
+    background: #fff1f0;
+    border: 1rpx solid #f7c6c2;
+    border-radius: 16rpx;
+    padding: 20rpx 24rpx;
+    color: #b9403a;
+    font-size: 26rpx;
+    margin-bottom: 20rpx;
+}
+
+/* ---------------- 品牌区（名称 / 图标，后台「外观」页可改） ---------------- */
+.brand {
+    display: flex;
+    align-items: center;
+    padding: 8rpx 4rpx 28rpx;
+}
+
+.brand-logo {
+    width: 96rpx;
+    height: 96rpx;
+    border-radius: 26rpx;
+    flex: 0 0 auto;
+    background: #eef1fe;
+}
+
+.brand-logo--text {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #5a5cf0 0%, #8b5cf6 100%);
+    color: #ffffff;
+    font-size: 44rpx;
+    font-weight: 600;
+}
+
+.brand-info {
+    margin-left: 20rpx;
+    min-width: 0;
+}
+
+.brand-name {
+    font-size: 34rpx;
+    font-weight: 600;
+    color: #1f2329;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.brand-tagline {
+    margin-top: 6rpx;
+    font-size: 24rpx;
+    color: #8a8f99;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.brand-foot {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-top: 40rpx;
+    font-size: 22rpx;
+    color: #a3a9b8;
+}
+
+.brand-foot image,
+.brand-foot .brand-foot-logo {
+    width: 32rpx;
+    height: 32rpx;
+    border-radius: 10rpx;
+    margin-right: 10rpx;
+    background: #eef1fe;
+}
+
+.brand-foot .brand-foot-logo {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: linear-gradient(135deg, #5a5cf0 0%, #8b5cf6 100%);
+    color: #ffffff;
+    font-size: 20rpx;
+    font-weight: 600;
+}

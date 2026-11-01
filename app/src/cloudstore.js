@@ -1,0 +1,247 @@
+'use strict';
+/**
+ * 云存储层（WorkBuddy 云服务 · Database）
+ * ---------------------------------------------------------------
+ * 服务端专用：订单 / 余额全部落在云数据库里，浏览器拿不到写权限。
+ *
+ * 安全模型：
+ *   · orders / accounts / service_secrets 表对客户端完全禁止直连（RLS 默认拒绝 + 不授权 anon）
+ *   · 服务端通过 app_* 系列 SECURITY DEFINER 函数读写，函数内校验 CLOUD_DB_SECRET
+ *   · publishableKey 可以公开（客户端也用得到），但没有密钥就写不了任何数据
+ *
+ * 配置（写在 .env，来自 cloud_service activate 返回的 publicConfig）：
+ *   CLOUD_ENDPOINT / CLOUD_PUBLISHABLE_KEY / CLOUD_OAUTH_RELAY / CLOUD_DB_SECRET
+ */
+
+const { createWorkBuddyCloud } = require('@tencent-ai/workbuddy-cloud-sdk');
+
+const endpoint = process.env.CLOUD_ENDPOINT;
+const publishableKey = process.env.CLOUD_PUBLISHABLE_KEY;
+const oauthRelayBaseUrl = process.env.CLOUD_OAUTH_RELAY;
+const secret = process.env.CLOUD_DB_SECRET;
+
+const enabled = Boolean(endpoint && publishableKey && secret);
+
+let client = null;
+function getClient() {
+  if (!enabled) throw new Error('云服务未配置：缺少 CLOUD_ENDPOINT / CLOUD_PUBLISHABLE_KEY / CLOUD_DB_SECRET');
+  if (!client) {
+    client = createWorkBuddyCloud({ endpoint, oauthRelayBaseUrl, publishableKey });
+  }
+  return client;
+}
+
+/** 统一把 {data,error} 信封转成抛错式 */
+function unwrap(res, action) {
+  if (res && res.error) {
+    const err = new Error(`云数据库${action}失败：${res.error.message || res.error.code || '未知错误'}`);
+    err.code = res.error.code;
+    throw err;
+  }
+  return res.data;
+}
+
+async function call(fn, params, action) {
+  const res = await getClient().database.rpc(fn, params);
+  return unwrap(res, action);
+}
+
+function toMs(ts) {
+  return ts ? new Date(ts).getTime() : null;
+}
+
+function fromRow(row) {
+  return {
+    id: row.id,
+    productId: row.product_id,
+    title: row.title,
+    amount: row.amount,
+    channel: row.channel,
+    status: row.status,
+    transactionId: row.transaction_id,
+    settleSource: row.settle_source,
+    createdAt: toMs(row.created_at),
+    paidAt: toMs(row.paid_at),
+    refundedAt: toMs(row.refunded_at),
+    closedAt: toMs(row.closed_at),
+  };
+}
+
+/** 读取整份应用状态：账户 + 订单 + 商品 */
+async function getState() {
+  const data = await call('app_get_state', { p_secret: secret }, '读取');
+  if (!data) throw new Error('云数据库读取失败：返回为空');
+  return {
+    account: data.account
+      ? { id: data.account.id, nickname: data.account.nickname, balance: data.account.balance }
+      : null,
+    orders: (data.orders || []).map(fromRow),
+    products: (data.products || []).map((p) => ({
+      id: p.id,
+      title: p.title,
+      desc: p.description,
+      amount: p.amount,
+      tag: p.tag,
+    })),
+  };
+}
+
+/** 新建订单 */
+async function insertOrder(order) {
+  const row = await call(
+    'app_insert_order',
+    {
+      p_secret: secret,
+      p_order: {
+        id: order.id,
+        product_id: order.productId,
+        title: order.title,
+        amount: order.amount,
+        channel: order.channel,
+        status: order.status,
+        created_at_ms: order.createdAt,
+      },
+    },
+    '写入'
+  );
+  return fromRow(row);
+}
+
+/** 更新订单：只传需要改的字段，未传的保持不变 */
+async function updateOrder(order) {
+  const patch = {};
+  if (order.status) patch.status = order.status;
+  if (order.channel) patch.channel = order.channel;
+  if (order.transactionId) patch.transaction_id = order.transactionId;
+  if (order.settleSource) patch.settle_source = order.settleSource;
+  if (order.paidAt) patch.paid_at = order.paidAt;
+  if (order.refundedAt) patch.refunded_at = order.refundedAt;
+  if (order.closedAt) patch.closed_at = order.closedAt;
+
+  const row = await call(
+    'app_update_order',
+    { p_secret: secret, p_order_id: order.id, p_patch: patch },
+    '更新订单'
+  );
+  if (!row) throw new Error('云数据库更新订单失败：订单不存在');
+  return fromRow(row);
+}
+
+/** 更新账户（余额） */
+async function updateAccount(patch) {
+  const data = await call('app_update_account', { p_secret: secret, p_patch: patch }, '更新账户');
+  return data ? { id: data.id, nickname: data.nickname, balance: data.balance } : null;
+}
+
+/* ---------------- 管理后台专用 ---------------- */
+
+function productRow(p) {
+  return {
+    id: p.id,
+    title: p.title,
+    desc: p.description,
+    amount: p.amount,
+    tag: p.tag,
+    sort: p.sort,
+    active: p.active,
+  };
+}
+
+/** 后台商品列表（含未上架） */
+async function adminListProducts() {
+  const rows = await call('app_admin_list_products', { p_secret: secret }, '读取商品');
+  return (rows || []).map(productRow);
+}
+
+/** 新增/更新商品 */
+async function adminUpsertProduct(p) {
+  const row = await call(
+    'app_admin_upsert_product',
+    {
+      p_secret: secret,
+      p_product: {
+        id: p.id,
+        title: p.title,
+        description: p.desc,
+        amount: p.amount,
+        tag: p.tag,
+        sort: p.sort,
+        active: p.active,
+      },
+    },
+    '保存商品'
+  );
+  return row ? productRow(row) : null;
+}
+
+/** 删除商品 */
+async function adminDeleteProduct(id) {
+  const row = await call('app_admin_delete_product', { p_secret: secret, p_id: id }, '删除商品');
+  return row ? productRow(row) : null;
+}
+
+/* ---------------- 外观配置（名称 / 图标） ---------------- */
+
+function settingsRow(row) {
+  if (!row) return null;
+  return {
+    name: row.app_name || '',
+    tagline: row.tagline || '',
+    iconMime: row.icon_mime || null,
+    iconData: row.icon_data || null,
+    iconThumb: row.icon_thumb || null, // 给小程序用的 96px 小图（dataURL）
+    iconVer: row.icon_ver || null,
+    updatedAt: toMs(row.updated_at),
+  };
+}
+
+/** 读取应用外观配置（单行） */
+async function getSettings() {
+  const row = await call('app_get_settings', { p_secret: secret }, '读取外观配置');
+  return settingsRow(row);
+}
+
+/**
+ * 保存外观配置
+ * p.iconAction: 'keep' 保持原图标 | 'set' 换成新图标 | 'clear' 恢复默认
+ */
+async function adminSaveSettings({ name, tagline, iconAction, iconMime, iconData, iconThumb, iconVer }) {
+  const row = await call(
+    'app_admin_save_settings',
+    {
+      p_secret: secret,
+      p_settings: {
+        app_name: name,
+        tagline,
+        icon_action: iconAction || 'keep',
+        icon_mime: iconMime || null,
+        icon_data: iconData || null,
+        icon_thumb: iconThumb || null,
+        icon_ver: iconVer || null,
+      },
+    },
+    '保存外观配置'
+  );
+  return settingsRow(row);
+}
+
+/** 健康检查：确认云端连通、密钥有效 */
+async function ping() {
+  const state = await getState();
+  return { ok: true, orders: state.orders.length, balance: state.account ? state.account.balance : null };
+}
+
+module.exports = {
+  enabled,
+  endpoint,
+  getState,
+  insertOrder,
+  updateOrder,
+  updateAccount,
+  getSettings,
+  adminSaveSettings,
+  ping,
+  adminListProducts,
+  adminUpsertProduct,
+  adminDeleteProduct,
+};

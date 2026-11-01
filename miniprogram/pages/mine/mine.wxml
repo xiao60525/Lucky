@@ -1,0 +1,57 @@
+<view class="page">
+  <view wx:if="{{authState === 'checking'}}" class="state">
+    <view class="state-desc">正在检查登录状态…</view>
+  </view>
+
+  <block wx:elif="{{authState === 'signed-out'}}">
+    <login-panel bind:signedin="onSignedIn" />
+  </block>
+
+  <block wx:else>
+    <view class="card user-card">
+      <view class="avatar">{{initial}}</view>
+      <view class="user-meta">
+        <view class="user-name">{{phoneText}}</view>
+        <view class="muted">已登录</view>
+      </view>
+      <view class="logout" bindtap="onSignOut">退出</view>
+    </view>
+
+    <view class="section-title">我的订单</view>
+
+    <view wx:if="{{ordersLoading}}" class="card">
+      <view class="skeleton-line w60"></view>
+      <view class="skeleton-line w40"></view>
+    </view>
+
+    <view wx:elif="{{ordersError}}" class="card">
+      <view class="error-box">{{ordersError}}</view>
+      <view class="btn-ghost" bindtap="onRetryOrders">重新加载</view>
+    </view>
+
+    <view wx:elif="{{orders.length === 0}}" class="card">
+      <view class="muted">还没有订单。去首页挑一个商品试试下单。</view>
+      <view class="btn-ghost order-empty-action" bindtap="onGoShop">去首页</view>
+    </view>
+
+    <block wx:else>
+      <view class="card order" wx:for="{{orders}}" wx:key="id">
+        <view class="order-top">
+          <view class="order-title">{{item.title}}</view>
+          <view class="order-amount"><text class="price-symbol">¥</text>{{item.amountText}}</view>
+        </view>
+        <view class="order-bottom">
+          <view class="order-no">单号 {{item.id}}</view>
+          <view class="order-status">{{item.statusText}}</view>
+        </view>
+        <view class="order-time">{{item.createdText}}</view>
+      </view>
+    </block>
+  </block>
+
+  <view class="brand-foot">
+    <image wx:if="{{brand.logo}}" class="brand-foot-logo" src="{{brand.logo}}" mode="aspectFill" />
+    <view wx:else class="brand-foot-logo">{{brand.initial}}</view>
+    <text>{{brand.name}}</text>
+  </view>
+</view>

@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+<meta name="theme-color" content="#f4f5f9" />
+<title>收银台</title>
+<link rel="stylesheet" href="/styles.css" />
+</head>
+<body class="cashier-body">
+  <div class="cashier">
+    <div class="cashier-brand">
+      <span class="cashier-logo">示</span>
+      <span>示例小店 · 模拟收银台</span>
+    </div>
+
+    <div class="cashier-amount">
+      <span class="cur">¥</span><span class="num" id="amount">--</span>
+    </div>
+
+    <div class="cashier-summary">
+      <div class="detail-row" style="border-bottom:1px solid #edeff5">
+        <span class="k">商品</span><span class="v" id="title">--</span>
+      </div>
+      <div class="detail-row">
+        <span class="k">订单号</span><span class="v" id="orderId">--</span>
+      </div>
+    </div>
+
+    <div class="cashier-channel">
+      <span class="dot"></span>
+      <span>模拟支付通道</span>
+      <span style="margin-left:auto;color:#a0a6b6;font-size:12px">沙箱</span>
+    </div>
+
+    <div class="cashier-spacer"></div>
+
+    <button class="btn-pay" id="confirmBtn">确认支付</button>
+    <button class="btn-cancel" id="cancelBtn">取消支付</button>
+    <p class="cashier-note">
+      这是演示用收银台，点击确认会模拟渠道发送一条<br/>带签名的异步回调，服务端验签后才把订单置为已支付
+    </p>
+  </div>
+
+  <div class="cashier-loading" id="loading">
+    <div class="spinner"></div>
+    <div id="loadingText">正在等待支付结果…</div>
+  </div>
+
+<script src="/native.js"></script>
+<script>
+(function () {
+  const q = new URLSearchParams(location.search);
+  const orderId = q.get('orderId');
+  const sign = q.get('sign');
+  const $ = (s) => document.querySelector(s);
+
+  if (!orderId || !sign) {
+    document.body.innerHTML = '<div class="cashier"><p style="text-align:center;color:#8b91a1;margin-top:80px">支付参数缺失</p></div>';
+    return;
+  }
+
+  async function api(path, options) {
+    const res = await fetch(path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, options || {}));
+    const data = await res.json().catch(function () { return {}; });
+    if (!res.ok) throw new Error(data.message || '请求失败');
+    return data;
+  }
+
+  function yuan(c) { return (c / 100).toFixed(2); }
+
+  async function load() {
+    try {
+      const { order } = await api('/api/orders/' + encodeURIComponent(orderId));
+      $('#amount').textContent = yuan(order.amount);
+      $('#title').textContent = order.title;
+      $('#orderId').textContent = order.id;
+      if (order.status === 'paid') {
+        finish('paid');
+      } else if (order.status === 'closed') {
+        $('#confirmBtn').disabled = true;
+        $('#confirmBtn').textContent = '订单已关闭';
+      }
+    } catch (e) {
+      $('#amount').textContent = '--';
+      $('#confirmBtn').disabled = true;
+      $('#confirmBtn').textContent = e.message;
+    }
+  }
+
+  function finish(result) {
+    location.replace('/?orderId=' + encodeURIComponent(orderId) + '&result=' + result);
+  }
+
+  function waitPaid(tries) {
+    return new Promise(function (resolve) {
+      let n = 0;
+      const timer = setInterval(async function () {
+        n++;
+        try {
+          const { order } = await api('/api/orders/' + encodeURIComponent(orderId));
+          if (order.status === 'paid') {
+            clearInterval(timer);
+            resolve(true);
+          }
+        } catch (e) { /* 忽略单次失败，继续轮询 */ }
+        if (n >= tries) {
+          clearInterval(timer);
+          resolve(false);
+        }
+      }, 400);
+    });
+  }
+
+  $('#confirmBtn').addEventListener('click', async function () {
+    const btn = $('#confirmBtn');
+    btn.disabled = true;
+    btn.textContent = '支付中…';
+    $('#loading').classList.add('show');
+
+    try {
+      await api('/api/pay/confirm', {
+        method: 'POST',
+        body: JSON.stringify({ orderId: orderId, sign: sign }),
+      });
+      const ok = await waitPaid(20);
+      if (ok) {
+        $('#loadingText').textContent = '支付成功，正在返回…';
+        setTimeout(function () { finish('paid'); }, 350);
+      } else {
+        $('#loading').classList.remove('show');
+        btn.disabled = false;
+        btn.textContent = '确认支付';
+        alert('未收到支付结果，请稍后在订单列表查看');
+      }
+    } catch (e) {
+      $('#loading').classList.remove('show');
+      btn.disabled = false;
+      btn.textContent = '确认支付';
+      alert(e.message);
+    }
+  });
+
+  $('#cancelBtn').addEventListener('click', async function () {
+    try {
+      await api('/api/pay/cancel', {
+        method: 'POST',
+        body: JSON.stringify({ orderId: orderId, sign: sign }),
+      });
+    } catch (e) { /* 取消失败也要能返回 */ }
+    finish('cancelled');
+  });
+
+  load();
+})();
+</script>
+</body>
+</html>

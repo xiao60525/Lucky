@@ -1,0 +1,58 @@
+.pay-title {
+    font-size: 32rpx;
+    font-weight: 600;
+    color: #1f2329;
+    text-align: center;
+    margin-top: 8rpx;
+}
+
+.pay-amount {
+    text-align: center;
+    font-size: 64rpx;
+    font-weight: 600;
+    color: #1f2329;
+    margin: 16rpx 0 8rpx;
+}
+
+.divider {
+    height: 2rpx;
+    background: #eef0f5;
+    margin: 24rpx 0 8rpx;
+}
+
+.pay-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 16rpx 0;
+}
+
+.pay-value {
+    font-size: 24rpx;
+    color: #4a4f59;
+}
+
+.pay-status {
+    font-size: 26rpx;
+    color: #d08316;
+    background: #fdf3e3;
+    padding: 4rpx 16rpx;
+    border-radius: 20rpx;
+}
+
+.tip-card {
+    background: #eef1fe;
+}
+
+.tip-title {
+    font-size: 28rpx;
+    font-weight: 600;
+    color: #3f56c9;
+}
+
+.tip-desc {
+    margin-top: 8rpx;
+    font-size: 26rpx;
+    color: #5a6bb5;
+    line-height: 1.6;
+}

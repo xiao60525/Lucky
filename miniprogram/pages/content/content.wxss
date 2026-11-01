@@ -1,0 +1,17 @@
+.slot-title {
+    font-size: 30rpx;
+    font-weight: 600;
+    color: #1f2329;
+}
+
+.slot-desc {
+    margin-top: 8rpx;
+    font-size: 26rpx;
+    color: #8a8f99;
+}
+
+.slot-line {
+    margin-top: 20rpx;
+    height: 2rpx;
+    background: #eef0f5;
+}

@@ -1,0 +1,36 @@
+<view class="login">
+    <text class="login-title">手机号登录</text>
+    <text class="login-desc">使用手机号验证码登录，未注册将自动创建账号。</text>
+
+    <input
+        class="login-input"
+        type="number"
+        maxlength="11"
+        placeholder="手机号"
+        placeholder-class="login-placeholder"
+        value="{{phone}}"
+        bindinput="onPhoneInput"
+    />
+
+    <view class="login-row">
+        <input
+            class="login-input login-code"
+            type="number"
+            maxlength="6"
+            placeholder="短信验证码"
+            placeholder-class="login-placeholder"
+            value="{{code}}"
+            bindinput="onCodeInput"
+            bindconfirm="submit"
+        />
+        <view
+            class="login-send {{sending || countdown > 0 ? 'login-send-disabled' : ''}}"
+            bindtap="sendCode"
+        >{{countdown > 0 ? countdown + ' 秒后重发' : (sending ? '发送中' : '获取验证码')}}</view>
+    </view>
+
+    <button class="login-button" loading="{{submitting}}" disabled="{{submitting}}" bindtap="submit">登录 / 注册</button>
+
+    <text class="login-tip" wx:if="{{tip}}">{{tip}}</text>
+    <text class="login-error" wx:if="{{error}}">{{error}}</text>
+</view>
