@@ -1,15 +1,19 @@
 {
-  "name": "xiaogua-ios",
+  "name": "xiaogua-native",
   "version": "1.0.0",
   "private": true,
-  "description": "iOS 原生壳（Capacitor）：把 app/public 的网页打包进 App，接口走线上域名",
+  "description": "原生壳（Capacitor）：把 app/public 的网页打包进 iOS / Android App，接口走线上域名",
   "scripts": {
     "sync:web": "node scripts/sync-web.mjs",
     "icons": "node scripts/make-icons.mjs",
     "build": "npm run sync:web && npm run icons && cap sync ios",
-    "open:ios": "cap open ios"
+    "open:ios": "cap open ios",
+    "icons:android": "node scripts/make-android-icons.mjs",
+    "build:android": "npm run sync:web && npm run icons:android && cap sync android",
+    "open:android": "cap open android"
   },
   "dependencies": {
+    "@capacitor/android": "^7.6.10",
     "@capacitor/core": "^7.0.0",
     "@capacitor/ios": "^7.0.0"
   },

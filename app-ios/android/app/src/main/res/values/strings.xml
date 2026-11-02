@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">手机App支付骨架</string>
+    <string name="title_activity_main">手机App支付骨架</string>
+    <string name="package_name">host.workbuddy.xiaogua</string>
+    <string name="custom_url_scheme">host.workbuddy.xiaogua</string>
+</resources>

@@ -1,15 +1,18 @@
-# iOS App（云构建版）
+# 原生 App（云构建版：iOS + Android）
 
-把 `app/public` 的网页用 Capacitor 包成原生 iOS 工程，用 **Codemagic** 云端 macOS 机器编译成 `.ipa`。全程不需要 Mac。
+把 `app/public` 的网页用 Capacitor 包成原生工程，用 **Codemagic** 云端机器编译：
+iOS 出 `.ipa`（云上 macOS），Android 出 `.apk`（不需要任何开发者账号）。全程不需要本地 Mac / Android Studio。
 
 ```
 app-ios/
-├─ capacitor.config.json   App 名称、Bundle ID、webDir
-├─ scripts/sync-web.mjs    把 app/public 同步到 www/（排除管理后台）
-├─ scripts/make-icons.mjs  生成 1024×1024 不透明 App 图标（取线上后台当前图标）
-├─ assets/icon-1024.png    离线兜底图标（CI 取不到线上时用）
-├─ www/                    构建产物：要打进 App 的网页（git 忽略）
-└─ ios/                    Xcode 工程（cap sync 生成，已提交必要文件）
+├─ capacitor.config.json        App 名称、Bundle ID、webDir
+├─ scripts/sync-web.mjs         把 app/public 同步到 www/（排除管理后台）
+├─ scripts/make-icons.mjs       iOS：1024×1024 不透明 App 图标（取线上后台当前图标）
+├─ scripts/make-android-icons.mjs  Android：各密度 mipmap 图标 + 自适应前景 + 启动图
+├─ assets/icon-1024.png         离线兜底图标（CI 取不到线上时用）
+├─ www/                         构建产物：要打进 App 的网页（git 忽略）
+├─ ios/                         Xcode 工程（cap sync 生成，已提交必要文件）
+└─ android/                     Gradle 工程（cap add android 生成，已提交必要文件）
 ```
 
 ## 一、现在就能跑：编译验证
@@ -18,6 +21,12 @@ app-ios/
 2. 打开 [codemagic.io](https://codemagic.io) 用 GitHub 登录 → **Add application** → 选这个仓库。
 3. 工作流选 **`ios-compile-check`**（不需要任何苹果账号）→ **Start new build**。
 4. 大约 8~12 分钟出结果。成功即说明工程可编译；产物是可看不可装（未签名）。
+
+## 一·五、现在就能装：Android APK（不需要任何账号）
+
+同上推仓库 → Codemagic 工作流选 **`android-apk`** → 构建完在 Artifacts 下载 `app-debug.apk`，
+传到任意安卓手机安装即可（首次安装需允许「安装未知来源应用」）。
+App 名称、图标、启动图都会自动取自线上后台「外观」页的当前配置。
 
 ## 二、拿到开发者账号后：出可安装的 ipa
 

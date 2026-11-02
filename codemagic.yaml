@@ -106,3 +106,34 @@ workflows:
         key_id: $APP_STORE_CONNECT_KEY_IDENTIFIER
         issuer_id: $APP_STORE_CONNECT_ISSUER_ID
         submit_to_testflight: true
+
+  # ------------------------------------------------------------------
+  # 3) Android APK：不需要任何开发者账号，构建完直接下载安装
+  #    产出 app-debug.apk（debug 签名，任何安卓手机都允许安装）
+  #    后续要上应用市场时再换 release 签名（需要自己生成 keystore）
+  # ------------------------------------------------------------------
+  android-apk:
+    name: Android APK（免账号直接安装）
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      node: 20.11.0
+      java: 17
+    scripts:
+      - name: 安装依赖
+        script: |
+          cd app-ios
+          npm ci --no-audit --no-fund
+      - name: 同步网页资源 + 图标 + 工程
+        script: |
+          cd app-ios
+          npm run sync:web
+          npm run icons:android
+          npx cap sync android
+      - name: 构建 APK
+        script: |
+          cd app-ios/android
+          chmod +x gradlew
+          ./gradlew assembleDebug
+    artifacts:
+      - app-ios/android/app/build/outputs/apk/**/*.apk

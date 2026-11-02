@@ -8,7 +8,7 @@ app/.env.local
 *.p8
 certs/
 
-# Capacitor / Xcode 生成物（云构建时重新生成）
+# Capacitor / Xcode / Android 生成物（云构建时重新生成）
 app-ios/www/
 app-ios/ios/App/App/public/
 app-ios/ios/App/Pods/
@@ -16,6 +16,11 @@ app-ios/ios/App/build/
 app-ios/ios/App/App.xcworkspace/xcuserdata/
 app-ios/ios/App/App.xcodeproj/xcuserdata/
 app-ios/build/
+app-ios/android/app/build/
+app-ios/android/.gradle/
+app-ios/android/app/src/main/assets/public/
+app-ios/android/local.properties
+app-ios/android/capacitor-cordova-android-plugins/
 
 # WorkBuddy 本地数据
 .workbuddy/
