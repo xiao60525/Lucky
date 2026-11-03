@@ -198,9 +198,9 @@ check('登录请求已发出', calls.some((c) => c.path === '/api/auth/login' &&
 check('显示昵称', text('.profile-name').includes('测试用户'), text('.profile-name'));
 check('显示脱敏手机号', text('.profile-sub').includes('138****1234'), text('.profile-sub'));
 const stats = [...window.document.querySelectorAll('.stat b')].map((e) => e.textContent.trim());
-check('余额/积分/优惠券三项', stats.length === 3 && stats[0] === '¥12.00' && stats[1] === '100' && stats[2] === '2', stats.join(','));
+check('余额/积分两项', stats.length === 2 && stats[0] === '¥12.00' && stats[1] === '100', stats.join(','));
 check('收货地址已显示', text('.addr-name').includes('张三') && text('.addr-detail').includes('北京市'), text('.addr-detail'));
-check('优惠券列表', window.document.querySelectorAll('.coupon').length === 2);
+check('页面已无优惠券区块', !text('#view').includes('优惠券') && window.document.querySelectorAll('.coupon').length === 0);
 check('会员卡显示生效中', text('.member-card').includes('会员生效中') && text('.member-card').includes('剩'), text('.member-card'));
 
 // 4.1 会员中心 + 自动续费开关
@@ -238,7 +238,10 @@ await wait(40);
 check('头像弹层可换图', text('.sheet h3') === '我的头像' && Boolean($('[data-act="pick-avatar"]')), text('.sheet h3'));
 $('.sheet [data-act="close"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(60);
-check('订单列表', window.document.querySelectorAll('.order-row').length === 2, text('.order-title'));
+check('订单入口存在且页面不直接铺订单', Boolean($('[data-act="open-orders"]')) && window.document.querySelectorAll('.order-row').length === 0);
+$('[data-act="open-orders"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+check('订单列表', window.document.querySelectorAll('.sheet .order-row').length === 2, text('.sheet .order-title'));
 check('分享区存在', !!$('[data-act="share-copy"]') && !!$('[data-act="share-more"]') && !!$('[data-act="share-qr"]'));
 const setRows = [...window.document.querySelectorAll('.set-row')].map((e) => e.textContent.trim());
 check('设置项 5 条', setRows.length === 5, setRows.join(' | '));
@@ -249,9 +252,9 @@ check(
 );
 
 // 4b. 「支付中」订单：点进去直接进支付界面，且复用同一笔订单付款
-const pendingRow = [...window.document.querySelectorAll('.order-row')].find((r) => r.dataset.id === 'O2');
+const pendingRow = [...window.document.querySelectorAll('.sheet .order-row')].find((r) => r.dataset.id === 'O2');
 check('待支付订单有「继续支付」提示', Boolean(pendingRow) && pendingRow.textContent.includes('继续支付'), pendingRow ? pendingRow.textContent.replace(/\s+/g, ' ').trim() : '');
-check('待支付筛选包含支付中订单', text('.mchips').includes('待支付 1'), text('.mchips'));
+check('待支付筛选包含支付中订单', text('.sheet .mchips').includes('待支付 1'), text('.sheet .mchips'));
 pendingRow.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(40);
 check('点支付中订单直接进支付界面', text('.sheet h3') === '继续支付', text('.sheet h3'));
@@ -272,7 +275,11 @@ check(
 check('已付款时直接给成功反馈', text('.success-title') === '支付成功', text('.success-title'));
 $('.sheet [data-act="close"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(60);
-check('支付后列表状态同步为已支付', window.document.querySelectorAll('.status.paid').length === 2);
+$('[data-act="open-orders"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+check('支付后列表状态同步为已支付', window.document.querySelectorAll('.sheet .status.paid').length === 2);
+$('.sheet [data-act="close"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
 
 // 5. 分享：复制链接
 let copied = '';

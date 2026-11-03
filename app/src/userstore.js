@@ -104,7 +104,6 @@ function normalizeProfile(row) {
     phone: row.phone,
     nickname: row.nickname || '用户',
     points: row.points || 0,
-    coupons: Array.isArray(row.coupons) ? row.coupons : [],
     address: row.address && typeof row.address === 'object' ? row.address : {},
     avatar: row.avatar || null,
     memberLevel: row.member_level || null,
@@ -131,11 +130,6 @@ async function register({ phone, password, nickname }) {
   }
   const id = 'u_' + crypto.randomBytes(9).toString('hex');
   const hash = hashPassword(password);
-  const now = Date.now();
-  const coupons = [
-    { id: 'c_new_' + id.slice(2), title: '新人立减 5 元', amount: 500, expiresAt: now + 30 * 86400000 },
-    { id: 'c_new2_' + id.slice(2), title: '满 20 减 3 元', amount: 300, expiresAt: now + 30 * 86400000 },
-  ];
   const row = await call(
     'app_user_register',
     {
@@ -144,7 +138,7 @@ async function register({ phone, password, nickname }) {
       p_phone: phone,
       p_nickname: nickname || '用户' + phone.slice(-4),
       p_hash: hash,
-      p_coupons: coupons,
+      p_coupons: [], // 优惠券功能已下线，字段保留仅为兼容数据库函数签名
     },
     '注册'
   );

@@ -15,7 +15,7 @@ const toastEl = $('#toast');
 
 const state = {
   user: null,
-  viewer: null, // 登录后的用户资料（手机号 / 积分 / 优惠券 / 地址 / 余额 / 订单）
+  viewer: null, // 登录后的用户资料（手机号 / 积分 / 地址 / 余额 / 会员 / 订单）
   balance: 0,
   provider: 'mock',
   payScene: 'native',
@@ -450,11 +450,6 @@ function shareUrl() {
   return SHARECODE ? base + '?sharecode=' + encodeURIComponent(SHARECODE) : base;
 }
 
-function couponText(c) {
-  return '¥' + (Number(c.amount || 0) / 100).toFixed(0);
-}
-
-/** 未登录：手机号 + 密码 */
 function renderLogin() {
   const s = state.site || {};
   return `
@@ -462,7 +457,7 @@ function renderLogin() {
       <div class="auth-head">
         ${logoHTML('auth-logo')}
         <h2>登录后使用</h2>
-        <p>手机号 + 密码登录，可下单、查看订单、领优惠券</p>
+        <p>手机号 + 密码登录，可下单、查看订单</p>
       </div>
       <label class="field">
         <span>手机号</span>
@@ -548,7 +543,7 @@ function mineOrderList(orders) {
     ${list.length ? list.map(mineOrderRow).join('') : '<div class="empty" style="padding:20px 8px"><p>该状态下暂无订单</p></div>'}`;
 }
 
-/** 已登录：头像 / 昵称 / 手机号 / 余额 / 积分 / 优惠券 / 地址 / 订单 / 分享 / 设置 */
+/** 已登录：头像 / 昵称 / 手机号 / 余额 / 积分 / 地址 / 会员 / 订单 / 分享 / 设置 */
 /** 会员是否生效 */
 function isMemberActive(v) {
   return Boolean(v && v.memberExpire && v.memberExpire > Date.now());
@@ -684,6 +679,20 @@ async function loadBalanceLogs() {
   }
 }
 
+/** 订单列表弹层：从「我的」页入口点进来，替代直接铺在页面上 */
+function ordersSheet() {
+  const orders = state.orders || [];
+  const paidSum = orders
+    .filter((o) => o.status === 'paid' || o.status === 'refunded')
+    .reduce((s, o) => s + (Number(o.amount) || 0), 0);
+  openSheet(`
+    <h3>我的订单</h3>
+    <p class="sheet-sub">共 ${orders.length} 条${paidSum ? ` · 累计消费 ¥${yuan(paidSum)}` : ''}，点订单可查看详情或继续支付</p>
+    <div class="card" style="margin-top:10px" id="ordersBox">${mineOrderList(orders)}</div>
+    <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>
+  `);
+}
+
 /** 充值弹层：选金额 → 确认支付（走真实渠道） */
 function rechargeSheet() {
   const presets = [1000, 3000, 5000, 10000];
@@ -728,11 +737,7 @@ function rechargeGo() {
 function renderUserCenter() {  const v = state.viewer;
   const addr = v.address || {};
   const orders = v.orders || [];
-  const coupons = v.coupons || [];
   const hasAddr = Boolean(addr.detail || addr.name);
-  const paidSum = orders
-    .filter((o) => o.status === 'paid' || o.status === 'refunded')
-    .reduce((s, o) => s + (Number(o.amount) || 0), 0);
 
   return `
     <div class="card user-hero">
@@ -754,7 +759,6 @@ function renderUserCenter() {  const v = state.viewer;
           <b>${yuan(v.balance)}</b><span>余额 ›</span>
         </button>
         <div class="stat"><b>${v.points}</b><span>积分</span></div>
-        <div class="stat"><b>${coupons.length}</b><span>优惠券</span></div>
       </div>
     </div>
 
@@ -775,31 +779,9 @@ function renderUserCenter() {  const v = state.viewer;
       }
     </div>
 
-    <div class="section-head"><h2>我的优惠券</h2><span>${coupons.length} 张</span></div>
-    <div class="card">
-      ${
-        coupons.length
-          ? `<div class="coupon-list">${coupons
-              .map(
-                (c) => `<div class="coupon">
-                  <div class="coupon-amount">${couponText(c)}<i>元</i></div>
-                  <div class="coupon-main">
-                    <div class="coupon-title">${esc(c.title || '优惠券')}</div>
-                    <div class="coupon-sub">有效期至 ${new Date(c.expiresAt || Date.now()).toLocaleDateString('zh-CN')}</div>
-                  </div>
-                </div>`
-              )
-              .join('')}</div>`
-          : `<div class="empty" style="padding:22px 8px"><p>暂无优惠券</p></div>`
-      }
-    </div>
-
     <div class="section-head">
       <h2>我的订单</h2>
-      <span>${orders.length} 条${paidSum ? ` · 累计消费 ¥${yuan(paidSum)}` : ''}</span>
-    </div>
-    <div class="card">
-      ${mineOrderList(orders)}
+      <button class="mini-btn" data-act="open-orders">全部订单${orders.length ? ' ' + orders.length : ''} ›</button>
     </div>
 
     <div class="section-head"><h2>分享给好友</h2></div>
@@ -1520,23 +1502,12 @@ view.addEventListener('click', async (e) => {
     confirmSheet();
   }
 
-  if (act === 'mine-filter') {
-    mineOrderFilter = el.dataset.f || 'all';
-    render();
-    return;
-  }
+  if (act === 'open-orders') return ordersSheet();
 
   if (act === 'order') {
     const o = state.orders.find((x) => x.id === el.dataset.id);
     // 列表里点「支付中 / 待支付」的订单，直接跳到支付界面
     if (o) openOrder(o);
-  }
-
-  if (act === 'recharge') {
-    sheetState.type = 'confirm';
-    sheetState.product = { id: 'vip_month', title: '会员月卡', desc: '示例商品，用于演示支付流程', amount: 1200 };
-    sheetState.channel = channelList()[0].id;
-    confirmSheet();
   }
 });
 
@@ -1545,10 +1516,39 @@ sheetEl.addEventListener('click', async (e) => {
   if (!el) return;
   const act = el.dataset.act;
 
+  if (act === 'buy') {
+    if (!state.viewer) {
+      closeSheet();
+      state.tab = 'mine';
+      render();
+      return toast('请先登录再下单');
+    }
+    const p = state.products.find((x) => x.id === el.dataset.id);
+    if (!p) return toast('商品不存在或已下架');
+    sheetState.type = 'confirm';
+    sheetState.product = p;
+    sheetState.channel = channelList()[0].id;
+    confirmSheet();
+    return;
+  }
+
   if (act === 'channel') {
     sheetState.channel = el.dataset.id;
     if (sheetState.type === 'continue' && sheetState.order) continuePaySheet(sheetState.order);
     else confirmSheet();
+  }
+
+  if (act === 'mine-filter') {
+    mineOrderFilter = el.dataset.f || 'all';
+    const box = window.document.querySelector('#ordersBox');
+    if (box) box.innerHTML = mineOrderList(state.orders || []);
+    return;
+  }
+
+  if (act === 'order') {
+    const o = state.orders.find((x) => x.id === el.dataset.id);
+    if (o) openOrder(o);
+    return;
   }
 
   if (act === 'pay') {

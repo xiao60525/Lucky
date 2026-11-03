@@ -229,7 +229,6 @@ async function publicViewer(userId) {
     initial: String(p.nickname || '用').trim().slice(0, 1),
     avatar: p.avatar || null,
     points: p.points,
-    coupons: p.coupons,
     address: p.address,
     balance: data.balance,
     memberLevel: p.memberLevel || null,
