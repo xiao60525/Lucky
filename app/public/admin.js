@@ -50,44 +50,53 @@ async function api(path, opts = {}) {
 /* ---------------- 登录 ---------------- */
 
 function renderLogin() {
+  const savedUser = localStorage.getItem('admin_user') || '';
   $('#app').innerHTML = `
     <div class="login-card">
+      <div class="login-logo">🔐</div>
       <h2>管理后台</h2>
-      <p>手机App支付骨架 · 请输入管理密码</p>
+      <p>请输入管理员账号和密码登录</p>
+      <input type="text" id="user" placeholder="管理员账号（默认 admin）" autocomplete="username" value="${esc(savedUser)}" />
       <input type="password" id="pwd" placeholder="管理密码" autocomplete="current-password" />
-      <button id="loginBtn">登录</button>
+      <button id="loginBtn">登 录</button>
     </div>`;
   const doLogin = async () => {
     const btn = $('#loginBtn');
+    const user = $('#user').value.trim();
     const pwd = $('#pwd').value.trim();
-    if (!pwd) return;
+    if (!user) return toast('请输入管理员账号');
+    if (!pwd) return toast('请输入管理密码');
     btn.disabled = true;
     btn.textContent = '登录中…';
     try {
       const r = await fetch(apiPath('/api/admin/login'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ password: pwd }),
+        body: JSON.stringify({ user, password: pwd }),
       });
       const data = await r.json().catch(() => ({}));
       if (!r.ok) throw new Error(data.message || '登录失败');
-      state.token = data.token;
+      localStorage.setItem('admin_user', user);
+      sessionStorage.setItem('admin_user', data.user || user);
       sessionStorage.setItem('admin_token', data.token);
+      state.token = data.token;
       await load();
     } catch (e) {
       toast(e.message);
-      if (btn) { btn.disabled = false; btn.textContent = '登录'; }
+      if (btn) { btn.disabled = false; btn.textContent = '登 录'; }
     }
   };
   $('#loginBtn').onclick = doLogin;
   // 注意：处理函数不能返回值。箭头函数省略花括号会隐式返回 false，
   // 而 DOM 事件处理器返回 false 等同于 preventDefault()，会把除回车外的所有按键吞掉。
-  $('#pwd').onkeydown = (e) => {
+  const onEnter = (e) => {
     if (e.key === 'Enter') doLogin();
   };
+  $('#user').onkeydown = onEnter;
+  $('#pwd').onkeydown = onEnter;
   // 桌面端自动聚焦；移动端不自动弹键盘（会遮挡页面、且部分浏览器不给焦点）
   if (!/Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent)) {
-    try { $('#pwd').focus(); } catch (_) {}
+    try { ($('#user').value ? $('#pwd') : $('#user')).focus(); } catch (_) {}
   }
 }
 
@@ -107,6 +116,19 @@ async function load() {
 
 /* ---------------- 渲染 ---------------- */
 
+/** 后台导航：key / 图标 / 名称 */
+const NAV = [
+  ['overview', '📊', '概览'],
+  ['orders', '🧾', '订单'],
+  ['products', '📦', '商品'],
+  ['members', '👑', '会员'],
+  ['users', '👥', '用户'],
+  ['contents', '📝', '首页内容'],
+  ['site', '🎨', '外观'],
+  ['preview', '📱', '页面预览'],
+  ['pay', '💳', '支付'],
+];
+
 function render() {
   if (!state.token) return renderLogin();
   const d = state.data;
@@ -114,35 +136,51 @@ function render() {
     $('#app').innerHTML = '<p class="muted" style="text-align:center;margin-top:80px">加载中…</p>';
     return;
   }
-  const tabs = { overview: '概览', products: '商品', members: '会员', contents: '首页内容', orders: '订单', users: '用户', site: '外观', preview: '页面预览', pay: '支付' };
+  const siteName = (d.site && d.site.name) || '';
   $('#app').innerHTML = `
-    <header class="bar">
-      <h1>管理后台</h1>
-      <div class="who">
-        <span>商户号 ${d.pay.mchid || '未配置'}</span>
-        <button id="logoutBtn">退出</button>
-      </div>
-    </header>
-    <div class="tabs">${Object.entries(tabs).map(([k, v]) => `<button data-tab="${k}" class="${state.tab === k ? 'on' : ''}">${v}</button>`).join('')}</div>
-    <div id="panel"></div>`;
-  document.querySelectorAll('.tabs button').forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; render(); }));
+    <div class="shell">
+      <aside class="side">
+        <div class="side-brand">
+          <span class="side-logo">⚡</span>
+          <div class="side-brand-txt"><b>管理后台</b><i>${esc(siteName)}</i></div>
+        </div>
+        <nav class="side-nav">${NAV.map(
+          ([k, ic, label]) => `<button class="nav-btn ${state.tab === k ? 'on' : ''}" data-tab="${k}"><span class="ic">${ic}</span>${label}</button>`
+        ).join('')}</nav>
+        <div class="side-foot">
+          <span class="muted">管理员 ${esc(sessionStorage.getItem('admin_user') || 'admin')} · 商户号 ${d.pay.mchid || '未配置'}</span>
+          <button id="logoutBtn">退出登录</button>
+        </div>
+      </aside>
+      <main class="main"><div id="panel"></div></main>
+    </div>`;
+  document.querySelectorAll('.nav-btn').forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; render(); }));
   $('#logoutBtn').onclick = () => { state.token = ''; sessionStorage.removeItem('admin_token'); render(); };
   ({ overview: renderOverview, products: renderProducts, members: renderMembers, contents: renderContents, orders: renderOrders, users: renderUsers, site: renderSite, preview: renderPreview, pay: renderPay })[state.tab]();
 }
 
 function renderOverview() {
   const s = state.data.stats;
+  const orders = state.data.orders || [];
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const t0 = dayStart.getTime();
+  const todayPaid = orders.filter((o) => (o.status === 'paid' || o.status === 'refunded') && o.paidAt >= t0);
+  const todaySum = todayPaid.reduce((sum, o) => sum + o.amount, 0);
+  const stat = (cls, ic, k, v) => `<div class="stat ${cls}"><div class="stat-ic">${ic}</div><div class="k">${k}</div><div class="v">${v}</div></div>`;
   $('#panel').innerHTML = `
     <div class="card">
       <h3>经营概览</h3>
       <div class="stats">
-        <div class="stat"><div class="k">净收入</div><div class="v"><small>¥</small>${yuan(s.net)}</div></div>
-        <div class="stat"><div class="k">累计收款</div><div class="v"><small>¥</small>${yuan(s.gross)}</div></div>
-        <div class="stat"><div class="k">累计退款</div><div class="v"><small>¥</small>${yuan(s.refundSum)}</div></div>
-        <div class="stat"><div class="k">账户余额</div><div class="v"><small>¥</small>${yuan(s.balance)}</div></div>
-        <div class="stat"><div class="k">订单总数</div><div class="v">${s.orders}</div></div>
-        <div class="stat"><div class="k">已支付订单</div><div class="v">${s.paidOrders}</div></div>
-        <div class="stat"><div class="k">待支付订单</div><div class="v">${s.pendingOrders}</div></div>
+        ${stat('hl-brand', '📅', '今日收入', `<small>¥</small>${yuan(todaySum)}`)}
+        ${stat('hl-brand', '🧾', '今日成交', `${todayPaid.length} <small>笔</small>`)}
+        ${stat('hl-ok', '💰', '净收入', `<small>¥</small>${yuan(s.net)}`)}
+        ${stat('', '📥', '累计收款', `<small>¥</small>${yuan(s.gross)}`)}
+        ${stat('hl-bad', '↩️', '累计退款', `<small>¥</small>${yuan(s.refundSum)}`)}
+        ${stat('', '👛', '账户余额', `<small>¥</small>${yuan(s.balance)}`)}
+        ${stat('', '📦', '订单总数', `${s.orders} <small>笔</small>`)}
+        ${stat('hl-ok', '✅', '已支付订单', `${s.paidOrders} <small>笔</small>`)}
+        ${stat(s.pendingOrders ? 'hl-warn' : '', '⏳', '待支付订单', `${s.pendingOrders} <small>笔</small>`)}
       </div>
     </div>
     <div class="card">

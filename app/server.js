@@ -62,8 +62,9 @@ const PROVIDER = (
   process.env.PAY_PROVIDER || (alipayClient ? 'alipay' : wxClient ? 'wechat' : 'mock')
 ).toLowerCase();
 
-/** 管理后台密码（.env 的 ADMIN_PASSWORD；不设置则后台不可登录） */
+/** 管理后台账号（.env 的 ADMIN_USER，默认 admin）与密码（ADMIN_PASSWORD；不设置则后台不可登录） */
 const ADMIN_PASSWORD = (process.env.ADMIN_PASSWORD || '').trim();
+const ADMIN_USER = (process.env.ADMIN_USER || 'admin').trim();
 
 /**
  * 预览网关要求的 sharecode（.env 的 PUBLIC_SHARECODE）。
@@ -1635,12 +1636,15 @@ async function handleApi(req, res, url) {
     if (!ADMIN_PASSWORD) {
       return sendJSON(res, 503, { message: '服务端未设置 ADMIN_PASSWORD，管理后台不可用' });
     }
-    const ok =
+    // 账号：.env ADMIN_USER（默认 admin）；不传账号时按默认账号处理（兼容旧客户端）
+    const sentUser = typeof body.user === 'string' ? body.user.trim() : '';
+    const userOk = !sentUser || sentUser.toLowerCase() === ADMIN_USER.toLowerCase();
+    const pwdOk =
       typeof body.password === 'string' &&
       body.password.length === ADMIN_PASSWORD.length &&
       crypto.timingSafeEqual(Buffer.from(body.password), Buffer.from(ADMIN_PASSWORD));
-    if (!ok) return sendJSON(res, 401, { message: '密码错误' });
-    return sendJSON(res, 200, { token: adminToken(Date.now() + 12 * 3600 * 1000), expiresIn: 12 * 3600 });
+    if (!userOk || !pwdOk) return sendJSON(res, 401, { message: '管理员账号或密码错误' });
+    return sendJSON(res, 200, { token: adminToken(Date.now() + 12 * 3600 * 1000), expiresIn: 12 * 3600, user: ADMIN_USER });
   }
 
   if (pathname.startsWith('/api/admin/') && pathname !== '/api/admin/login') {
