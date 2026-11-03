@@ -117,6 +117,51 @@ ok('电脑端 method 为 page.pay', pp.method === 'alipay.trade.page.pay');
 ok('电脑端 product_code 正确', pbiz.product_code === 'FAST_INSTANT_TRADE_PAY');
 ok('电脑端金额正确', pbiz.total_amount === '20.00');
 
+// 6b. 周期扣款：签约链接与代扣参数
+const cycleSignUrl = client.buildCycleSignUrl({
+  externalAgreementNo: 'cyc_u_test123',
+  singleAmountFen: 2000,
+  notifyUrl: 'https://example.com/api/notify/alipay-cycle',
+  returnUrl: 'https://example.com/?cycle=signed',
+});
+const csParams = Object.fromEntries(new URL(cycleSignUrl).searchParams);
+const csBiz = JSON.parse(csParams.biz_content);
+ok('签约 method 为 user.agreement.page.sign', csParams.method === 'alipay.user.agreement.page.sign');
+ok('签约产品码 CYCLE_PAY_SIGN', csBiz.personal_product_code === 'CYCLE_PAY_SIGN');
+ok('签约场景 INDUSTRY', csBiz.sign_scene === 'INDUSTRY');
+ok('签约外部协议号透传', csBiz.external_agreement_no === 'cyc_u_test123');
+ok('协议立即生效', csBiz.agreement_effect_params.agreement_effect === 'START');
+ok('签约单期金额正确', csBiz.period_rule_params.single_amount === '20.00');
+ok('签约期数正确（默认 24 期）', csBiz.period_rule_params.total_payments === 24);
+ok('签约通知地址随单上送', csParams.notify_url === 'https://example.com/api/notify/alipay-cycle');
+ok('签约签名可被应用公钥验证', (() => {
+  const rest = { ...csParams };
+  delete rest.sign;
+  const c = Object.keys(rest).sort().map((k) => `${k}=${rest[k]}`).join('&');
+  return crypto.createVerify('RSA-SHA256').update(c, 'utf8').verify(APP_PUBLIC, csParams.sign, 'base64');
+})());
+
+// 周期扣款代扣：拦截 callApi 校验请求体
+let capturedCycle = null;
+const origCallApi = client.callApi.bind(client);
+client.callApi = async (method, bizContent, extraParams) => {
+  capturedCycle = { method, bizContent, extraParams };
+  return { trade_status: 'TRADE_SUCCESS', trade_no: '2026110322001400000000000002' };
+};
+const cycleResp = await client.cyclePay({
+  outTradeNo: 'CYC20261103UAB12',
+  totalAmountFen: 2000,
+  subject: '会员月卡（自动续费）',
+  agreementNo: 'AGREE001',
+});
+client.callApi = origCallApi;
+ok('代扣 method 为 trade.pay', capturedCycle.method === 'alipay.trade.pay');
+ok('代扣产品码 CYCLE_PAY_AUTH', capturedCycle.bizContent.product_code === 'CYCLE_PAY_AUTH');
+ok('代扣带协议号', capturedCycle.bizContent.agreement_params && capturedCycle.bizContent.agreement_params.agreement_no === 'AGREE001');
+ok('代扣金额正确', capturedCycle.bizContent.total_amount === '20.00');
+ok('代扣通知地址随单上送', capturedCycle.extraParams.notify_url === 'https://example.com/api/notify/alipay');
+ok('代扣返回透传', cycleResp.trade_no === '2026110322001400000000000002');
+
 // 7. 通知验签（模拟支付宝用自己私钥签名）
 function signNotify(params, privateKey) {
   const c = Object.keys(params)

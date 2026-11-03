@@ -110,6 +110,8 @@ function normalizeProfile(row) {
     memberExpire: row.member_expire ? new Date(row.member_expire).getTime() : null,
     autoRenew: Boolean(row.auto_renew),
     memberProductId: row.member_product_id || '',
+    cycleAgreementNo: row.cycle_agreement_no || '',
+    cycleStatus: row.cycle_status || '',
     createdAt: row.created_at ? new Date(row.created_at).getTime() : null,
     lastLoginAt: row.last_login_at ? new Date(row.last_login_at).getTime() : null,
   };
@@ -216,6 +218,16 @@ async function setAutoRenew(userId, on) {
   return Boolean(data);
 }
 
+/** 设置支付宝周期扣款协议状态（签约 NORMAL / 解约 UNSIGN） */
+async function setCycleAgreement(userId, agreementNo, status) {
+  const data = await call(
+    'app_user_set_cycle',
+    { p_secret: secret, p_id: userId, p_agreement_no: String(agreementNo || ''), p_status: String(status || '') },
+    '周期扣款协议'
+  );
+  return Boolean(data);
+}
+
 /** 写一条会员流水（购买 / 自动续费 / 后台赠送 / 取消 / 续费失败） */
 async function appendMemberLog(entry) {
   try {
@@ -313,6 +325,7 @@ module.exports = {
   grantMember,
   revokeMember,
   setAutoRenew,
+  setCycleAgreement,
   appendMemberLog,
   listMemberLogs,
   isMember,

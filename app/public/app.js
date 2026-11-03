@@ -573,6 +573,8 @@ function memberSheet() {
   const active = isMemberActive(v);
   const goods = state.products.filter((p) => Number(p.memberDays) > 0);
   const renewOn = Boolean(v.autoRenew);
+  const cycleReady = Boolean(state.site && state.site.cycleReady);
+  const cycleOn = v.cycleStatus === 'NORMAL';
   openSheet(`
     <h3>会员中心</h3>
     <div class="member-status ${active ? 'on' : ''}">
@@ -595,14 +597,25 @@ function memberSheet() {
             .join('')}</div>`
         : '<p class="sheet-sub">商家还没有上架会员商品，敬请期待</p>'
     }
+    ${
+      cycleReady
+        ? `<button class="autorenew-row ${cycleOn ? 'on' : ''}" data-act="${cycleOn ? 'cycle-unsign' : 'cycle-sign'}">
+      <span class="autorenew-main">
+        <b>${cycleOn ? '✅ 支付宝免密续费（已签约）' : '🅰️ 支付宝免密续费'}</b>
+        <i>${cycleOn ? '到期由支付宝自动代扣，无需余额；点击解除' : '推荐：签约后到期自动从支付宝扣款，余额不足也不怕'}</i>
+      </span>
+      <span class="member-arrow">›</span>
+    </button>`
+        : ''
+    }
     <button class="autorenew-row ${renewOn ? 'on' : ''}" data-act="toggle-autorenew">
       <span class="autorenew-main">
         <b>🔄 自动续费</b>
-        <i>${renewOn ? '到期前自动从余额扣款续费，随时可关' : '开启后到期自动续费，不再断档'}</i>
+        <i>${renewOn ? (cycleOn ? '已开启，到期由支付宝代扣' : '已开启，到期自动从余额扣款续费，随时可关') : '开启后到期自动续费，不再断档'}</i>
       </span>
       <span class="switch ${renewOn ? 'on' : ''}"><span class="knob"></span></span>
     </button>
-    <p class="cashier-note">购买会员商品支付成功后自动开通，重复购买到期时间自动顺延${renewOn ? '；自动续费将从余额扣款，请保持余额充足' : ''}</p>
+    <p class="cashier-note">购买会员商品支付成功后自动开通，重复购买到期时间自动顺延${renewOn ? (cycleOn ? '；到期由支付宝自动代扣' : '；自动续费将从余额扣款，请保持余额充足') : ''}</p>
     <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>
   `);
 }
@@ -1512,6 +1525,7 @@ view.addEventListener('click', async (e) => {
 });
 
 sheetEl.addEventListener('click', async (e) => {
+  
   const el = e.target.closest('[data-act]');
   if (!el) return;
   const act = el.dataset.act;
@@ -1575,6 +1589,31 @@ sheetEl.addEventListener('click', async (e) => {
 
   if (act === 'toggle-autorenew') {
     await toggleAutoRenew();
+    return;
+  }
+
+  if (act === 'cycle-sign') {
+    try {
+      toast('正在跳转支付宝签约…');
+      const r = await api('/api/user/cycle/sign', { method: 'POST' });
+      if (r.signUrl) window.location.href = r.signUrl;
+    } catch (e) {
+      toast(e.message);
+    }
+    return;
+  }
+
+  if (act === 'cycle-unsign') {
+    if (!window.confirm('确定解除支付宝免密续费？解约后自动续费将改用余额扣款。')) return;
+    try {
+      const r = await api('/api/user/cycle/unsign', { method: 'POST' });
+      if (r.viewer) state.viewer = r.viewer;
+      toast('已解除支付宝免密续费');
+      memberSheet();
+      render();
+    } catch (e) {
+      toast(e.message);
+    }
     return;
   }
 
@@ -1786,12 +1825,28 @@ async function pollOrder(orderId, tries = 12, interval = 450) {
   const q = new URLSearchParams(location.search);
   const returnOrderId = q.get('orderId');
   const result = q.get('result');
+  const cycleBack = q.get('cycle') === 'signed';
 
   try {
     await bootstrap();
   } catch (e) {
     view.innerHTML = `<div class="card" style="margin-top:40px"><div class="empty"><h3>连不上服务</h3><p>${e.message}<br/>请确认 node server.js 已启动</p></div></div>`;
     return;
+  }
+
+  if (cycleBack) {
+    history.replaceState(null, '', '/' + (SHARECODE ? '?sharecode=' + encodeURIComponent(SHARECODE) : ''));
+    if (state.viewer) {
+      if (state.viewer.cycleStatus === 'NORMAL') toast('支付宝免密续费签约成功 ✅');
+      else {
+        toast('签约结果确认中，稍后自动刷新');
+        setTimeout(async () => {
+          await refreshMe();
+          if (state.viewer && state.viewer.cycleStatus === 'NORMAL') toast('支付宝免密续费签约成功 ✅');
+          else toast('暂未查到签约，可稍后在会员中心再试');
+        }, 3000);
+      }
+    }
   }
 
   if (returnOrderId && result) {

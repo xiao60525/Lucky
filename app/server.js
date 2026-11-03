@@ -66,6 +66,21 @@ const PROVIDER = (
 const ADMIN_PASSWORD = (process.env.ADMIN_PASSWORD || '').trim();
 const ADMIN_USER = (process.env.ADMIN_USER || 'admin').trim();
 
+/* 支付宝周期扣款（免密自动续费）：
+ * 需要商家在支付宝开放平台签约「周期扣款」产品，并在 .env 打开 ALIPAY_CYCLE_ENABLED=1。
+ * 签约金额/周期取会员商品价格；签约成功后到期由支付宝代扣，无需用户余额。 */
+const CYCLE_ENABLED = String(process.env.ALIPAY_CYCLE_ENABLED || '').trim() === '1';
+const CYCLE_PERIOD_TYPE = String(process.env.ALIPAY_CYCLE_PERIOD_TYPE || 'month').trim() || 'month';
+const CYCLE_PERIOD = Math.max(1, Number(process.env.ALIPAY_CYCLE_PERIOD) || 1);
+const CYCLE_TOTAL_PAYMENTS = Math.max(1, Number(process.env.ALIPAY_CYCLE_TOTAL_PAYMENTS) || 24);
+/** 从 ALIPAY_NOTIFY_URL（…/api/notify/alipay，可能带 ?sharecode=）推导站点基址，用于签约通知/回跳地址 */
+const CYCLE_NOTIFY_BASE = String(process.env.ALIPAY_NOTIFY_URL || '')
+  .trim()
+  .replace(/\/api\/notify\/alipay(\?.*)?$/i, '');
+function cycleReady() {
+  return Boolean(CYCLE_ENABLED && CYCLE_NOTIFY_BASE && Alipay.fromEnv());
+}
+
 /**
  * 预览网关要求的 sharecode（.env 的 PUBLIC_SHARECODE）。
  * 网关会把 URL query 里的 sharecode 剥掉，服务端读不到，只能靠环境变量兜底，
@@ -236,6 +251,7 @@ async function publicViewer(userId) {
     memberExpire: p.memberExpire || null,
     isMember: users.isMember(p),
     autoRenew: Boolean(p.autoRenew),
+    cycleStatus: p.cycleStatus || '',
     createdAt: p.createdAt,
     orders: data.orders.map((o) => ({
       id: o.id,
@@ -361,6 +377,7 @@ function publicSite() {
     hasIcon,
     iconVer: hasIcon ? site.iconVer || '1' : 'default',
     iconUrl: '/api/brand/icon?v=' + encodeURIComponent(hasIcon ? site.iconVer || '1' : 'default'),
+    cycleReady: cycleReady(),
     updatedAt: site.updatedAt,
   };
 }
@@ -542,8 +559,8 @@ async function grantMembershipForOrder(order) {
       days,
       productId: order.productId || '',
       orderId: order.id,
-      amount: autoRenew ? order.amount : 0, // 自动续费走余额扣款，记录扣了多少钱；用户主动购买金额在订单里
-      note: autoRenew ? '到期自动续费（余额扣款）' : '',
+      amount: autoRenew ? order.amount : 0, // 自动续费记录扣了多少钱；用户主动购买金额在订单里
+      note: autoRenew ? (order.channel === 'alipay_cycle' ? '到期自动续费（支付宝免密代扣）' : '到期自动续费（余额扣款）') : '',
       expireAfter: expire ? new Date(expire).toISOString() : '',
     });
     return expire;
@@ -586,6 +603,56 @@ async function autoRenewMemberTick() {
           .sort((a, b) => a.amount - b.amount)[0];
       }
       if (!product) continue; // 没有可续费的会员商品
+
+      // —— 优先支付宝周期扣款代扣（免密续费，需已签约）——
+      const alipay = cycleReady() ? Alipay.fromEnv() : null;
+      if (alipay && u.cycle_status === 'NORMAL' && u.cycle_agreement_no) {
+        // 每用户每天只尝试一次：订单号按「日期+用户」确定性生成，天然防重复扣款
+        const dayKey = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+        const attemptId = 'CYC' + dayKey + u.id.slice(-6).toUpperCase();
+        if (db.orders.some((o) => o.id === attemptId)) continue;
+        try {
+          const resp = await alipay.cyclePay({
+            outTradeNo: attemptId,
+            totalAmountFen: product.amount,
+            subject: product.title + '（自动续费）',
+            agreementNo: u.cycle_agreement_no,
+          });
+          const order = {
+            id: attemptId,
+            userId: u.id,
+            productId: product.id,
+            title: product.title + '（自动续费）',
+            amount: product.amount,
+            channel: 'alipay_cycle',
+            status: 'paid',
+            transactionId: resp.trade_no || null,
+            settleSource: 'autorenew',
+            createdAt: Date.now(),
+            paidAt: Date.now(),
+          };
+          await store.insertOrder(order);
+          db.orders.push(order);
+          const expire = await grantMembershipForOrder(order);
+          renewed += 1;
+          console.log(
+            `[autorenew] 用户 ${u.id} 支付宝代扣续费 ${product.title} ¥${(product.amount / 100).toFixed(2)} -> 到期 ${expire ? new Date(expire).toLocaleString() : '-'}`
+          );
+        } catch (e) {
+          await users.appendMemberLog({
+            userId: u.id,
+            action: 'autorenew_fail',
+            source: 'system',
+            days: 0,
+            productId: product.id,
+            amount: product.amount,
+            note: `支付宝代扣失败：${e.message}`,
+          });
+        }
+        continue;
+      }
+
+      // —— 余额扣款（未签约支付宝代扣时的兜底方式）——
       const balance = await users.getUserBalance(u.id);
       if (balance < product.amount) {
         await users.appendMemberLog({
@@ -978,6 +1045,64 @@ async function handleApi(req, res, url) {
       return sendJSON(res, 200, { viewer: await publicViewer(uid) });
     } catch (e) {
       return sendJSON(res, 502, { message: e.message || '保存失败' });
+    }
+  }
+
+  /* ---------------- 支付宝周期扣款（免密自动续费） ---------------- */
+
+  // 发起签约：返回支付宝签约页跳转地址，签约结果以支付宝异步通知为准
+  if (pathname === '/api/user/cycle/sign' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    if (!users.enabled) return sendJSON(res, 501, { message: '未接入用户云库' });
+    if (!cycleReady()) return sendJSON(res, 501, { message: '商家未开通支付宝周期扣款' });
+    try {
+      const p = await users.getUser(uid);
+      if (!p) return sendJSON(res, 401, { message: '账号不存在' });
+      if (p.cycleStatus === 'NORMAL') return sendJSON(res, 400, { message: '已签约支付宝免密续费，无需重复签约' });
+      // 签约金额 = 用户的续费商品（下架则最便宜的生效会员商品），和自动续费逻辑保持一致
+      let product = db.products.find(
+        (x) => x.id === (p.memberProductId || '') && x.active !== false && Number(x.memberDays) > 0
+      );
+      if (!product) {
+        product = db.products
+          .filter((x) => Number(x.memberDays) > 0 && x.active !== false)
+          .sort((a, b) => a.amount - b.amount)[0];
+      }
+      if (!product) return sendJSON(res, 400, { message: '商家还没有上架会员商品' });
+      const signUrl = Alipay.fromEnv().buildCycleSignUrl({
+        externalAgreementNo: 'cyc_' + uid,
+        singleAmountFen: product.amount,
+        periodType: CYCLE_PERIOD_TYPE,
+        period: CYCLE_PERIOD,
+        totalPayments: CYCLE_TOTAL_PAYMENTS,
+        notifyUrl: CYCLE_NOTIFY_BASE + '/api/notify/alipay-cycle',
+        returnUrl: CYCLE_NOTIFY_BASE + '/?cycle=signed',
+      });
+      return sendJSON(res, 200, { signUrl });
+    } catch (e) {
+      return sendJSON(res, 502, { message: '生成签约链接失败：' + e.message });
+    }
+  }
+
+  // 解约：调支付宝解约接口，本地先置为已解约（最终以异步通知为准）
+  if (pathname === '/api/user/cycle/unsign' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    const alipay = Alipay.fromEnv();
+    if (!alipay) return sendJSON(res, 501, { message: '支付宝未配置' });
+    try {
+      const p = await users.getUser(uid);
+      if (!p || !p.cycleAgreementNo) return sendJSON(res, 400, { message: '当前没有支付宝代扣协议' });
+      try {
+        await alipay.unsign({ agreementNo: p.cycleAgreementNo, notifyUrl: CYCLE_NOTIFY_BASE + '/api/notify/alipay-cycle' });
+      } catch (e) {
+        console.warn('[cycle] 解约接口失败（以异步通知为准）:', e.message);
+      }
+      await users.setCycleAgreement(uid, p.cycleAgreementNo, 'UNSIGN');
+      return sendJSON(res, 200, { viewer: await publicViewer(uid) });
+    } catch (e) {
+      return sendJSON(res, 502, { message: e.message || '解约失败' });
     }
   }
 
@@ -1412,6 +1537,52 @@ async function handleApi(req, res, url) {
     return reply('success');
   }
 
+  // 支付宝周期扣款签约/解约异步通知：notify_type=dut_user_sign（签约）/ dut_user_unsign（解约）
+  if (pathname === '/api/notify/alipay-cycle' && method === 'POST') {
+    const raw = await readRawBody(req);
+    const params = Object.fromEntries(new URLSearchParams(raw || ''));
+    const reply = (text) => {
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(text);
+    };
+    const client = Alipay.fromEnv();
+    if (!client) return reply('failure');
+    if (!client.verifyNotify(params)) {
+      console.warn('[notify/alipay-cycle] 验签失败');
+      return reply('failure');
+    }
+    if (params.app_id && params.app_id !== client.appId) {
+      console.warn('[notify/alipay-cycle] app_id 不匹配');
+      return reply('failure');
+    }
+    const ntype = String(params.notify_type || '');
+    const status = String(params.status || '');
+    const external = String(params.external_agreement_no || '');
+    const agreementNo = String(params.agreement_no || '');
+    if (!/^cyc_/.test(external)) {
+      console.warn('[notify/alipay-cycle] 未知 external_agreement_no:', external);
+      return reply('success');
+    }
+    const uid = external.slice(4);
+    try {
+      if (ntype === 'dut_user_sign' && status === 'NORMAL') {
+        await users.setCycleAgreement(uid, agreementNo, 'NORMAL');
+        await users.appendMemberLog({ userId: uid, action: 'cycle_sign', source: 'system', note: '支付宝周期扣款签约成功' });
+        console.log('[notify/alipay-cycle] 签约成功', uid, agreementNo);
+      } else if (ntype === 'dut_user_unsign' || (ntype === 'dut_user_sign' && status === 'UNSIGN')) {
+        await users.setCycleAgreement(uid, agreementNo || '', 'UNSIGN');
+        await users.appendMemberLog({ userId: uid, action: 'cycle_unsign', source: 'system', note: '支付宝周期扣款已解约' });
+        console.log('[notify/alipay-cycle] 解约', uid);
+      } else {
+        console.log('[notify/alipay-cycle] 其他通知', ntype, status);
+      }
+    } catch (e) {
+      console.error('[notify/alipay-cycle] 处理失败:', e.message);
+      return reply('failure');
+    }
+    return reply('success');
+  }
+
   // 支付宝同步跳回：同步参数不可信，主动查询确认后才入账
   if (pathname === '/api/alipay/return' && method === 'GET') {
     const params = Object.fromEntries(url.searchParams);
@@ -1719,6 +1890,7 @@ async function handleApi(req, res, url) {
           memberExpire: u.member_expire ? new Date(u.member_expire).getTime() : null,
           isMember: Boolean(u.member_expire && new Date(u.member_expire).getTime() > Date.now()),
           autoRenew: Boolean(u.auto_renew),
+          cycleStatus: u.cycle_status || '',
           memberProductId: u.member_product_id || '',
           source: 'web',
           createdAt: u.created_at ? new Date(u.created_at).getTime() : null,

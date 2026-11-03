@@ -233,6 +233,78 @@ class Alipay {
       refund_reason: reason || '用户申请退款',
     });
   }
+
+  /* ---------------- 周期扣款（免密自动续费） ---------------- */
+
+  /**
+   * 生成周期扣款签约页跳转地址（alipay.user.agreement.page.sign）。
+   * @param {{externalAgreementNo:string, singleAmountFen:number, periodType?:string, period?:number, totalPayments?:number, notifyUrl?:string, returnUrl?:string}} o
+   * 签约成功后支付宝异步通知 notify_type=dut_user_sign（含 agreement_no）。
+   */
+  buildCycleSignUrl(o) {
+    const single = fenToYuan(o.singleAmountFen);
+    const totalPayments = Math.max(1, Number(o.totalPayments) || 24);
+    const biz = {
+      personal_product_code: 'CYCLE_PAY_SIGN',
+      sign_scene: 'INDUSTRY',
+      external_agreement_no: o.externalAgreementNo,
+      agreement_effect_params: { agreement_effect: 'START' },
+      period_rule_params: {
+        period_type: o.periodType || 'month',
+        period: Number(o.period) || 1,
+        single_amount: single,
+        total_amount: fenToYuan(o.singleAmountFen * totalPayments),
+        total_payments: totalPayments,
+      },
+    };
+    const params = this.baseParams('alipay.user.agreement.page.sign', {
+      notify_url: o.notifyUrl || this.notifyUrl,
+      return_url: o.returnUrl || this.returnUrl,
+      biz_content: JSON.stringify(biz),
+    });
+    params.sign = this.sign(signContent(params));
+    const qs = Object.keys(params)
+      .filter((k) => params[k] !== undefined && params[k] !== null && params[k] !== '')
+      .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`)
+      .join('&');
+    return `${this.gateway}?${qs}`;
+  }
+
+  /**
+   * 周期扣款代扣（alipay.trade.pay，product_code=CYCLE_PAY_AUTH）。
+   * 扣款同步返回，trade_status=TRADE_SUCCESS 即扣款成功。
+   */
+  cyclePay({ outTradeNo, totalAmountFen, subject, agreementNo, notifyUrl }) {
+    return this.callApi(
+      'alipay.trade.pay',
+      {
+        out_trade_no: outTradeNo,
+        total_amount: fenToYuan(totalAmountFen),
+        subject: String(subject || '会员自动续费').slice(0, 128),
+        product_code: 'CYCLE_PAY_AUTH',
+        agreement_params: { agreement_no: agreementNo },
+      },
+      { notify_url: notifyUrl || this.notifyUrl }
+    );
+  }
+
+  /** 解除周期扣款协议 */
+  unsign({ agreementNo, notifyUrl }) {
+    return this.callApi(
+      'alipay.user.agreement.unsign',
+      { personal_product_code: 'CYCLE_PAY_SIGN', sign_scene: 'INDUSTRY', agreement_no: agreementNo },
+      { notify_url: notifyUrl || this.notifyUrl }
+    );
+  }
+
+  /** 查询代扣协议状态 */
+  queryAgreement({ agreementNo }) {
+    return this.callApi('alipay.user.agreement.query', {
+      personal_product_code: 'CYCLE_PAY_SIGN',
+      sign_scene: 'INDUSTRY',
+      agreement_no: agreementNo,
+    });
+  }
 }
 
 module.exports = { Alipay, AlipayError, signContent, beijingTimestamp, fenToYuan, PROD_GATEWAY, SANDBOX_GATEWAY };

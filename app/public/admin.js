@@ -835,6 +835,8 @@ const MEMBER_ACTION_TEXT = {
   grant: '后台赠送',
   revoke: '后台取消',
   autorenew_fail: '续费失败',
+  cycle_sign: '支付宝签约',
+  cycle_unsign: '支付宝解约',
 };
 
 function memberSourceTag(log) {
@@ -850,14 +852,15 @@ function memberSourceTag(log) {
 }
 
 function memberBadge(u) {
+  const cycleTag = u.cycleStatus === 'NORMAL' ? ' <span class="tag tag-blue">支付宝代扣</span>' : '';
   if (u.isMember) {
     const d = u.memberExpire ? new Date(u.memberExpire) : null;
     const left = d ? Math.ceil((d.getTime() - Date.now()) / 86400000) : 0;
     const soon = left <= 7 ? 'tag-orange' : 'tag-green';
-    const renew = u.autoRenew ? ' <span class="tag tag-orange">自动续费</span>' : '';
+    const renew = u.autoRenew ? ` <span class="tag tag-orange">自动续费</span>${cycleTag}` : '';
     return `<span class="tag ${soon}">会员 · 剩 ${left} 天</span>${renew}<div class="muted" style="font-size:11.5px;margin-top:2px">${d ? fmtTime(d.getTime()) : ''}</div>`;
   }
-  if (u.autoRenew) return '<span class="tag tag-orange">已开自动续费</span>';
+  if (u.autoRenew) return `<span class="tag tag-orange">已开自动续费</span>${cycleTag}`;
   return '<span class="muted">—</span>';
 }
 
