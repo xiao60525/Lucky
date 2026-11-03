@@ -114,7 +114,7 @@ function render() {
     $('#app').innerHTML = '<p class="muted" style="text-align:center;margin-top:80px">加载中…</p>';
     return;
   }
-  const tabs = { overview: '概览', products: '商品', members: '会员', contents: '首页内容', orders: '订单', users: '用户', site: '外观', pay: '支付' };
+  const tabs = { overview: '概览', products: '商品', members: '会员', contents: '首页内容', orders: '订单', users: '用户', site: '外观', preview: '页面预览', pay: '支付' };
   $('#app').innerHTML = `
     <header class="bar">
       <h1>管理后台</h1>
@@ -127,7 +127,7 @@ function render() {
     <div id="panel"></div>`;
   document.querySelectorAll('.tabs button').forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; render(); }));
   $('#logoutBtn').onclick = () => { state.token = ''; sessionStorage.removeItem('admin_token'); render(); };
-  ({ overview: renderOverview, products: renderProducts, members: renderMembers, contents: renderContents, orders: renderOrders, users: renderUsers, site: renderSite, pay: renderPay })[state.tab]();
+  ({ overview: renderOverview, products: renderProducts, members: renderMembers, contents: renderContents, orders: renderOrders, users: renderUsers, site: renderSite, preview: renderPreview, pay: renderPay })[state.tab]();
 }
 
 function renderOverview() {
@@ -1126,6 +1126,114 @@ async function saveSite() {
       b.disabled = false;
       b.textContent = '保存并生效';
     }
+  }
+}
+
+/* ---------------- 页面预览：直接看前端真实页面 + 快捷设置 ---------------- */
+
+function refreshPreviewFrame() {
+  const f = $('#previewFrame');
+  if (f) f.src = '/?_=' + Date.now();
+}
+
+function renderPreview() {
+  const s = state.data.site || { name: '', tagline: '', notice: '', enableRegister: true, showMock: true, showBalance: true };
+  $('#panel').innerHTML = `
+    <div class="card">
+      <h3>前端页面预览</h3>
+      <p class="muted" style="font-size:12.5px;margin:0 0 12px">
+        左边就是用户手机上打开的真实页面。在这里或其它页改完设置后，点「刷新预览」即可看到最新效果。
+      </p>
+      <div class="pv-wrap">
+        <div class="pv-phone"><iframe id="previewFrame" title="前端页面预览"></iframe></div>
+        <div class="pv-side">
+          <button class="btn" id="pv-refresh">🔄 刷新预览</button>
+          <a class="btn ghost" href="/" target="_blank" rel="noopener" style="text-decoration:none;text-align:center">在新窗口打开前台</a>
+          <div class="pv-tips">
+            <b>前端内容在这里设置</b>
+            <p>· 名称 / 副标题 / 公告 / 开关 → 下方快捷设置或「外观」页<br/>
+               · 首页内容卡片（精选内容、内容页）→「首页内容」页<br/>
+               · 商品与价格 →「商品」页<br/>
+               · 图标上传 →「外观」页</p>
+          </div>
+          <div class="pv-jumps">
+            <button class="btn ghost" id="pv-go-site">去外观设置</button>
+            <button class="btn ghost" id="pv-go-contents">去首页内容管理</button>
+            <button class="btn ghost" id="pv-go-products">去商品管理</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>前端快捷设置</h3>
+      <p class="muted" style="font-size:12.5px;margin:0 0 14px">改完点「保存并刷新预览」，左边页面立即更新。</p>
+      <div class="form-grid">
+        <div><label>程序名称 *（最多 24 字）</label><input id="pv-name" maxlength="24" value="${esc(s.name || '')}" placeholder="如 我的小工具" /></div>
+        <div><label>副标题（最多 40 字）</label><input id="pv-tagline" maxlength="40" value="${esc(s.tagline || '')}" placeholder="如 一个能付款的小应用" /></div>
+        <div class="full"><label>首页公告（最多 200 字，留空不显示）</label><input id="pv-notice" maxlength="200" value="${esc(s.notice || '')}" placeholder="如 新用户下单立减 5 元" /></div>
+      </div>
+      <label class="switch-row">
+        <div><b>开放新用户注册</b><p class="muted" style="font-size:12px;margin:2px 0 0">关闭后登录页不再出现注册入口</p></div>
+        <input type="checkbox" id="pv-reg" ${s.enableRegister !== false ? 'checked' : ''} />
+      </label>
+      <label class="switch-row">
+        <div><b>显示模拟收银台</b><p class="muted" style="font-size:12px;margin:2px 0 0">没配微信/支付宝时的兜底假支付，正式运营建议关闭</p></div>
+        <input type="checkbox" id="pv-mock" ${s.showMock !== false ? 'checked' : ''} />
+      </label>
+      <label class="switch-row">
+        <div><b>显示余额支付</b><p class="muted" style="font-size:12px;margin:2px 0 0">用户用账户余额下单</p></div>
+        <input type="checkbox" id="pv-bal" ${s.showBalance !== false ? 'checked' : ''} />
+      </label>
+      <div class="row-actions">
+        <button class="btn" id="pv-save">保存并刷新预览</button>
+      </div>
+    </div>`;
+
+  refreshPreviewFrame();
+  $('#pv-refresh').onclick = () => {
+    refreshPreviewFrame();
+    toast('预览已刷新');
+  };
+  $('#pv-go-site').onclick = () => {
+    state.tab = 'site';
+    render();
+  };
+  $('#pv-go-contents').onclick = () => {
+    state.tab = 'contents';
+    render();
+  };
+  $('#pv-go-products').onclick = () => {
+    state.tab = 'products';
+    render();
+  };
+  $('#pv-save').onclick = savePreviewSettings;
+}
+
+async function savePreviewSettings() {
+  const btn = $('#pv-save');
+  const name = ($('#pv-name').value || '').trim();
+  if (!name) return toast('程序名称不能为空');
+  const payload = {
+    name,
+    tagline: ($('#pv-tagline').value || '').trim(),
+    notice: ($('#pv-notice').value || '').trim(),
+    enableRegister: $('#pv-reg').checked,
+    showMock: $('#pv-mock').checked,
+    showBalance: $('#pv-bal').checked,
+  };
+  btn.disabled = true;
+  btn.textContent = '保存中…';
+  try {
+    const r = await api('/api/admin/site/save', { method: 'POST', body: JSON.stringify(payload) });
+    state.data.site = r.site;
+    document.title = r.site.name + ' · 管理后台';
+    toast('已保存，预览已更新');
+    renderPreview(); // 重渲染会重建 iframe，即最新页面
+  } catch (e) {
+    toast(e.message);
+    btn.disabled = false;
+    btn.textContent = '保存并刷新预览';
   }
 }
 
