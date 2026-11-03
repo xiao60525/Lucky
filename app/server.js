@@ -171,13 +171,15 @@ async function refreshProducts() {
   const all = await store.adminListProducts();
   db.products = all
     .filter((p) => p.active)
-    .map(({ id, title, desc, amount, tag, memberDays }) => ({
+    .map(({ id, title, desc, amount, tag, memberDays, memberOnly, memberPrice }) => ({
       id,
       title,
       desc,
       amount,
       tag,
       memberDays: Number(memberDays) || 0,
+      memberOnly: Boolean(memberOnly),
+      memberPrice: Number(memberPrice) || 0,
     }));
   return all;
 }
@@ -896,6 +898,16 @@ async function handleApi(req, res, url) {
       recentOrders = db.orders.filter((o) => o.userId === uid).slice(-20).reverse();
     }
     const alipayWap = alipayClient ? await probeAlipayWap() : false;
+    // 会员状态（用于会员专享内容的门禁）：游客一律视为非会员
+    let bootstrapIsMember = false;
+    if (uid) {
+      try {
+        const me = await users.getUser(uid);
+        bootstrapIsMember = Boolean(me && users.isMember(me));
+      } catch (e) {
+        console.warn('[bootstrap] 读取会员状态失败:', e.message);
+      }
+    }
     // 首页内容（后台可增删改）；读不到不影响页面主体
     let contents = [];
     try {
@@ -903,6 +915,10 @@ async function handleApi(req, res, url) {
     } catch (e) {
       console.warn('[bootstrap] 读取首页内容失败:', e.message);
     }
+    // 会员专享内容：非会员只给标题/配图/标签，正文不下发（服务端拦截，改前端代码也绕不过）
+    contents = contents.map((c) =>
+      c.membersOnly && !bootstrapIsMember ? { ...c, desc: '', locked: true } : { ...c, locked: false }
+    );
     return sendJSON(res, 200, {
       user: { id: db.user.id, nickname: db.user.nickname },
       loggedIn: Boolean(uid),
@@ -1303,12 +1319,35 @@ async function handleApi(req, res, url) {
     const product = db.products.find((p) => p.id === body.productId);
     if (!product) return sendJSON(res, 400, { message: '商品不存在或已下架' });
 
+    // 会员专享：只有生效中的会员能买（服务端判定，前端按钮只是展示）
+    let buyerIsMember = false;
+    if (uid) {
+      try {
+        const buyer = await users.getUser(uid);
+        buyerIsMember = Boolean(buyer && users.isMember(buyer));
+      } catch (e) {
+        console.warn('[order] 读取会员状态失败:', e.message);
+      }
+    }
+    if (product.memberOnly && !buyerIsMember) {
+      return sendJSON(res, 403, {
+        message: '该商品为会员专享，开通会员后可购买',
+        needMember: true,
+        productId: product.id,
+      });
+    }
+    // 会员价优先（仅会员生效，且必须低于原价才有意义）
+    const memberPrice = Number(product.memberPrice) || 0;
+    const useMemberPrice = buyerIsMember && memberPrice > 0 && memberPrice < product.amount;
+
     const order = {
       id: newOrderId(),
       userId: uid,
       productId: product.id,
       title: product.title,
-      amount: product.amount, // 金额一律取服务端商品表，绝不信前端传的金额
+      amount: useMemberPrice ? memberPrice : product.amount, // 金额一律取服务端商品表，绝不信前端传的金额
+      listAmount: product.amount, // 原价，会员价订单用于展示「省了多少」
+      memberPrice: useMemberPrice,
       channel: null,
       status: 'created',
       createdAt: Date.now(),
@@ -2051,6 +2090,8 @@ async function handleApi(req, res, url) {
           sort: Number.isInteger(body.sort) ? body.sort : 99,
           active: body.active !== false,
           memberDays: Math.max(0, Math.floor(Number(body.memberDays)) || 0),
+          memberOnly: Boolean(body.memberOnly),
+          memberPrice: Math.max(0, Math.floor(Number(body.memberPrice)) || 0),
         });
         await refreshProducts();
         return sendJSON(res, 200, { product: saved });
@@ -2109,6 +2150,7 @@ async function handleApi(req, res, url) {
           link,
           sort: Number.isInteger(body.sort) ? body.sort : 100,
           active: body.active !== false,
+          membersOnly: Boolean(body.membersOnly),
         });
         return sendJSON(res, 200, { content: saved });
       } catch (e) {

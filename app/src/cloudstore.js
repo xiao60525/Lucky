@@ -84,6 +84,8 @@ async function getState() {
       amount: p.amount,
       tag: p.tag,
       memberDays: Number(p.member_days) || 0,
+      memberOnly: p.member_only === true,
+      memberPrice: Number(p.member_price) || 0,
     })),
   };
 }
@@ -148,6 +150,8 @@ function productRow(p) {
     sort: p.sort,
     active: p.active,
     memberDays: Number(p.member_days) || 0,
+    memberOnly: p.member_only === true,
+    memberPrice: Number(p.member_price) || 0,
   };
 }
 
@@ -172,6 +176,8 @@ async function adminUpsertProduct(p) {
         sort: p.sort,
         active: p.active,
         memberDays: Number(p.memberDays) || 0,
+        memberOnly: Boolean(p.memberOnly),
+        memberPrice: Number(p.memberPrice) || 0,
       },
     },
     '保存商品'
@@ -263,6 +269,7 @@ function contentRow(row) {
     link: row.link || '',
     sort: Number(row.sort) || 100,
     active: row.active !== false,
+    membersOnly: row.members_only === true,
     createdAt: toMs(row.created_at),
   };
 }
@@ -293,6 +300,7 @@ async function adminUpsertContent(c) {
         link: c.link || '',
         sort: Number(c.sort) || 100,
         active: c.active !== false,
+        membersOnly: Boolean(c.membersOnly),
       },
     },
     '保存首页内容'

@@ -57,10 +57,12 @@ const BOOTSTRAP = {
   products: [
     { id: 'demo_001', title: '测试商品', amount: 1, desc: 'x', tag: '示例' },
     { id: 'member_month', title: '会员月卡', amount: 1200, desc: '30 天权益', tag: '会员', memberDays: 30 },
+    { id: 'vip_kit', title: '会员专属礼包', amount: 1900, desc: '仅会员可买', tag: '', memberOnly: true, memberPrice: 990 },
   ],
   contents: [
     { id: 'n1', title: '新人立减 5 元', desc: '注册即送，首单可用', tag: '活动', image: null, link: '', sort: 1, active: true },
     { id: 'n2', title: '怎么用余额支付', desc: '先充值，下单时选余额', tag: '', image: null, link: '/faq', sort: 2, active: true },
+    { id: 'n3', title: '会员专享攻略', desc: '', tag: '', image: null, link: '', sort: 3, active: true, membersOnly: true, locked: true },
   ],
   orders: [],
 };
@@ -152,6 +154,10 @@ const check = (name, ok, extra = '') => {
 };
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+function closeSheetForTest() {
+  const mask = window.document.querySelector('#mask');
+  if (mask) mask.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+}
 
 async function goMine() {
   const tab = [...window.document.querySelectorAll('.tab')].find((t) => t.dataset.tab === 'mine');
@@ -162,10 +168,21 @@ async function goMine() {
 await wait(120);
 
 // 0. 首页：商品卡片 + 后台配置的内容卡片
-check('首页商品卡片', window.document.querySelectorAll('.goods-card').length === 2, text('.goods-name'));
+check('首页商品卡片', window.document.querySelectorAll('.goods-card').length === 3, text('.goods-name'));
+// 会员专享：角标 + 会员价（当前登录用户是会员，应按会员价展示并划线原价）
+const vipCard = [...window.document.querySelectorAll('.goods-card')].find((c) => c.dataset.id === 'vip_kit');
+check('会员专享商品有角标', Boolean(vipCard) && vipCard.textContent.includes('会员专享'), vipCard ? vipCard.textContent.replace(/\s+/g, ' ').trim() : '');
+check(
+  '游客看到原价并引导开通会员',
+  Boolean(vipCard) && vipCard.textContent.includes('19.00') && vipCard.textContent.includes('开通会员'),
+  vipCard ? vipCard.textContent.replace(/\s+/g, ' ').trim() : ''
+);
+const lockedCard = [...window.document.querySelectorAll('.content-card')].find((c) => c.textContent.includes('会员专享攻略'));
+check('会员专享内容有锁标', Boolean(lockedCard) && lockedCard.textContent.includes('会员专享'), lockedCard ? lockedCard.textContent.replace(/\s+/g, ' ').trim() : '');
+check('锁态内容不下发正文', Boolean(lockedCard) && lockedCard.textContent.includes('开通会员后查看全文'));
 check(
   '首页显示后台配置的内容',
-  window.document.querySelectorAll('.content-card').length === 2 && text('.section-head').length >= 0,
+  window.document.querySelectorAll('.content-card').length === 3 && text('.section-head').length >= 0,
   String(window.document.querySelectorAll('.content-card').length)
 );
 check('首页内容标题正确', text('.content-title').includes('新人立减'), text('.content-title'));
@@ -192,6 +209,24 @@ $('[data-act="login"]').dispatchEvent(new window.MouseEvent('click', { bubbles: 
 await wait(80);
 token = window.localStorage.getItem('user_token_v1');
 check('登录后写入令牌', token === 'tk_test', String(token));
+// 登录后回首页：会员价生效（当前测试用户为生效中会员）
+[...window.document.querySelectorAll('.tab')].find((t) => t.dataset.tab === 'home').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
+const vipCard2 = [...window.document.querySelectorAll('.goods-card')].find((c) => c.dataset.id === 'vip_kit');
+check(
+  '会员看到会员价与划线原价',
+  Boolean(vipCard2) && vipCard2.textContent.includes('9.90') && Boolean(vipCard2.querySelector('s')) && vipCard2.textContent.includes('19.00'),
+  vipCard2 ? vipCard2.textContent.replace(/\s+/g, ' ').trim() : ''
+);
+check('会员点会员专享直接进收银台', (() => {
+  vipCard2.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  return true;
+})());
+await wait(60);
+check('会员专享商品可正常下单', Boolean($('.sheet [data-act="pay"]')) && text('.sheet .amount-big').includes('9.90'), text('.sheet .amount-big'));
+closeSheetForTest();
+await wait(40);
+await goMine();
 check('登录请求已发出', calls.some((c) => c.path === '/api/auth/login' && c.method === 'POST'));
 
 // 4. 用户中心各区块

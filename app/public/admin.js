@@ -326,17 +326,19 @@ function renderProducts() {
   const ps = state.data.products;
   let pfilter = 'all';
   const pChips = () => {
-    const counts = { all: ps.length, active: 0, inactive: 0, member: 0 };
+    const counts = { all: ps.length, active: 0, inactive: 0, member: 0, only: 0 };
     ps.forEach((p) => {
       if (p.active) counts.active++;
       else counts.inactive++;
       if (Number(p.memberDays) > 0) counts.member++;
+      if (p.memberOnly) counts.only++;
     });
     return [
       ['all', '全部'],
       ['active', '上架'],
       ['inactive', '下架'],
-      ['member', '会员商品'],
+      ['only', '会员专享'],
+      ['member', '送会员天数'],
     ]
       .map(([k, label]) => `<button class="ochip ${pfilter === k ? 'on' : ''}" data-pf="${k}">${label}${counts[k] ? ` <i>${counts[k]}</i>` : ''}</button>`)
       .join('');
@@ -352,6 +354,8 @@ function renderProducts() {
         <div><label>排序（小在前）</label><input id="f-sort" type="number" value="99" /></div>
         <div><label>状态</label><select id="f-active"><option value="1">上架</option><option value="0">下架</option></select></div>
         <div><label>会员天数（0=普通商品）</label><input id="f-memberdays" type="number" min="0" step="1" value="0" placeholder="如 30" /></div>
+        <div><label>会员专享</label><select id="f-memberonly"><option value="0">否 · 所有人可买</option><option value="1">是 · 仅会员可买</option></select></div>
+        <div><label>会员价（元，0=无优惠）</label><input id="f-memberprice" type="number" min="0" step="0.01" value="0" placeholder="如 9.90" /></div>
         <div class="full"><label>描述</label><input id="f-desc" /></div>
       </div>
       <div class="row-actions">
@@ -379,6 +383,7 @@ function renderProducts() {
           (pfilter === 'all' ||
             (pfilter === 'active' && p.active) ||
             (pfilter === 'inactive' && !p.active) ||
+            (pfilter === 'only' && p.memberOnly) ||
             (pfilter === 'member' && Number(p.memberDays) > 0))
       );
       box.innerHTML = fl.length
@@ -387,8 +392,15 @@ function renderProducts() {
               (p) => `<tr>
             <td style="font-family:monospace;font-size:12px">${p.id}</td>
             <td>${p.title}${p.tag ? ` <span class="muted">·${p.tag}</span>` : ''}</td>
-            <td>¥${yuan(p.amount)}</td>
-            <td>${Number(p.memberDays) > 0 ? `<span class="tag tag-green">送 ${p.memberDays} 天</span>` : '<span class="muted">—</span>'}</td>
+            <td>¥${yuan(p.amount)}${Number(p.memberPrice) > 0 ? `<div class="muted" style="font-size:11.5px">会员 ¥${yuan(p.memberPrice)}</div>` : ''}</td>
+            <td>${
+              [
+                Number(p.memberDays) > 0 ? `<span class="tag tag-green">送 ${p.memberDays} 天</span>` : '',
+                p.memberOnly ? '<span class="tag tag-gold">会员专享</span>' : '',
+              ]
+                .filter(Boolean)
+                .join(' ') || '<span class="muted">—</span>'
+            }</td>
             <td class="muted">${p.sort}</td>
             <td>${p.active ? '<span class="tag paid">上架</span>' : '<span class="tag off">下架</span>'}</td>
             <td style="white-space:nowrap">
@@ -427,6 +439,8 @@ function fillForm(p) {
   $('#f-sort').value = p ? p.sort : 99;
   $('#f-active').value = p && p.active === false ? '0' : '1';
   $('#f-memberdays').value = p ? Number(p.memberDays) || 0 : 0;
+  $('#f-memberonly').value = p && p.memberOnly ? '1' : '0';
+  $('#f-memberprice').value = p && Number(p.memberPrice) > 0 ? (Number(p.memberPrice) / 100).toFixed(2) : '0';
   $('#f-desc').value = p ? p.desc || '' : '';
 }
 
@@ -448,6 +462,8 @@ async function saveProduct() {
         sort: parseInt($('#f-sort').value, 10) || 99,
         active: $('#f-active').value === '1',
         memberDays: Math.max(0, parseInt($('#f-memberdays').value, 10) || 0),
+        memberOnly: $('#f-memberonly').value === '1',
+        memberPrice: Math.round((parseFloat($('#f-memberprice').value) || 0) * 100),
       }),
     });
     toast('已保存');
@@ -480,12 +496,17 @@ function renderContents() {
   const cs = state.data.contents || [];
   let cfilter = 'all';
   const cChips = () => {
-    const counts = { all: cs.length, active: 0, hidden: 0 };
-    cs.forEach((c) => (c.active ? counts.active++ : counts.hidden++));
+    const counts = { all: cs.length, active: 0, hidden: 0, member: 0 };
+    cs.forEach((c) => {
+      if (c.active) counts.active++;
+      else counts.hidden++;
+      if (c.membersOnly) counts.member++;
+    });
     return [
       ['all', '全部'],
       ['active', '上线'],
       ['hidden', '隐藏'],
+      ['member', '会员专享'],
     ]
       .map(([k, label]) => `<button class="ochip ${cfilter === k ? 'on' : ''}" data-cf="${k}">${label}${counts[k] ? ` <i>${counts[k]}</i>` : ''}</button>`)
       .join('');
@@ -503,6 +524,7 @@ function renderContents() {
         <div><label>跳转链接（可选）</label><input id="c-link" placeholder="https://… 或 /admin" /></div>
         <div><label>排序（小在前）</label><input id="c-sort" type="number" value="100" /></div>
         <div><label>状态</label><select id="c-active"><option value="1">上线</option><option value="0">隐藏</option></select></div>
+        <div><label>可见范围</label><select id="c-membersonly"><option value="0">所有人可见</option><option value="1">仅会员可见</option></select></div>
         <div>
           <label>配图（可选）</label>
           <div class="brand-btns">
@@ -535,7 +557,10 @@ function renderContents() {
       const fl = cs.filter(
         (c) =>
           (!q || `${c.title || ''} ${c.desc || ''}`.toLowerCase().includes(q)) &&
-          (cfilter === 'all' || (cfilter === 'active' ? c.active : !c.active))
+          (cfilter === 'all' ||
+            (cfilter === 'active' ? c.active : false) ||
+            (cfilter === 'hidden' ? !c.active : false) ||
+            (cfilter === 'member' && c.membersOnly))
       );
       box.innerHTML = fl.length
         ? `<table><thead><tr><th>配图</th><th>标题</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${fl
@@ -546,7 +571,7 @@ function renderContents() {
                 ? `<img src="${esc(c.image)}" alt="" style="width:44px;height:44px;border-radius:9px;object-fit:cover;display:block" />`
                 : '<span class="muted">无</span>'
             }</td>
-            <td>${esc(c.title)}${c.tag ? ` <span class="tag tag-blue">${esc(c.tag)}</span>` : ''}<div class="muted" style="font-size:11.5px;margin-top:2px">${esc(c.desc || '')}</div></td>
+            <td>${esc(c.title)}${c.membersOnly ? ' <span class="tag tag-gold">会员专享</span>' : ''}${c.tag ? ` <span class="tag tag-blue">${esc(c.tag)}</span>` : ''}<div class="muted" style="font-size:11.5px;margin-top:2px">${esc(c.desc || '')}</div></td>
             <td class="muted">${c.sort}</td>
             <td>${c.active ? '<span class="tag paid">上线</span>' : '<span class="tag off">隐藏</span>'}</td>
             <td style="white-space:nowrap">
@@ -615,6 +640,7 @@ function fillContentForm(c) {
   $('#c-link').value = c ? c.link || '' : '';
   $('#c-sort').value = c ? c.sort : 100;
   $('#c-active').value = c && c.active === false ? '0' : '1';
+  $('#c-membersonly').value = c && c.membersOnly ? '1' : '0';
   renderContentPreview();
 }
 
@@ -662,6 +688,7 @@ async function saveContent() {
         link: ($('#c-link').value || '').trim(),
         sort: parseInt($('#c-sort').value, 10) || 100,
         active: $('#c-active').value === '1',
+        membersOnly: $('#c-membersonly').value === '1',
         image: contentDraft.image || '',
       }),
     });
@@ -974,7 +1001,7 @@ function renderMembers() {
       <p class="muted" style="font-size:12.5px;margin:0 0 12px">
         用户在手机端购买「会员商品」后自动开通；开启「自动续费」的用户到期前 24 小时自动从余额扣款续费，余额不足会记录失败并跳过。
         「来源」列显示会员是<b>客户自购 / 自动续费 / 后台赠送</b>；点「记录」可查看该用户全部会员流水。
-        商品在 <b>商品</b> 页设置「会员天数」。
+        商品在 <b>商品</b> 页设置「会员天数」；想让某个商品<b>只有会员能买</b>或给会员更低价，在同一页设置「会员专享 / 会员价」。
       </p>
       <div id="memberTable"><p class="muted">加载中…</p></div>
     </div>`;

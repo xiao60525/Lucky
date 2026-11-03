@@ -324,16 +324,28 @@ function avatarHTML(v, cls) {
 const GOODS_ICONS = ['🧩', '💎', '🪙', '🎟️', '🎁', '⭐'];
 
 function contentCardHTML(c, big = false) {
+  const locked = Boolean(c.locked);
   const thumb = c.image
-    ? `<span class="content-thumb"><img src="${esc(c.image)}" alt="${esc(c.title)}" /></span>`
-    : `<span class="content-thumb is-blank"><span>${esc((c.title || '内').trim().slice(0, 1))}</span></span>`;
+    ? `<span class="content-thumb ${locked ? 'is-locked' : ''}"><img src="${esc(c.image)}" alt="${esc(c.title)}" /></span>`
+    : `<span class="content-thumb is-blank"><span>${locked ? '🔒' : esc((c.title || '内').trim().slice(0, 1))}</span></span>`;
+  // 会员专享：非会员只给标题和配图，正文不下发（服务端已抹掉 desc）
+  const descHTML = locked
+    ? `<span class="content-desc is-locked">会员专享内容，开通会员后查看全文</span>`
+    : c.desc
+      ? `<span class="content-desc">${esc(c.desc)}</span>`
+      : '';
   const body = `
     ${thumb}
     <span class="content-main">
-      <span class="content-title">${esc(c.title)}${c.tag ? `<span class="tag tag-blue">${esc(c.tag)}</span>` : ''}</span>
-      ${c.desc ? `<span class="content-desc">${esc(c.desc)}</span>` : ''}
+      <span class="content-title">${esc(c.title)}${
+        locked ? '<span class="tag tag-gold">会员专享</span>' : c.tag ? `<span class="tag tag-blue">${esc(c.tag)}</span>` : ''
+      }</span>
+      ${descHTML}
     </span>`;
-  const cls = 'content-card' + (big ? ' is-big' : '');
+  const cls = 'content-card' + (big ? ' is-big' : '') + (locked ? ' is-locked' : '');
+  if (locked) {
+    return `<button class="${cls}" data-act="locked-content">${body}</button>`;
+  }
   if (c.link) {
     return `<a class="${cls}" href="${esc(c.link)}" target="_blank" rel="noopener noreferrer">${body}</a>`;
   }
@@ -385,13 +397,15 @@ function renderHome() {
         ? `<div class="goods-grid">${goods
             .map(
               (p, i) => `
-        <button class="goods-card" data-act="buy" data-id="${esc(p.id)}">
+        <button class="goods-card${p.memberOnly && !viewerIsMember() ? ' is-locked' : ''}" data-act="buy" data-id="${esc(p.id)}">
+          ${p.memberOnly ? '<span class="goods-badge">会员专享</span>' : ''}
           <span class="goods-emoji">${GOODS_ICONS[i % GOODS_ICONS.length]}</span>
           <span class="goods-name">${esc(p.title)}</span>
           ${p.desc ? `<span class="goods-desc">${esc(p.desc)}</span>` : ''}
           <span class="goods-foot">
-            <b>${yuan(p.amount)}</b>
-            <em>${esc(p.tag || '购买')}</em>
+            <b>${yuan(memberPriceOf(p))}</b>
+            ${Number(p.memberPrice) > 0 ? `<s>${yuan(p.amount)}</s>` : ''}
+            <em>${esc(p.memberOnly && !viewerIsMember() ? '开通会员' : p.tag || '购买')}</em>
           </span>
         </button>`
             )
@@ -547,6 +561,42 @@ function mineOrderList(orders) {
 /** 会员是否生效 */
 function isMemberActive(v) {
   return Boolean(v && v.memberExpire && v.memberExpire > Date.now());
+}
+
+/** 当前登录用户是否会员（门禁只看服务端下发的会员有效期） */
+function viewerIsMember() {
+  return isMemberActive(state.viewer);
+}
+
+/** 展示价：会员且配了会员价就用会员价，否则原价 */
+function memberPriceOf(p) {
+  const mp = Number(p.memberPrice) || 0;
+  if (viewerIsMember() && mp > 0 && mp < p.amount) return mp;
+  return p.amount;
+}
+
+/**
+ * 点「购买」的统一入口：登录校验 → 会员专享门禁 → 进收银台。
+ * 会员商品（送会员天数）本身不受门禁限制，否则非会员永远开不了会员。
+ */
+function startBuy(productId) {
+  if (!state.viewer) {
+    closeSheet();
+    state.tab = 'mine';
+    render();
+    toast('请先登录再下单');
+    return;
+  }
+  const p = state.products.find((x) => x.id === productId);
+  if (!p) return toast('商品不存在或已下架');
+  if (p.memberOnly && Number(p.memberDays) === 0 && !viewerIsMember()) {
+    toast('该商品为会员专享，开通会员后即可购买');
+    return memberSheet();
+  }
+  sheetState.type = 'confirm';
+  sheetState.product = { ...p, amount: memberPriceOf(p) };
+  sheetState.channel = channelList()[0].id;
+  confirmSheet();
 }
 
 /** 「我的」页会员卡：生效中显示到期时间，否则引导开通 */
@@ -1538,21 +1588,21 @@ view.addEventListener('click', async (e) => {
   if (act === 'share-qr') return shareQrSheet();
 
   if (act === 'open-member') return memberSheet();
+  if (act === 'locked-content') {
+    if (!state.viewer) {
+      state.tab = 'mine';
+      render();
+      return toast('登录并开通会员后可查看全文');
+    }
+    toast('会员专享内容，开通会员后查看全文');
+    return memberSheet();
+  }
   if (act === 'toggle-autorenew') return toggleAutoRenew();
   if (act === 'open-balance') return balanceSheet();
 
   if (act === 'buy') {
-    if (!state.viewer) {
-      state.tab = 'mine';
-      render();
-      return toast('请先登录再下单');
-    }
-    const p = state.products.find((x) => x.id === el.dataset.id);
-    if (!p) return;
-    sheetState.type = 'confirm';
-    sheetState.product = p;
-    sheetState.channel = channelList()[0].id;
-    confirmSheet();
+    startBuy(el.dataset.id);
+    return;
   }
 
   if (act === 'open-orders') return ordersSheet();
@@ -1571,18 +1621,7 @@ sheetEl.addEventListener('click', async (e) => {
   const act = el.dataset.act;
 
   if (act === 'buy') {
-    if (!state.viewer) {
-      closeSheet();
-      state.tab = 'mine';
-      render();
-      return toast('请先登录再下单');
-    }
-    const p = state.products.find((x) => x.id === el.dataset.id);
-    if (!p) return toast('商品不存在或已下架');
-    sheetState.type = 'confirm';
-    sheetState.product = p;
-    sheetState.channel = channelList()[0].id;
-    confirmSheet();
+    startBuy(el.dataset.id);
     return;
   }
 
