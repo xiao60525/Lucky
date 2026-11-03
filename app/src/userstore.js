@@ -107,9 +107,16 @@ function normalizeProfile(row) {
     coupons: Array.isArray(row.coupons) ? row.coupons : [],
     address: row.address && typeof row.address === 'object' ? row.address : {},
     avatar: row.avatar || null,
+    memberLevel: row.member_level || null,
+    memberExpire: row.member_expire ? new Date(row.member_expire).getTime() : null,
     createdAt: row.created_at ? new Date(row.created_at).getTime() : null,
     lastLoginAt: row.last_login_at ? new Date(row.last_login_at).getTime() : null,
   };
+}
+
+/** 会员是否有效（到期时间晚于当前） */
+function isMember(profile) {
+  return Boolean(profile && profile.memberLevel && profile.memberExpire && profile.memberExpire > Date.now());
 }
 
 /** 注册：手机号唯一，返回 {profile, token} */
@@ -191,6 +198,18 @@ async function getUser(userId) {
   };
 }
 
+/** 开通/续费会员：p_days 为购买商品配置的天数，返回新的到期时间戳（ms），失败返回 null */
+async function grantMember(userId, days) {
+  const data = await call('app_user_grant_member', { p_secret: secret, p_id: userId, p_days: Number(days) }, '开通会员');
+  return data ? new Date(data).getTime() : null;
+}
+
+/** 后台取消会员：清空等级与到期时间 */
+async function revokeMember(userId) {
+  await call('app_user_revoke_member', { p_secret: secret, p_id: userId }, '取消会员');
+  return true;
+}
+
 /** 改资料（昵称 / 收货地址） */
 async function updateProfile(userId, patch) {
   const row = await call('app_user_update', { p_secret: secret, p_id: userId, p_patch: patch }, '保存');
@@ -252,6 +271,9 @@ module.exports = {
   getUser,
   getUserBalance,
   adjustUserBalance,
+  grantMember,
+  revokeMember,
+  isMember,
   updateProfile,
   changePassword,
   listUsers,

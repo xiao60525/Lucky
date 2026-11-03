@@ -549,8 +549,59 @@ function mineOrderList(orders) {
 }
 
 /** 已登录：头像 / 昵称 / 手机号 / 余额 / 积分 / 优惠券 / 地址 / 订单 / 分享 / 设置 */
-function renderUserCenter() {
-  const v = state.viewer;
+/** 会员是否生效 */
+function isMemberActive(v) {
+  return Boolean(v && v.memberExpire && v.memberExpire > Date.now());
+}
+
+/** 「我的」页会员卡：生效中显示到期时间，否则引导开通 */
+function memberBannerHTML(v) {
+  const active = isMemberActive(v);
+  const hasGoods = state.products.some((p) => Number(p.memberDays) > 0);
+  const expire = active ? new Date(v.memberExpire).toLocaleDateString('zh-CN') : '';
+  const daysLeft = active ? Math.max(1, Math.ceil((v.memberExpire - Date.now()) / 86400000)) : 0;
+  return `
+    <button class="member-card ${active ? 'is-member' : ''}" data-act="open-member">
+      <span class="member-crown">👑</span>
+      <span class="member-main">
+        <b>${active ? '会员生效中' : hasGoods ? '开通会员' : '会员中心'}</b>
+        <i>${active ? `有效期至 ${expire} · 剩 ${daysLeft} 天` : hasGoods ? '专属权益 · 点此开通' : '敬请期待'}</i>
+      </span>
+      <span class="member-arrow">›</span>
+    </button>`;
+}
+
+/** 会员中心弹层：展示会员商品，点击直接走支付流程 */
+function memberSheet() {
+  const active = isMemberActive(state.viewer);
+  const goods = state.products.filter((p) => Number(p.memberDays) > 0);
+  openSheet(`
+    <h3>会员中心</h3>
+    <div class="member-status ${active ? 'on' : ''}">
+      <b>${active ? '👑 会员生效中' : '当前不是会员'}</b>
+      <i>${active ? `有效期至 ${new Date(state.viewer.memberExpire).toLocaleDateString('zh-CN')}` : '开通后立享会员专属权益'}</i>
+    </div>
+    ${
+      goods.length
+        ? `<div class="member-goods">${goods
+            .map(
+              (p) => `
+        <div class="member-item">
+          <span class="member-item-main">
+            <b>${esc(p.title)}</b>
+            <i>送 ${p.memberDays} 天会员${p.desc ? ' · ' + esc(p.desc) : ''}</i>
+          </span>
+          <button class="member-buy" data-act="buy" data-id="${esc(p.id)}">¥${(p.amount / 100).toFixed(2)}</button>
+        </div>`
+            )
+            .join('')}</div>`
+        : '<p class="sheet-sub">商家还没有上架会员商品，敬请期待</p>'
+    }
+    <p class="cashier-note">购买会员商品支付成功后自动开通，重复购买到期时间自动顺延</p>
+  `);
+}
+
+function renderUserCenter() {  const v = state.viewer;
   const addr = v.address || {};
   const orders = v.orders || [];
   const coupons = v.coupons || [];
@@ -580,6 +631,8 @@ function renderUserCenter() {
         <div class="stat"><b>${coupons.length}</b><span>优惠券</span></div>
       </div>
     </div>
+
+    ${memberBannerHTML(v)}
 
     <div class="section-head">
       <h2>收货地址</h2>
@@ -1147,6 +1200,9 @@ async function doPay() {
 }
 
 function showSuccess(order) {
+  // 会员商品支付成功后，静默刷新一次用户信息，让会员状态立即生效
+  const p = state.products.find((x) => x.id === order.productId);
+  if (p && Number(p.memberDays) > 0) refreshMe().catch(() => {});
   sheetState.type = 'success';
   openSheet(`
     <div class="success-wrap">
@@ -1317,6 +1373,8 @@ view.addEventListener('click', async (e) => {
     setTimeout(() => location.reload(), 700);
     return;
   }
+
+  if (act === 'open-member') return memberSheet();
 
   if (act === 'buy') {
     if (!state.viewer) {

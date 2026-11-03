@@ -430,6 +430,69 @@ button { font-family: inherit; border: 0; background: none; cursor: pointer; col
 .profile-name { font-size: 16px; font-weight: 700; }
 .profile-sub { font-size: 12px; color: var(--muted); margin-top: 2px; }
 
+/* ---------------- 会员 ---------------- */
+.member-card {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  margin-top: 12px;
+  padding: 13px 16px;
+  border-radius: 14px;
+  border: 0;
+  text-align: left;
+  background: #f5f6fb;
+  color: #6b6f80;
+  cursor: pointer;
+}
+.member-card.is-member {
+  background: linear-gradient(120deg, #3b3425, #6b5a2e 55%, #8a6d35);
+  color: #f7ecd2;
+  box-shadow: 0 6px 18px rgba(138, 109, 53, 0.28);
+}
+.member-crown { font-size: 22px; flex: 0 0 auto; }
+.member-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.member-main b { font-size: 14.5px; font-weight: 700; }
+.member-main i { font-style: normal; font-size: 11.5px; opacity: 0.75; }
+.member-arrow { font-size: 20px; opacity: 0.5; flex: 0 0 auto; }
+
+.member-status {
+  display: flex; flex-direction: column; gap: 3px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  background: #f5f6fb;
+  margin-bottom: 12px;
+}
+.member-status b { font-size: 14.5px; }
+.member-status i { font-style: normal; font-size: 12px; color: var(--muted); }
+.member-status.on {
+  background: linear-gradient(120deg, #3b3425, #6b5a2e 55%, #8a6d35);
+  color: #f7ecd2;
+}
+.member-status.on i { color: rgba(247, 236, 210, 0.75); }
+
+.member-goods { display: flex; flex-direction: column; gap: 8px; }
+.member-item {
+  display: flex; align-items: center; gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.member-item-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.member-item-main b { font-size: 14px; font-weight: 600; }
+.member-item-main i { font-style: normal; font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.member-buy {
+  flex: 0 0 auto;
+  border: 0;
+  background: linear-gradient(120deg, #6b5a2e, #a3833f);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
 .balance {
   margin-top: 16px;
   background: #f7f8fc;

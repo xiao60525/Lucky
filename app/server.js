@@ -155,7 +155,14 @@ async function refreshProducts() {
   const all = await store.adminListProducts();
   db.products = all
     .filter((p) => p.active)
-    .map(({ id, title, desc, amount, tag }) => ({ id, title, desc, amount, tag }));
+    .map(({ id, title, desc, amount, tag, memberDays }) => ({
+      id,
+      title,
+      desc,
+      amount,
+      tag,
+      memberDays: Number(memberDays) || 0,
+    }));
   return all;
 }
 
@@ -225,6 +232,9 @@ async function publicViewer(userId) {
     coupons: p.coupons,
     address: p.address,
     balance: data.balance,
+    memberLevel: p.memberLevel || null,
+    memberExpire: p.memberExpire || null,
+    isMember: users.isMember(p),
     createdAt: p.createdAt,
     orders: data.orders.map((o) => ({
       id: o.id,
@@ -495,6 +505,23 @@ function settleOrder(order, source) {
   return { ok: true };
 }
 
+/** 会员权益：会员商品（memberDays > 0）支付成功后自动开通/续费会员 */
+async function grantMembershipForOrder(order) {
+  if (!users.enabled || !order.userId || order.status !== 'paid') return null;
+  const p = db.products.find((x) => x.id === order.productId);
+  const days = p ? Number(p.memberDays || 0) : 0;
+  if (!days) return null;
+  try {
+    const expire = await users.grantMember(order.userId, days);
+    console.log(`[member] 订单 ${order.id} 开通会员 ${days} 天 -> 到期 ${expire ? new Date(expire).toLocaleString() : '-'}`);
+    return expire;
+  } catch (e) {
+    // 入账已完成，会员开通失败只记日志，不影响支付结果
+    console.error('[member] 会员开通失败（订单已入账）:', order.id, e.message);
+    return null;
+  }
+}
+
 /**
  * 主动同步：向支付宝查单，确认已付款就入账。
  * 异步通知可能延迟/丢失（公司网络、网关限流、notify_url 未生效等），
@@ -527,6 +554,7 @@ async function syncOrderFromChannel(order, { force = false } = {}) {
     order.transactionId = q.trade_no || q.tradeNo || order.transactionId || null;
     settleOrder(order, 'query');
     await persistOrder(order);
+    await grantMembershipForOrder(order);
     console.log(`[sync] 订单 ${order.id} 主动查单确认已支付，交易号 ${order.transactionId || '-'}`);
     return { order, checked: true, paid: true, tradeStatus };
   } catch (e) {
@@ -1080,6 +1108,7 @@ async function handleApi(req, res, url) {
         await users.adjustUserBalance(uid, order.amount).catch(() => {});
         return sendJSON(res, 502, { message: '云端写入失败：' + e.message });
       }
+      await grantMembershipForOrder(order);
       return sendJSON(res, 200, { mode: 'balance', order: publicOrder(order), balance: newBalance });
     }
 
@@ -1198,6 +1227,7 @@ async function handleApi(req, res, url) {
     order.transactionId = params.trade_no || null;
     const result = settleOrder(order, 'notify');
     await persistOrder(order);
+    await grantMembershipForOrder(order);
     console.log(
       `[notify/alipay] 订单 ${order.id} -> ${order.status}${result.duplicate ? '（重复通知，已幂等处理）' : ''} 支付宝交易号 ${params.trade_no || '-'}`
     );
@@ -1225,6 +1255,7 @@ async function handleApi(req, res, url) {
           order.transactionId = q.trade_no || null;
           settleOrder(order, 'query');
           await persistOrder(order);
+          await grantMembershipForOrder(order);
           paid = true;
           console.log(`[alipay/return] 订单 ${order.id} 查询确认已支付`);
         } else if (!order) {
@@ -1275,6 +1306,7 @@ async function handleApi(req, res, url) {
       order.transactionId = data.transaction_id;
       const result = settleOrder(order, 'notify');
       await persistOrder(order);
+      await grantMembershipForOrder(order);
       console.log(
         `[notify/wechat] 订单 ${order.id} -> ${order.status}${
           result.duplicate ? '（重复通知，已幂等处理）' : ''
@@ -1304,6 +1336,7 @@ async function handleApi(req, res, url) {
 
     const result = settleOrder(order, 'notify');
     await persistOrder(order);
+    await grantMembershipForOrder(order);
     console.log(`[notify] 订单 ${order.id} -> ${order.status}${result.duplicate ? '（重复回调，已幂等处理）' : ''}`);
     return sendJSON(res, 200, { code: 'SUCCESS', message: 'OK' });
   }
@@ -1501,6 +1534,9 @@ async function handleApi(req, res, url) {
           nickname: u.nickname || '',
           points: Number(u.points || 0),
           balance: Number(u.balance || 0),
+          memberLevel: u.member_level || null,
+          memberExpire: u.member_expire ? new Date(u.member_expire).getTime() : null,
+          isMember: Boolean(u.member_expire && new Date(u.member_expire).getTime() > Date.now()),
           source: 'web',
           createdAt: u.created_at ? new Date(u.created_at).getTime() : null,
           lastLoginAt: u.last_login_at ? new Date(u.last_login_at).getTime() : null,
@@ -1659,6 +1695,7 @@ async function handleApi(req, res, url) {
           tag: String(body.tag || '').trim().slice(0, 10),
           sort: Number.isInteger(body.sort) ? body.sort : 99,
           active: body.active !== false,
+          memberDays: Math.max(0, Math.floor(Number(body.memberDays)) || 0),
         });
         await refreshProducts();
         return sendJSON(res, 200, { product: saved });
@@ -1751,6 +1788,36 @@ async function handleApi(req, res, url) {
         order: publicOrder(order),
         balance: result && result.balance != null ? result.balance : db.user.balance,
       });
+    }
+
+    // 会员管理：开通 / 续费（天数累加，重复操作安全）
+    if (pathname === '/api/admin/member/grant' && method === 'POST') {
+      const body = await readBody(req);
+      if (!users.enabled) return sendJSON(res, 501, { message: '未接入用户云库，无法管理会员' });
+      const days = Math.floor(Number(body.days));
+      if (!body.userId || !Number.isFinite(days) || days <= 0) {
+        return sendJSON(res, 400, { message: '参数错误：需要 userId 和大于 0 的天数' });
+      }
+      if (days > 3650) return sendJSON(res, 400, { message: '单次最多 3650 天' });
+      try {
+        const expire = await users.grantMember(body.userId, days);
+        return sendJSON(res, 200, { ok: true, expire });
+      } catch (e) {
+        return sendJSON(res, 502, { message: '开通失败：' + e.message });
+      }
+    }
+
+    // 会员管理：取消会员
+    if (pathname === '/api/admin/member/revoke' && method === 'POST') {
+      const body = await readBody(req);
+      if (!users.enabled) return sendJSON(res, 501, { message: '未接入用户云库，无法管理会员' });
+      if (!body.userId) return sendJSON(res, 400, { message: '缺少 userId' });
+      try {
+        await users.revokeMember(body.userId);
+        return sendJSON(res, 200, { ok: true });
+      } catch (e) {
+        return sendJSON(res, 502, { message: '取消失败：' + e.message });
+      }
     }
 
     // 关闭未支付订单

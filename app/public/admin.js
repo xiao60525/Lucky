@@ -114,7 +114,7 @@ function render() {
     $('#app').innerHTML = '<p class="muted" style="text-align:center;margin-top:80px">加载中…</p>';
     return;
   }
-  const tabs = { overview: '概览', products: '商品', contents: '首页内容', orders: '订单', users: '用户', site: '外观', pay: '支付' };
+  const tabs = { overview: '概览', products: '商品', members: '会员', contents: '首页内容', orders: '订单', users: '用户', site: '外观', pay: '支付' };
   $('#app').innerHTML = `
     <header class="bar">
       <h1>管理后台</h1>
@@ -127,7 +127,7 @@ function render() {
     <div id="panel"></div>`;
   document.querySelectorAll('.tabs button').forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; render(); }));
   $('#logoutBtn').onclick = () => { state.token = ''; sessionStorage.removeItem('admin_token'); render(); };
-  ({ overview: renderOverview, products: renderProducts, contents: renderContents, orders: renderOrders, users: renderUsers, site: renderSite, pay: renderPay })[state.tab]();
+  ({ overview: renderOverview, products: renderProducts, members: renderMembers, contents: renderContents, orders: renderOrders, users: renderUsers, site: renderSite, pay: renderPay })[state.tab]();
 }
 
 function renderOverview() {
@@ -296,6 +296,7 @@ function renderProducts() {
         <div><label>角标（如：热卖）</label><input id="f-tag" maxlength="10" /></div>
         <div><label>排序（小在前）</label><input id="f-sort" type="number" value="99" /></div>
         <div><label>状态</label><select id="f-active"><option value="1">上架</option><option value="0">下架</option></select></div>
+        <div><label>会员天数（0=普通商品）</label><input id="f-memberdays" type="number" min="0" step="1" value="0" placeholder="如 30" /></div>
         <div class="full"><label>描述</label><input id="f-desc" /></div>
       </div>
       <div class="row-actions">
@@ -306,12 +307,13 @@ function renderProducts() {
     <div class="card">
       <h3>全部商品（${ps.length}）</h3>
       ${ps.length
-        ? `<table><thead><tr><th>ID</th><th>名称</th><th>价格</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${ps
+        ? `<table><thead><tr><th>ID</th><th>名称</th><th>价格</th><th>会员</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${ps
             .map(
               (p) => `<tr>
             <td style="font-family:monospace;font-size:12px">${p.id}</td>
             <td>${p.title}${p.tag ? ` <span class="muted">·${p.tag}</span>` : ''}</td>
             <td>¥${yuan(p.amount)}</td>
+            <td>${Number(p.memberDays) > 0 ? `<span class="tag tag-green">送 ${p.memberDays} 天</span>` : '<span class="muted">—</span>'}</td>
             <td class="muted">${p.sort}</td>
             <td>${p.active ? '<span class="tag paid">上架</span>' : '<span class="tag off">下架</span>'}</td>
             <td style="white-space:nowrap">
@@ -338,6 +340,7 @@ function fillForm(p) {
   $('#f-tag').value = p ? p.tag || '' : '';
   $('#f-sort').value = p ? p.sort : 99;
   $('#f-active').value = p && p.active === false ? '0' : '1';
+  $('#f-memberdays').value = p ? Number(p.memberDays) || 0 : 0;
   $('#f-desc').value = p ? p.desc || '' : '';
 }
 
@@ -358,6 +361,7 @@ async function saveProduct() {
         tag: $('#f-tag').value.trim(),
         sort: parseInt($('#f-sort').value, 10) || 99,
         active: $('#f-active').value === '1',
+        memberDays: Math.max(0, parseInt($('#f-memberdays').value, 10) || 0),
       }),
     });
     toast('已保存');
@@ -728,6 +732,100 @@ function renderUsers() {
       box.innerHTML = notReady
         ? `<p class="muted">未接入小程序云库。在 <code>app/.env</code> 填好 MP_CLOUD_ENDPOINT / MP_CLOUD_PUBLISHABLE_KEY / MP_CLOUD_SECRET 后重启即可。</p>`
         : `<p style="color:var(--bad);font-size:13px">读取失败：${e.message}</p>`;
+    });
+}
+
+/* ---------------- 会员管理 ---------------- */
+
+function memberBadge(u) {
+  if (u.isMember) {
+    const d = u.memberExpire ? new Date(u.memberExpire) : null;
+    const left = d ? Math.ceil((d.getTime() - Date.now()) / 86400000) : 0;
+    const soon = left <= 7 ? 'tag-orange' : 'tag-green';
+    return `<span class="tag ${soon}">会员 · 剩 ${left} 天</span><div class="muted" style="font-size:11.5px;margin-top:2px">${d ? fmtTime(d.getTime()) : ''}</div>`;
+  }
+  return '<span class="muted">—</span>';
+}
+
+function renderMembers() {
+  $('#panel').innerHTML = `
+    <div class="card">
+      <h3>会员管理</h3>
+      <p class="muted" style="font-size:12.5px;margin:0 0 12px">
+        用户在手机端购买「会员商品」（商品里配置了会员天数）后自动开通；这里可以手工开通 / 续费 / 取消。
+        续费天数会累加到现有到期时间上。商品在 <b>商品</b> 页设置「会员天数」。
+      </p>
+      <div id="memberTable"><p class="muted">加载中…</p></div>
+    </div>`;
+
+  api('/api/admin/users')
+    .then((r) => {
+      const box = $('#memberTable');
+      if (!box) return;
+      const list = r.users || [];
+      const web = list.filter((u) => u.source === 'web');
+      const members = web.filter((u) => u.isMember);
+      const soon = members.filter((u) => u.memberExpire && u.memberExpire - Date.now() < 7 * 86400000);
+      box.innerHTML = `
+        <div class="ostat-row">
+          <div class="ostat"><b>${members.length}</b><span>生效会员</span></div>
+          <div class="ostat ${soon.length ? 'warn' : ''}"><b>${soon.length}</b><span>7 天内到期</span></div>
+          <div class="ostat"><b>${web.length}</b><span>注册用户</span></div>
+        </div>
+        ${
+          web.length
+            ? `<table><thead><tr><th>手机号</th><th>昵称</th><th>会员状态</th><th>余额</th><th>订单数</th><th>操作</th></tr></thead><tbody>${web
+                .map(
+                  (u) => `<tr>
+                <td style="font-family:monospace;font-size:13px">${u.phone || '<span class="muted">未绑定</span>'}</td>
+                <td>${u.nickname || '<span class="muted">—</span>'}</td>
+                <td>${memberBadge(u)}</td>
+                <td>¥${yuan(u.balance || 0)}</td>
+                <td>${u.orderCount || 0}</td>
+                <td style="white-space:nowrap">
+                  <button class="op" data-mgrant="${u.id}" data-name="${esc(u.nickname || u.phone)}">开通/续费</button>
+                  ${u.isMember ? `<button class="op danger" data-mrevoke="${u.id}" data-name="${esc(u.nickname || u.phone)}">取消</button>` : ''}
+                </td>
+              </tr>`
+                )
+                .join('')}</tbody></table>`
+            : '<p class="muted">还没有网页版注册用户。</p>'
+        }`;
+
+      document.querySelectorAll('[data-mgrant]').forEach((b) => {
+        b.onclick = async () => {
+          const input = prompt(`给「${b.dataset.name}」开通/续费多少天会员？\n（30=月卡 90=季卡 365=年卡，会累加到当前到期时间）`, '30');
+          if (input === null) return;
+          const days = parseInt(input, 10);
+          if (!Number.isFinite(days) || days <= 0) return toast('请输入大于 0 的天数');
+          try {
+            const r = await api('/api/admin/member/grant', {
+              method: 'POST',
+              body: JSON.stringify({ userId: b.dataset.mgrant, days }),
+            });
+            toast('已开通，到期 ' + (r.expire ? fmtTime(new Date(r.expire).getTime()) : '成功'));
+            renderMembers();
+          } catch (e) {
+            toast(e.message);
+          }
+        };
+      });
+      document.querySelectorAll('[data-mrevoke]').forEach((b) => {
+        b.onclick = async () => {
+          if (!confirm(`确定取消「${b.dataset.name}」的会员？用户端立即失效。`)) return;
+          try {
+            await api('/api/admin/member/revoke', { method: 'POST', body: JSON.stringify({ userId: b.dataset.mrevoke }) });
+            toast('已取消会员');
+            renderMembers();
+          } catch (e) {
+            toast(e.message);
+          }
+        };
+      });
+    })
+    .catch((e) => {
+      const box = $('#memberTable');
+      if (box) box.innerHTML = `<p style="color:var(--bad);font-size:13px">读取失败：${e.message}</p>`;
     });
 }
 

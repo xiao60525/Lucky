@@ -83,6 +83,7 @@ async function getState() {
       desc: p.description,
       amount: p.amount,
       tag: p.tag,
+      memberDays: Number(p.member_days) || 0,
     })),
   };
 }
@@ -146,6 +147,7 @@ function productRow(p) {
     tag: p.tag,
     sort: p.sort,
     active: p.active,
+    memberDays: Number(p.member_days) || 0,
   };
 }
 
@@ -169,6 +171,7 @@ async function adminUpsertProduct(p) {
         tag: p.tag,
         sort: p.sort,
         active: p.active,
+        memberDays: Number(p.memberDays) || 0,
       },
     },
     '保存商品'
