@@ -809,11 +809,11 @@ function renderUserCenter() {  const v = state.viewer;
 
     <div class="section-head"><h2>设置</h2></div>
     <div class="card set-list">
-      <button class="set-row" data-act="change-password"><span>修改密码</span><i>›</i></button>
-      <button class="set-row" data-act="refresh"><span>刷新数据</span><i>›</i></button>
-      <button class="set-row" data-act="clear-cache"><span>清除缓存</span><i>›</i></button>
-      <button class="set-row" data-act="about"><span>关于</span><i>›</i></button>
-      <button class="set-row danger" data-act="logout"><span>退出登录</span><i>›</i></button>
+      <button class="set-row" data-act="settings">
+        <span>设置中心</span>
+        <i style="font-size:12px;color:var(--muted)">${isDark() ? '深色模式开 · ' : ''}账号安全 / 外观 / 通用</i>
+        <i>›</i>
+      </button>
     </div>
     <p class="mine-foot">${esc(v.phoneMasked)} · 注册于 ${v.createdAt ? new Date(v.createdAt).toLocaleDateString('zh-CN') : '--'}</p>
   `;
@@ -1060,6 +1060,66 @@ function logout() {
   state.balance = 0; // 游客没有余额概念，避免残留上一个用户的数字
   toast('已退出登录');
   render();
+}
+
+/* ---------------- 设置中心 ---------------- */
+
+const DARK_KEY = 'dark_mode';
+
+/** 当前是否深色模式 */
+function isDark() {
+  try {
+    return window.document.body.classList.contains('dark');
+  } catch (e) {
+    return false;
+  }
+}
+
+/** 应用/取消深色模式并记忆 */
+function applyDark(on) {
+  try {
+    window.document.body.classList.toggle('dark', Boolean(on));
+    localStorage.setItem(DARK_KEY, on ? '1' : '0');
+  } catch (e) {
+    /* 隐私模式等场景下静默失败 */
+  }
+}
+
+/** 估算本地缓存占用（localStorage） */
+function localStorageSize() {
+  try {
+    let n = 0;
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      n += (String(k).length + String(localStorage.getItem(k) || '').length) * 2;
+    }
+    return n > 1024 ? (n / 1024).toFixed(1) + ' KB' : n + ' B';
+  } catch (e) {
+    return '';
+  }
+}
+
+/** 设置中心弹层：账号安全 / 外观 / 通用 / 其他 */
+function settingsSheet() {
+  const dark = isDark();
+  openSheet(`
+    <h3 class="sheet-title">设置</h3>
+    <p class="sheet-group">账号与安全</p>
+    <button class="set-row" data-act="change-password"><span>修改密码</span><i>›</i></button>
+    <button class="set-row" data-act="edit-address"><span>收货地址</span><i>›</i></button>
+    <p class="sheet-group">外观</p>
+    <button class="set-row" data-act="toggle-dark">
+      <span>深色模式</span>
+      <span class="switch ${dark ? 'on' : ''}"><span class="knob"></span></span>
+    </button>
+    <p class="sheet-group">通用</p>
+    <button class="set-row" data-act="refresh"><span>刷新数据</span><i>›</i></button>
+    <button class="set-row" data-act="clear-cache"><span>清除缓存</span><i style="font-size:12px;color:var(--muted)">${localStorageSize()}</i></button>
+    <p class="sheet-group">其他</p>
+    <button class="set-row" data-act="about"><span>关于</span><i>›</i></button>
+    <button class="set-row danger" data-act="logout"><span>退出登录</span><i>›</i></button>
+    <button class="btn-ghost" data-act="close" style="margin-top:14px">关闭</button>
+  `);
 }
 
 /* ---------------- 渲染入口 ---------------- */
@@ -1472,30 +1532,10 @@ view.addEventListener('click', async (e) => {
     return render();
   }
   if (act === 'edit-address') return addressSheet();
-  if (act === 'change-password') return passwordSheet();
-  if (act === 'about') return aboutSheet();
+  if (act === 'settings') return settingsSheet();
   if (act === 'share-copy') return doShareCopy();
   if (act === 'share-more') return doShareMore();
   if (act === 'share-qr') return shareQrSheet();
-  if (act === 'refresh') {
-    toast('刷新中…');
-    await refreshMe();
-    return toast('已刷新');
-  }
-  if (act === 'clear-cache') {
-    try {
-      localStorage.clear();
-    } catch (err) {
-      /* ignore */
-    }
-    if (window.caches) {
-      const keys = await caches.keys();
-      await Promise.all(keys.map((k) => caches.delete(k)));
-    }
-    toast('缓存已清除，正在刷新');
-    setTimeout(() => location.reload(), 700);
-    return;
-  }
 
   if (act === 'open-member') return memberSheet();
   if (act === 'toggle-autorenew') return toggleAutoRenew();
@@ -1525,7 +1565,7 @@ view.addEventListener('click', async (e) => {
 });
 
 sheetEl.addEventListener('click', async (e) => {
-  
+
   const el = e.target.closest('[data-act]');
   if (!el) return;
   const act = el.dataset.act;
@@ -1544,6 +1584,41 @@ sheetEl.addEventListener('click', async (e) => {
     sheetState.channel = channelList()[0].id;
     confirmSheet();
     return;
+  }
+
+  /* 设置中心 */
+  if (act === 'toggle-dark') {
+    applyDark(!isDark());
+    return settingsSheet(); // 重绘开关状态
+  }
+  if (act === 'change-password') return passwordSheet();
+  if (act === 'edit-address') return addressSheet();
+  if (act === 'about') return aboutSheet();
+  if (act === 'refresh') {
+    closeSheet();
+    toast('刷新中…');
+    await refreshMe();
+    return toast('已刷新');
+  }
+  if (act === 'clear-cache') {
+    const dark = isDark();
+    try {
+      localStorage.clear();
+    } catch (err) {
+      /* ignore */
+    }
+    if (window.caches) {
+      const keys = await caches.keys();
+      await Promise.all(keys.map((k) => caches.delete(k)));
+    }
+    if (dark) applyDark(true); // 清缓存后保住深色模式偏好
+    toast('缓存已清除，正在刷新');
+    setTimeout(() => location.reload(), 700);
+    return;
+  }
+  if (act === 'logout') {
+    closeSheet();
+    return logout();
   }
 
   if (act === 'channel') {
@@ -1826,6 +1901,13 @@ async function pollOrder(orderId, tries = 12, interval = 450) {
   const returnOrderId = q.get('orderId');
   const result = q.get('result');
   const cycleBack = q.get('cycle') === 'signed';
+
+  // 恢复用户上次选择的深色模式（不依赖登录态，纯本地记忆）
+  try {
+    applyDark(localStorage.getItem(DARK_KEY) === '1');
+  } catch (e) {
+    /* ignore */
+  }
 
   try {
     await bootstrap();

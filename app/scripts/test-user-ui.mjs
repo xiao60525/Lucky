@@ -243,13 +243,7 @@ $('[data-act="open-orders"]').dispatchEvent(new window.MouseEvent('click', { bub
 await wait(40);
 check('订单列表', window.document.querySelectorAll('.sheet .order-row').length === 2, text('.sheet .order-title'));
 check('分享区存在', !!$('[data-act="share-copy"]') && !!$('[data-act="share-more"]') && !!$('[data-act="share-qr"]'));
-const setRows = [...window.document.querySelectorAll('.set-row')].map((e) => e.textContent.trim());
-check('设置项 5 条', setRows.length === 5, setRows.join(' | '));
-check(
-  '设置项内容正确',
-  ['修改密码', '刷新数据', '清除缓存', '关于', '退出登录'].every((k, i) => setRows[i].includes(k)),
-  setRows.join(' | ')
-);
+check('设置中心入口存在', Boolean($('[data-act="settings"]')) && window.document.querySelectorAll('.set-row').length === 1);
 
 // 4b. 「支付中」订单：点进去直接进支付界面，且复用同一笔订单付款
 const pendingRow = [...window.document.querySelectorAll('.sheet .order-row')].find((r) => r.dataset.id === 'O2');
@@ -306,6 +300,24 @@ $('[data-act="save-nickname"]').dispatchEvent(new window.MouseEvent('click', { b
 await wait(80);
 check('昵称已更新到页面', text('.profile-name').includes('新名字'), text('.profile-name'));
 
+// 7b. 设置中心：分组设置项 + 深色模式开关
+$('[data-act="settings"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+const setRows = [...window.document.querySelectorAll('.sheet .set-row')].map((e) => e.textContent.trim());
+check(
+  '设置中心项目齐全',
+  ['修改密码', '收货地址', '深色模式', '刷新数据', '清除缓存', '关于', '退出登录'].every((k) => setRows.some((r) => r.includes(k))),
+  setRows.join(' | ')
+);
+check('设置中心分组标题', window.document.querySelectorAll('.sheet .sheet-group').length === 4, window.document.querySelectorAll('.sheet .sheet-group').length + ' 组');
+$('.sheet [data-act="toggle-dark"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+check('深色模式可开启', window.document.body.classList.contains('dark'));
+check('深色模式已记忆', window.localStorage.getItem('dark_mode') === '1');
+$('.sheet [data-act="toggle-dark"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+check('深色模式可关闭', !window.document.body.classList.contains('dark'));
+
 // 8. 改地址
 $('[data-act="edit-address"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(40);
@@ -316,8 +328,10 @@ $('[data-act="save-address"]').dispatchEvent(new window.MouseEvent('click', { bu
 await wait(80);
 check('地址已更新', text('.addr-name').includes('李四') && text('.addr-detail').includes('上海市'), text('.addr-detail'));
 
-// 9. 改密码校验
-$('[data-act="change-password"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+// 9. 改密码校验（从设置中心进入）
+$('[data-act="settings"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+$('.sheet [data-act="change-password"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(40);
 $('#pwdOld').value = 'test123456';
 $('#pwdNew').value = '123';
@@ -329,15 +343,19 @@ $('[data-act="save-password"]').dispatchEvent(new window.MouseEvent('click', { b
 await wait(60);
 check('改密码成功请求', calls.some((c) => c.path === '/api/auth/password'));
 
-// 10. 关于
-$('[data-act="about"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+// 10. 关于（从设置中心进入）
+$('[data-act="settings"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+$('.sheet [data-act="about"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(40);
 check('关于弹层显示应用名', text('.about-name').includes('手机App支付骨架'), text('.about-name'));
 $('.sheet [data-act="close"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(60);
 
-// 11. 退出登录
-$('[data-act="logout"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+// 11. 退出登录（从设置中心进入）
+$('[data-act="settings"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+$('.sheet [data-act="logout"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(60);
 check('退出后清空令牌', !window.localStorage.getItem('user_token_v1'));
 check('退出后回到登录页', !!$('#authPhone') && !$('.stat-row'));

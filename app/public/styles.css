@@ -1188,3 +1188,49 @@ body {
   cursor: pointer;
 }
 .rchip.on { border-color: var(--accent); color: var(--accent); background: rgba(90, 92, 240, 0.06); }
+
+/* ---------------- 深色模式（设置中心切换，记忆在本地） ---------------- */
+body.dark {
+  --bg: #13151d;
+  --card: #1d202b;
+  --text: #f0f1f6;
+  --muted: #99a0b3;
+  --line: #2b2f3d;
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+  background: #0b0d13;
+}
+body.dark .topbar { background: var(--bg); }
+body.dark .content-card,
+body.dark .cashier-summary,
+body.dark .cashier-channel,
+body.dark .qr-img,
+body.dark .ochip,
+body.dark .mchip { background: var(--card); }
+body.dark .avatar-badge { background: var(--card); }
+body.dark .sheet-handle { background: #343948; }
+body.dark .cashier-body,
+body.dark .cashier { background: #0b0d13; }
+body.dark .field input { background: #161923; color: var(--text); }
+body.dark .field input:focus { background: #161923; }
+body.dark .status.closed { color: #8b91a1; background: #262a36; }
+body.dark .btn-ghost { background: #262a36; color: #aeb4c4; }
+body.dark .btn-cancel { color: #8b91a1; }
+body.dark .addr-detail { color: var(--muted); }
+body.dark .auth-tip,
+body.dark .about-meta { color: #7d8396; }
+body.dark .notice-bar { background: #38301b; border-color: #5a4c26; }
+body.dark .ostat.warn { background: #3a2320; border-color: #5a332c; }
+body.dark .switch { background: #343948; }
+body.dark .autorenew-row.on {
+  border-color: rgba(201, 138, 29, 0.5);
+  background: linear-gradient(135deg, #2b2413, #2a2110);
+}
+
+/* 设置中心的分组标题 */
+.sheet-group {
+  margin: 14px 0 6px;
+  font-size: 11.5px;
+  color: var(--muted);
+  letter-spacing: 0.4px;
+}
+.sheet-group:first-of-type { margin-top: 4px; }
