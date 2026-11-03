@@ -53,6 +53,7 @@ function toMs(ts) {
 function fromRow(row) {
   return {
     id: row.id,
+    userId: row.user_id || null,
     productId: row.product_id,
     title: row.title,
     amount: row.amount,
@@ -89,11 +90,12 @@ async function getState() {
 /** 新建订单 */
 async function insertOrder(order) {
   const row = await call(
-    'app_insert_order',
+    'app_insert_order_user',
     {
       p_secret: secret,
       p_order: {
         id: order.id,
+        user_id: order.userId || null,
         product_id: order.productId,
         title: order.title,
         amount: order.amount,
@@ -187,6 +189,10 @@ function settingsRow(row) {
   return {
     name: row.app_name || '',
     tagline: row.tagline || '',
+    notice: row.notice || '',
+    enableRegister: row.enable_register !== false,
+    showMock: row.show_mock !== false,
+    showBalance: row.show_balance !== false,
     iconMime: row.icon_mime || null,
     iconData: row.icon_data || null,
     iconThumb: row.icon_thumb || null, // 给小程序用的 96px 小图（dataURL）
@@ -205,7 +211,19 @@ async function getSettings() {
  * 保存外观配置
  * p.iconAction: 'keep' 保持原图标 | 'set' 换成新图标 | 'clear' 恢复默认
  */
-async function adminSaveSettings({ name, tagline, iconAction, iconMime, iconData, iconThumb, iconVer }) {
+async function adminSaveSettings({
+  name,
+  tagline,
+  notice,
+  enableRegister,
+  showMock,
+  showBalance,
+  iconAction,
+  iconMime,
+  iconData,
+  iconThumb,
+  iconVer,
+}) {
   const row = await call(
     'app_admin_save_settings',
     {
@@ -213,6 +231,10 @@ async function adminSaveSettings({ name, tagline, iconAction, iconMime, iconData
       p_settings: {
         app_name: name,
         tagline,
+        notice,
+        enable_register: enableRegister === undefined ? null : String(Boolean(enableRegister)),
+        show_mock: showMock === undefined ? null : String(Boolean(showMock)),
+        show_balance: showBalance === undefined ? null : String(Boolean(showBalance)),
         icon_action: iconAction || 'keep',
         icon_mime: iconMime || null,
         icon_data: iconData || null,
@@ -223,6 +245,61 @@ async function adminSaveSettings({ name, tagline, iconAction, iconMime, iconData
     '保存外观配置'
   );
   return settingsRow(row);
+}
+
+/* ---------------- 首页内容（后台可增删改） ---------------- */
+
+function contentRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    title: row.title || '',
+    desc: row.description || '',
+    tag: row.tag || '',
+    image: row.image || null,
+    link: row.link || '',
+    sort: Number(row.sort) || 100,
+    active: row.active !== false,
+    createdAt: toMs(row.created_at),
+  };
+}
+
+/** 前台：只取已上线的内容 */
+async function listContents() {
+  const rows = await call('app_list_contents', { p_secret: secret }, '读取首页内容');
+  return (rows || []).map(contentRow);
+}
+
+/** 后台：含未上线 */
+async function adminListContents() {
+  const rows = await call('app_admin_list_contents', { p_secret: secret }, '读取首页内容');
+  return (rows || []).map(contentRow);
+}
+
+async function adminUpsertContent(c) {
+  const row = await call(
+    'app_admin_upsert_content',
+    {
+      p_secret: secret,
+      p_content: {
+        id: c.id,
+        title: c.title,
+        description: c.desc || '',
+        tag: c.tag || '',
+        image: c.image || null,
+        link: c.link || '',
+        sort: Number(c.sort) || 100,
+        active: c.active !== false,
+      },
+    },
+    '保存首页内容'
+  );
+  return contentRow(row);
+}
+
+async function adminDeleteContent(id) {
+  const row = await call('app_admin_delete_content', { p_secret: secret, p_id: id }, '删除首页内容');
+  return contentRow(row);
 }
 
 /** 健康检查：确认云端连通、密钥有效 */
@@ -244,4 +321,8 @@ module.exports = {
   adminListProducts,
   adminUpsertProduct,
   adminDeleteProduct,
+  listContents,
+  adminListContents,
+  adminUpsertContent,
+  adminDeleteContent,
 };

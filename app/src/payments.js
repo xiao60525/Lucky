@@ -19,6 +19,7 @@ require('./env').loadEnv();
 
 const crypto = require('crypto');
 const { WechatPay } = require('./wechatpay');
+const { Alipay } = require('./alipay');
 
 // 生产环境务必通过环境变量注入，不要硬编码在代码里
 const SECRET = process.env.PAY_SECRET || 'demo-pay-secret-change-me';
@@ -134,13 +135,106 @@ const providers = {
     },
   },
 
-  /** 支付宝（未接入，仅骨架）：alipay.trade.page.pay / trade.create */
+  /**
+   * 支付宝（真实渠道）
+   * 手机浏览器走 alipay.trade.wap.pay（唤起支付宝 App 或 H5 收银台）
+   * 电脑浏览器走 alipay.trade.page.pay（登录支付宝付款）
+   * 配置见 src/alipay.js 顶部注释
+   */
   alipay: {
     id: 'alipay',
     name: '支付宝',
     scene: 'redirect',
-    createPayment() {
-      throw new Error('支付宝未配置：需要 ALIPAY_APP_ID / 应用私钥 / 支付宝公钥证书');
+    isReady() {
+      return !!Alipay.fromEnv();
+    },
+    async createPayment(order, ctx = {}) {
+      const client = Alipay.fromEnv();
+      if (!client) {
+        const missing = Alipay.missingEnv()
+          .map((m) => m.key)
+          .join('、');
+        throw new Error(`支付宝缺少配置：${missing}`);
+      }
+      const ua = ctx.ua || '';
+      const mobile = /Android|iPhone|iPad|iPod|Mobile|HarmonyOS|Windows Phone/i.test(ua);
+      // 电脑网站支付（alipay.trade.page.pay）需要单独签约，未签约时会报
+      // insufficient-isv-permissions；手机网站支付（wap.pay）在电脑上会展示扫码页，
+      // 因此默认统一走 wap，签约了电脑网站支付再设 ALIPAY_PAGE_PAY=1 开启。
+      const allowPagePay = String(process.env.ALIPAY_PAGE_PAY || '') === '1';
+      const payUrl = client.buildPagePayUrl({
+        outTradeNo: order.id,
+        totalAmountFen: order.amount,
+        subject: order.title,
+        body: order.title,
+        wap: allowPagePay ? !mobile : true,
+      });
+      return { mode: 'redirect', payUrl };
+    },
+    async closePayment(order) {
+      const client = Alipay.fromEnv();
+      if (client) {
+        try {
+          await client.close(order.id);
+        } catch {
+          /* 关单失败不影响本地 */
+        }
+      }
+    },
+    async refund(order, outRefundNo) {
+      const client = Alipay.fromEnv();
+      if (!client) throw new Error('支付宝未配置，无法发起真实退款');
+      return client.refund({
+        outTradeNo: order.id,
+        outRequestNo: outRefundNo,
+        amountFen: order.amount,
+        reason: '用户申请退款',
+      });
+    },
+  },
+
+  /**
+   * 支付宝当面付（扫码）：预下单拿二维码，扫码付款。
+   * 不依赖「手机网站支付 / 电脑网站支付」签约，手机和电脑都能用。
+   */
+  alipay_qr: {
+    id: 'alipay_qr',
+    name: '支付宝扫码',
+    scene: 'qr',
+    isReady() {
+      return !!Alipay.fromEnv();
+    },
+    async createPayment(order) {
+      const client = Alipay.fromEnv();
+      if (!client) throw new Error('支付宝缺少配置：' + Alipay.missingEnv().map((m) => m.key).join('、'));
+      const codeUrl = await client.precreate({
+        outTradeNo: order.id,
+        totalAmountFen: order.amount,
+        subject: order.title,
+        timeoutExpress: '15m',
+      });
+      if (!codeUrl) throw new Error('支付宝未返回二维码，请稍后重试');
+      return { mode: 'native', codeUrl };
+    },
+    async closePayment(order) {
+      const client = Alipay.fromEnv();
+      if (client) {
+        try {
+          await client.close(order.id);
+        } catch {
+          /* 关单失败不影响本地 */
+        }
+      }
+    },
+    async refund(order, outRefundNo) {
+      const client = Alipay.fromEnv();
+      if (!client) throw new Error('支付宝未配置，无法发起真实退款');
+      return client.refund({
+        outTradeNo: order.id,
+        outRequestNo: outRefundNo,
+        amountFen: order.amount,
+        reason: '用户申请退款',
+      });
     },
   },
 

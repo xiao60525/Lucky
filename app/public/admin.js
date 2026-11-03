@@ -114,7 +114,7 @@ function render() {
     $('#app').innerHTML = '<p class="muted" style="text-align:center;margin-top:80px">加载中…</p>';
     return;
   }
-  const tabs = { overview: '概览', products: '商品管理', orders: '订单管理', users: '用户', site: '外观', pay: '支付配置' };
+  const tabs = { overview: '概览', products: '商品', contents: '首页内容', orders: '订单', users: '用户', site: '外观', pay: '支付' };
   $('#app').innerHTML = `
     <header class="bar">
       <h1>管理后台</h1>
@@ -127,7 +127,7 @@ function render() {
     <div id="panel"></div>`;
   document.querySelectorAll('.tabs button').forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; render(); }));
   $('#logoutBtn').onclick = () => { state.token = ''; sessionStorage.removeItem('admin_token'); render(); };
-  ({ overview: renderOverview, products: renderProducts, orders: renderOrders, users: renderUsers, site: renderSite, pay: renderPay })[state.tab]();
+  ({ overview: renderOverview, products: renderProducts, contents: renderContents, orders: renderOrders, users: renderUsers, site: renderSite, pay: renderPay })[state.tab]();
 }
 
 function renderOverview() {
@@ -151,25 +151,137 @@ function renderOverview() {
     </div>`;
 }
 
+/** 订单页筛选状态（内存态，切标签页后保留） */
+const orderFilter = { status: 'all', q: '' };
+
+function orderBuyerText(o) {
+  if (!o.buyer) return '<span class="muted">游客/老订单</span>';
+  const nick = o.buyer.nickname ? esc(o.buyer.nickname) : '';
+  const phone = o.buyer.phone ? `<span style="font-family:monospace;font-size:12px">${esc(o.buyer.phone)}</span>` : '';
+  return [nick, phone].filter(Boolean).join('<br/>') || '<span class="muted">—</span>';
+}
+
+function filteredOrders(orders) {
+  const q = orderFilter.q.trim().toLowerCase();
+  return orders.filter((o) => {
+    if (orderFilter.status !== 'all' && o.status !== orderFilter.status) return false;
+    if (!q) return true;
+    const hay = [o.id, o.title, o.transactionId, o.buyer && o.buyer.phone, o.buyer && o.buyer.nickname]
+      .filter(Boolean)
+      .join(' ')
+      .toLowerCase();
+    return hay.includes(q);
+  });
+}
+
+function renderOrderStats(orders) {
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const t0 = dayStart.getTime();
+  const paidLike = orders.filter((o) => (o.status === 'paid' || o.status === 'refunded') && o.paidAt);
+  const todayPaid = paidLike.filter((o) => o.paidAt >= t0);
+  const todaySum = todayPaid.reduce((s, o) => s + o.amount, 0);
+  const pending = orders.filter((o) => o.status === 'created' || o.status === 'pending').length;
+  const item = (label, val, cls) => `<div class="ostat ${cls || ''}"><b>${val}</b><span>${label}</span></div>`;
+  return `
+    <div class="ostat-row">
+      ${item('今日收入', '¥' + yuan(todaySum))}
+      ${item('今日成交', todayPaid.length + ' 笔')}
+      ${item('待支付', pending + ' 笔', pending ? 'warn' : '')}
+      ${item('订单总数', orders.length + ' 笔')}
+    </div>`;
+}
+
+function renderOrderControls() {
+  const counts = { all: state.data.orders.length };
+  for (const o of state.data.orders) counts[o.status] = (counts[o.status] || 0) + 1;
+  const tabs = [
+    ['all', '全部'],
+    ['created', '待支付'],
+    ['pending', '支付中'],
+    ['paid', '已支付'],
+    ['refunded', '已退款'],
+    ['closed', '已关闭'],
+  ]
+    .map(([k, label]) => {
+      const n = counts[k] || 0;
+      return `<button class="ochip ${orderFilter.status === k ? 'on' : ''}" data-of="${k}">${label}${n ? ` <i>${n}</i>` : ''}</button>`;
+    })
+    .join('');
+  return `
+    <div class="obar">
+      <div class="ochips">${tabs}</div>
+      <div class="osearch">
+        <input id="orderSearch" placeholder="搜订单号 / 手机号 / 昵称 / 商品 / 交易号" value="${esc(orderFilter.q)}" />
+        <button class="op" id="orderExport">导出 CSV</button>
+      </div>
+    </div>`;
+}
+
 function orderTable(orders) {
+  const list = filteredOrders(orders);
   if (!orders.length) return '<p class="muted">还没有订单</p>';
-  return `<table><thead><tr><th>订单号</th><th>商品</th><th>金额</th><th>渠道</th><th>状态</th><th>时间</th><th>操作</th></tr></thead>
-    <tbody>${orders
+  if (!list.length) return '<p class="muted">没有符合条件的订单，换个筛选或关键词试试</p>';
+  return `<div class="otable-wrap"><table><thead><tr><th>订单号</th><th>商品</th><th>买家</th><th>金额</th><th>渠道</th><th>状态</th><th>下单时间</th><th>支付时间</th><th>第三方交易号</th><th>操作</th></tr></thead>
+    <tbody>${list
       .map(
         (o) => `<tr>
-      <td style="font-family:monospace;font-size:12px">${o.id}</td>
-      <td>${o.title}</td>
-      <td>¥${o.amountText}</td>
-      <td class="muted">${o.channelName || '-'}</td>
+      <td style="font-family:monospace;font-size:12px;max-width:150px;word-break:break-all">
+        <span class="oid" data-copy="${esc(o.id)}" title="点击复制">${esc(o.id)}</span>
+      </td>
+      <td style="max-width:130px;word-break:break-all">${esc(o.title)}</td>
+      <td style="white-space:nowrap">${orderBuyerText(o)}</td>
+      <td style="white-space:nowrap">¥${o.amountText}</td>
+      <td class="muted" style="white-space:nowrap">${o.channelName || '-'}</td>
       <td><span class="tag ${o.status}">${STATUS_TEXT[o.status] || o.status}</span></td>
-      <td class="muted" style="white-space:nowrap">${fmtTime(o.paidAt || o.createdAt)}</td>
+      <td class="muted" style="white-space:nowrap">${fmtTime(o.createdAt)}</td>
+      <td class="muted" style="white-space:nowrap">${fmtTime(o.paidAt)}</td>
+      <td style="font-family:monospace;font-size:11px;max-width:120px;word-break:break-all" title="${esc(o.transactionId || '')}">${
+        o.transactionId ? esc(o.transactionId) : '<span class="muted">—</span>'
+      }</td>
       <td style="white-space:nowrap">
         ${o.status === 'paid' ? `<button class="op danger" data-refund="${o.id}">退款</button>` : ''}
+        ${
+          o.status === 'pending' && /^alipay/i.test(String(o.channel || ''))
+            ? `<button class="op" data-sync="${o.id}" title="向支付宝查单，已付款会自动变为已支付">同步</button>`
+            : ''
+        }
         ${(o.status === 'created' || o.status === 'pending') ? `<button class="op" data-close="${o.id}">关闭</button>` : ''}
       </td>
     </tr>`
       )
-      .join('')}</tbody></table>`;
+      .join('')}</tbody></table></div>
+    <p class="muted" style="font-size:12px;margin:10px 0 0">共 ${list.length} 条（库中最多展示最近 200 条）</p>`;
+}
+
+function exportOrdersCsv(orders) {
+  const list = filteredOrders(orders);
+  const head = ['订单号', '商品', '买家昵称', '买家手机号', '金额(元)', '渠道', '状态', '下单时间', '支付时间', '第三方交易号'];
+  const escCell = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+  const rows = list.map((o) =>
+    [
+      o.id,
+      o.title,
+      o.buyer && o.buyer.nickname,
+      o.buyer && o.buyer.phone,
+      o.amountText,
+      o.channelName || o.channel || '',
+      STATUS_TEXT[o.status] || o.status,
+      o.createdAt ? fmtTime(o.createdAt) : '',
+      o.paidAt ? fmtTime(o.paidAt) : '',
+      o.transactionId || '',
+    ]
+      .map(escCell)
+      .join(',')
+  );
+  // \ufeff 让 Excel 正确识别 UTF-8
+  const blob = new Blob(['\ufeff' + head.join(',') + '\n' + rows.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '订单-' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast(`已导出 ${list.length} 条订单`);
 }
 
 function renderProducts() {
@@ -268,14 +380,278 @@ async function delProduct(id) {
   }
 }
 
+/* ---------------- 首页内容（用户手机端看到的内容卡片） ---------------- */
+
+/** 正在编辑的内容（null = 新增）+ 待提交的配图 */
+let editingContent = null;
+const contentDraft = { image: '' };
+
+function renderContents() {
+  const cs = state.data.contents || [];
+  $('#panel').innerHTML = `
+    <div class="card">
+      <h3 id="cFormTitle">新增首页内容</h3>
+      <p class="muted" style="font-size:12.5px;margin:0 0 14px;line-height:1.65">
+        这里加的内容会显示在手机首页「精选内容」，以及底部「内容」页；用户点开就能看到标题、描述和配图。
+      </p>
+      <div class="form-grid">
+        <div><label>标题 *（最多 40 字）</label><input id="c-title" maxlength="40" placeholder="如 新用户立减 5 元" /></div>
+        <div><label>角标（如：活动 / 新品）</label><input id="c-tag" maxlength="10" /></div>
+        <div class="full"><label>描述（最多 200 字）</label><textarea id="c-desc" rows="2" maxlength="200" placeholder="一句话说清这是什么"></textarea></div>
+        <div><label>跳转链接（可选）</label><input id="c-link" placeholder="https://… 或 /admin" /></div>
+        <div><label>排序（小在前）</label><input id="c-sort" type="number" value="100" /></div>
+        <div><label>状态</label><select id="c-active"><option value="1">上线</option><option value="0">隐藏</option></select></div>
+        <div>
+          <label>配图（可选）</label>
+          <div class="brand-btns">
+            <label class="btn ghost" for="c-img" style="padding:7px 12px;font-size:12.5px">选择图片</label>
+            <button class="op" id="c-img-clear" type="button">移除</button>
+          </div>
+          <input type="file" id="c-img" accept="image/png,image/jpeg,image/webp" style="display:none" />
+        </div>
+      </div>
+      <div class="c-preview" id="c-preview"></div>
+      <div class="row-actions">
+        <button class="btn" id="c-save">保存</button>
+        <button class="btn ghost" id="c-reset">清空表单</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>全部内容（${cs.length}）</h3>
+      ${cs.length
+        ? `<table><thead><tr><th>配图</th><th>标题</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${cs
+            .map(
+              (c) => `<tr>
+            <td>${
+              c.image
+                ? `<img src="${esc(c.image)}" alt="" style="width:44px;height:44px;border-radius:9px;object-fit:cover;display:block" />`
+                : '<span class="muted">无</span>'
+            }</td>
+            <td>${esc(c.title)}${c.tag ? ` <span class="tag tag-blue">${esc(c.tag)}</span>` : ''}<div class="muted" style="font-size:11.5px;margin-top:2px">${esc(c.desc || '')}</div></td>
+            <td class="muted">${c.sort}</td>
+            <td>${c.active ? '<span class="tag paid">上线</span>' : '<span class="tag off">隐藏</span>'}</td>
+            <td style="white-space:nowrap">
+              <button class="op" data-cedit="${esc(c.id)}">编辑</button>
+              <button class="op danger" data-cdel="${esc(c.id)}">删除</button>
+            </td>
+          </tr>`
+            )
+            .join('')}</tbody></table>`
+        : '<p class="muted">还没有内容，先在上面新增一条</p>'}
+    </div>`;
+
+  renderContentPreview();
+  $('#c-img').onchange = (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    pickContentImage(f)
+      .then(() => renderContentPreview())
+      .catch((err) => toast(err.message || '图片处理失败'));
+  };
+  $('#c-img-clear').onclick = () => {
+    contentDraft.image = '';
+    renderContentPreview();
+    toast('配图已移除，点保存生效');
+  };
+  $('#c-save').onclick = saveContent;
+  $('#c-reset').onclick = () => fillContentForm(null);
+  document.querySelectorAll('[data-cedit]').forEach(
+    (b) => (b.onclick = () => fillContentForm(cs.find((x) => x.id === b.dataset.cedit)))
+  );
+  document.querySelectorAll('[data-cdel]').forEach((b) => (b.onclick = () => delContent(b.dataset.cdel)));
+}
+
+function renderContentPreview() {
+  const box = $('#c-preview');
+  if (!box) return;
+  box.innerHTML = contentDraft.image
+    ? `<img src="${esc(contentDraft.image)}" alt="配图预览" />`
+    : '<span class="muted" style="font-size:12px">未选择配图（也能保存，只是卡片左侧会是标题首字）</span>';
+}
+
+function fillContentForm(c) {
+  editingContent = c || null;
+  contentDraft.image = c && c.image ? c.image : '';
+  $('#cFormTitle').textContent = c ? '编辑内容：' + c.title : '新增首页内容';
+  $('#c-title').value = c ? c.title : '';
+  $('#c-tag').value = c ? c.tag || '' : '';
+  $('#c-desc').value = c ? c.desc || '' : '';
+  $('#c-link').value = c ? c.link || '' : '';
+  $('#c-sort').value = c ? c.sort : 100;
+  $('#c-active').value = c && c.active === false ? '0' : '1';
+  renderContentPreview();
+}
+
+/** 配图：最长边压到 720px，JPEG（带透明转 PNG），控制在 400KB 以内 */
+async function pickContentImage(file) {
+  if (!/^image\//.test(file.type)) throw new Error('请选择图片文件');
+  if (file.size > 8 * 1024 * 1024) throw new Error('图片太大，请选 8MB 以内的');
+  const dataUrl = await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(new Error('图片读取失败'));
+    r.readAsDataURL(file);
+  });
+  const img = await loadImage(dataUrl);
+  const scale = Math.min(1, 720 / Math.max(img.width, img.height));
+  const w = Math.max(1, Math.round(img.width * scale));
+  const h = Math.max(1, Math.round(img.height * scale));
+  const cv = document.createElement('canvas');
+  cv.width = w;
+  cv.height = h;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(img, 0, 0, w, h);
+  let out = cv.toDataURL('image/jpeg', 0.86);
+  if (out.length > 380 * 1024) out = cv.toDataURL('image/jpeg', 0.7);
+  contentDraft.image = out;
+  toast(`配图已就绪（${w}×${h}，${Math.round((out.length * 0.75) / 1024)}KB）`);
+}
+
+async function saveContent() {
+  const btn = $('#c-save');
+  const title = ($('#c-title').value || '').trim();
+  if (!title) return toast('标题不能为空');
+  btn.disabled = true;
+  btn.textContent = '保存中…';
+  try {
+    await api('/api/admin/content/save', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: editingContent ? editingContent.id : '',
+        title,
+        desc: ($('#c-desc').value || '').trim(),
+        tag: ($('#c-tag').value || '').trim(),
+        link: ($('#c-link').value || '').trim(),
+        sort: parseInt($('#c-sort').value, 10) || 100,
+        active: $('#c-active').value === '1',
+        image: contentDraft.image || '',
+      }),
+    });
+    toast('已保存');
+    editingContent = null;
+    contentDraft.image = '';
+    await load();
+  } catch (e) {
+    toast(e.message);
+    btn.disabled = false;
+    btn.textContent = '保存';
+  }
+}
+
+async function delContent(id) {
+  if (!confirm('确定删除这条内容？手机端会立刻不再显示。')) return;
+  try {
+    await api('/api/admin/content/delete', { method: 'POST', body: JSON.stringify({ id }) });
+    toast('已删除');
+    await load();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
 function renderOrders() {
-  $('#panel').innerHTML = `<div class="card"><h3>全部订单（${state.data.orders.length}）</h3>${orderTable(state.data.orders)}</div>`;
+  const orders = state.data.orders || [];
+  $('#panel').innerHTML = `
+    <div class="card">
+      <h3>订单管理</h3>
+      ${renderOrderStats(orders)}
+      ${renderOrderControls()}
+      <div id="orderTableBox">${orderTable(orders)}</div>
+    </div>`;
   bindOrderOps();
+
+  // 状态筛选
+  document.querySelectorAll('[data-of]').forEach((b) => {
+    b.onclick = () => {
+      orderFilter.status = b.dataset.of;
+      renderOrders();
+    };
+  });
+  // 关键词搜索（防抖，只重绘表格区域避免输入框失焦）
+  const box = $('#orderSearch');
+  if (box) {
+    let timer = null;
+    box.oninput = () => {
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        orderFilter.q = box.value;
+        const box2 = $('#orderTableBox');
+        if (box2) box2.innerHTML = orderTable(state.data.orders || []);
+        bindOrderOps();
+        bindCopy();
+      }, 250);
+    };
+  }
+  // 导出
+  const ex = $('#orderExport');
+  if (ex) ex.onclick = () => exportOrdersCsv(orders);
+  bindCopy();
+}
+
+function bindCopy() {
+  document.querySelectorAll('[data-copy]').forEach((el) => {
+    el.onclick = () => {
+      const text = el.dataset.copy;
+      const done = () => toast('订单号已复制：' + text);
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+      } else fallbackCopy(text, done);
+    };
+  });
+}
+
+function fallbackCopy(text, done) {
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.position = 'fixed';
+  ta.style.opacity = '0';
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand('copy');
+    done();
+  } catch {
+    toast('复制失败，请手动选择');
+  }
+  document.body.removeChild(ta);
 }
 
 function bindOrderOps() {
   document.querySelectorAll('[data-refund]').forEach((b) => (b.onclick = () => refundOrder(b.dataset.refund)));
   document.querySelectorAll('[data-close]').forEach((b) => (b.onclick = () => closeOrder(b.dataset.close)));
+  document.querySelectorAll('[data-sync]').forEach((b) => (b.onclick = () => syncOrder(b.dataset.sync, b)));
+}
+
+/** 向支付宝查单，已付款则入账（对账用） */
+async function syncOrder(id, btn) {
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '查询中';
+  try {
+    const res = await api(`/api/admin/orders/${encodeURIComponent(id)}/sync`, { method: 'POST' });
+    if (res.paid) {
+      toast('已确认支付，订单已入账');
+      await load();
+    } else {
+      const map = {
+        WAIT_BUYER_PAY: '支付宝显示「等待付款」，买家可能还没扫码',
+        'ACQ.TRADE_NOT_EXIST': '支付宝查不到这笔交易（未扫码或已超时）',
+        amountmismatch: '金额不一致，已拒绝入账',
+        nochannel: '该订单不是支付宝渠道',
+      };
+      toast(map[res.reason] || map[res.tradeStatus] || '仍未支付');
+      btn.disabled = false;
+      btn.textContent = label;
+    }
+  } catch (e) {
+    toast(e.message || '查询失败');
+    btn.disabled = false;
+    btn.textContent = label;
+  }
 }
 
 async function refundOrder(id) {
@@ -306,7 +682,7 @@ function renderUsers() {
   $('#panel').innerHTML = `
     <div class="card">
       <h3>用户</h3>
-      <p class="muted" style="font-size:12.5px;margin:0 0 12px">小程序端手机号登录的用户，数据来自小程序云库，后台只读。</p>
+      <p class="muted" style="font-size:12.5px;margin:0 0 12px">手机号登录的用户：网页版 / PWA 用户来自本应用云库，小程序用户来自小程序云库，这里只读展示。</p>
       <div id="userTable"><p class="muted">加载中…</p></div>
     </div>`;
 
@@ -316,18 +692,26 @@ function renderUsers() {
       if (!box) return;
       const list = r.users || [];
       if (list.length === 0) {
-        box.innerHTML = '<p class="muted">还没有用户登录。小程序端用手机号登录后，会自动出现在这里。</p>';
+        box.innerHTML = '<p class="muted">还没有用户。网页版或小程序端用手机号注册/登录后，会自动出现在这里。</p>';
         return;
       }
       const paidSum = list.reduce((s, u) => s + (u.paidAmount || 0), 0);
+      const webCount = list.filter((u) => u.source === 'web').length;
+      const mpCount = list.filter((u) => u.source === 'mp').length;
       box.innerHTML = `
-        <p class="muted" style="font-size:12.5px;margin:0 0 10px">共 ${list.length} 位用户，累计支付 ¥${yuan(paidSum)}</p>
+        <p class="muted" style="font-size:12.5px;margin:0 0 10px">共 ${list.length} 位用户（网页版 ${webCount} · 小程序 ${mpCount}），累计支付 ¥${yuan(paidSum)}</p>
         <table>
-          <thead><tr><th>手机号</th><th>注册时间</th><th>最近登录</th><th>订单数</th><th>累计支付</th></tr></thead>
+          <thead><tr><th>手机号</th><th>昵称</th><th>来源</th><th>积分</th><th>余额</th><th>注册时间</th><th>最近登录</th><th>订单数</th><th>累计支付</th></tr></thead>
           <tbody>${list
             .map(
               (u) => `<tr>
               <td style="font-family:monospace;font-size:13px">${u.phone || '<span class="muted">未绑定</span>'}</td>
+              <td>${u.nickname || '<span class="muted">—</span>'}</td>
+              <td><span class="tag ${u.source === 'web' ? 'tag-blue' : 'tag-green'}">${
+                u.source === 'web' ? '网页/APP' : '小程序'
+              }</span></td>
+              <td>${u.points || 0}</td>
+              <td>¥${yuan(u.balance || 0)}</td>
               <td class="muted" style="white-space:nowrap">${fmtTime(u.createdAt)}</td>
               <td class="muted" style="white-space:nowrap">${fmtTime(u.lastLoginAt)}</td>
               <td>${u.orderCount}</td>
@@ -372,7 +756,7 @@ function mpStatusHTML() {
 }
 
 function renderSite() {
-  const s = state.data.site || { name: '', tagline: '', hasIcon: false };
+  const s = state.data.site || { name: '', tagline: '', notice: '', enableRegister: true, showMock: true, showBalance: true, hasIcon: false };
   $('#panel').innerHTML = `
     <div class="card">
       <h3>程序名称与图标</h3>
@@ -397,6 +781,7 @@ function renderSite() {
       <div class="form-grid" style="margin-top:16px">
         <div><label>程序名称 *（最多 24 字）</label><input id="s-name" maxlength="24" value="${esc(s.name || '')}" placeholder="如 我的小工具" /></div>
         <div><label>副标题（可选，最多 40 字）</label><input id="s-tagline" maxlength="40" value="${esc(s.tagline || '')}" placeholder="如 一个能付款的小应用" /></div>
+        <div class="full"><label>首页公告（可选，最多 200 字，留空不显示）</label><input id="s-notice" maxlength="200" value="${esc(s.notice || '')}" placeholder="如 新用户下单立减 5 元，活动截止 11 月 11 日" /></div>
       </div>
 
       <div class="row-actions">
@@ -404,6 +789,25 @@ function renderSite() {
         <button class="btn ghost" id="reloadSiteBtn">撤销修改</button>
       </div>
       <p class="muted" id="mpStatus" style="font-size:12px;margin:10px 0 0;line-height:1.6">${mpStatusHTML()}</p>
+    </div>
+
+    <div class="card">
+      <h3>前台功能开关</h3>
+      <p class="muted" style="font-size:12.5px;margin:0 0 12px">
+        这些开关直接控制用户手机上看到什么。改完点上面的「保存并生效」。
+      </p>
+      <label class="switch-row">
+        <div><b>开放新用户注册</b><p class="muted" style="font-size:12px;margin:2px 0 0">关闭后登录页不再出现注册入口，接口也会拒绝注册</p></div>
+        <input type="checkbox" id="s-reg" ${s.enableRegister !== false ? 'checked' : ''} />
+      </label>
+      <label class="switch-row">
+        <div><b>显示模拟收银台</b><p class="muted" style="font-size:12px;margin:2px 0 0">没配微信/支付宝时兜底的假支付；正式运营建议关闭</p></div>
+        <input type="checkbox" id="s-mock" ${s.showMock !== false ? 'checked' : ''} />
+      </label>
+      <label class="switch-row">
+        <div><b>显示余额支付</b><p class="muted" style="font-size:12px;margin:2px 0 0">用户用账户余额下单；不想做余额体系可关闭</p></div>
+        <input type="checkbox" id="s-bal" ${s.showBalance !== false ? 'checked' : ''} />
+      </label>
     </div>
 
     <div class="card">
@@ -510,7 +914,14 @@ async function saveSite() {
   const btn = $('#saveSiteBtn');
   const name = ($('#s-name').value || '').trim();
   if (!name) return toast('程序名称不能为空');
-  const payload = { name, tagline: ($('#s-tagline').value || '').trim() };
+  const payload = {
+    name,
+    tagline: ($('#s-tagline').value || '').trim(),
+    notice: ($('#s-notice') ? $('#s-notice').value : '').trim(),
+    enableRegister: !$('#s-reg') || $('#s-reg').checked,
+    showMock: !$('#s-mock') || $('#s-mock').checked,
+    showBalance: !$('#s-bal') || $('#s-bal').checked,
+  };
   if (siteDraft.icon) {
     payload.icon = siteDraft.icon;
     if (siteDraft.thumb) payload.iconThumb = siteDraft.thumb;
@@ -547,25 +958,119 @@ async function saveSite() {
 }
 
 function renderPay() {
-  const p = state.data.pay;
+  const p = state.data.pay || {};
+  const ali = p.alipay || { ready: false, missing: [] };
+  const aliMissing = ali.missing || [];
+  const wxMissing = p.missing || [];
+
+  const statusBadge = (ok) =>
+    ok
+      ? '<span class="tag on">已配置</span>'
+      : '<span class="tag off">未配置</span>';
+
   $('#panel').innerHTML = `
     <div class="card">
-      <h3>支付配置状态</h3>
-      <div class="cfg-row"><span>当前渠道</span><b>${p.provider === 'wechat' && p.wechatReady ? '微信支付（真实）' : '模拟收银台（沙箱）'}</b></div>
-      <div class="cfg-row"><span>商户号</span><b>${p.mchid || '未配置'}</b></div>
-      <div class="cfg-row"><span>下单场景</span><b>${p.scene === 'auto' ? '自动适配（微信内/浏览器/扫码）' : p.scene}</b></div>
-      <div class="cfg-row"><span>回调地址</span><b style="font-size:12px">${p.notifyUrl || '未配置'}</b></div>
+      <h3>收款渠道总览</h3>
+      <div class="cfg-row"><span>微信支付</span><b>${statusBadge(p.wechatReady)}</b></div>
+      <div class="cfg-row"><span>支付宝</span><b>${statusBadge(ali.ready)}</b></div>
+      <div class="cfg-row"><span>默认渠道</span><b>${
+        p.provider === 'alipay' && ali.ready
+          ? '支付宝（真实）'
+          : p.provider === 'wechat' && p.wechatReady
+          ? '微信支付（真实）'
+          : '模拟收银台（沙箱，不真实扣款）'
+      }</b></div>
       <div class="cfg-row"><span>云数据库</span><b>${p.cloudReady ? '已连接' : '未连接'}</b></div>
+      <p class="muted" style="font-size:12.5px;margin:12px 0 0">两个渠道都配置好后，用户下单时可以自己选微信或支付宝。</p>
     </div>
+
     <div class="card">
-      <h3>待补齐的微信支付凭据</h3>
+      <h3>支付宝</h3>
+      <div class="cfg-row"><span>APPID</span><b style="font-family:monospace;font-size:12.5px">${ali.appId || '未配置'}</b></div>
+      <div class="cfg-row"><span>运行环境</span><b>${ali.sandbox ? '沙箱（openapi.alipaydev.com）' : '生产（openapi.alipay.com）'}</b></div>
+      <div class="cfg-row"><span>异步通知</span><b style="font-size:12px">${ali.notifyUrl || '未配置'}</b></div>
+      <div class="cfg-row"><span>签名方式</span><b>RSA2（SHA256withRSA）</b></div>
+      ${ali.ready
+        ? '<div class="check-item" style="margin-top:10px">✅ 支付宝凭据已配齐，可以真实收款</div>'
+        : aliMissing.length
+        ? aliMissing
+            .map(
+              (m) =>
+                `<div class="check-item" style="margin-top:10px"><span style="color:var(--bad)">✗</span><b>${m.key}</b><span class="muted">${m.desc}</span></div>`
+            )
+            .join('')
+        : ''}
+      <p class="muted" style="font-size:12.5px;margin:12px 0 0">
+        在支付宝开放平台 → 控制台 → 创建应用（网页/移动应用）→ 签约「手机网站支付」或「电脑网站支付」，
+        然后把 APPID、应用私钥、支付宝公钥填到 app/.env。缺少的部分会列在上面。
+      </p>
+      ${
+        ali.ready
+          ? `<div class="row-actions" style="margin-top:12px">
+               <button class="btn" id="payCheckBtn">测试支付宝连通性</button>
+               <span class="muted" style="font-size:12px">真实调用支付宝接口，确认哪些能力已生效</span>
+             </div>
+             <div id="payCheckBox"></div>`
+          : ''
+      }
+    </div>
+
+    <div class="card">
+      <h3>微信支付</h3>
+      <div class="cfg-row"><span>商户号</span><b>${p.mchid || '未配置'}</b></div>
+      <div class="cfg-row"><span>下单场景</span><b>${p.scene === 'auto' ? '自动适配（微信内/浏览器/扫码）' : p.scene || '未配置'}</b></div>
+      <div class="cfg-row"><span>回调地址</span><b style="font-size:12px">${p.notifyUrl || '未配置'}</b></div>
       ${p.wechatReady
-        ? '<div class="check-item">✅ 微信支付凭据已配齐，可以真实收款</div>'
-        : p.missing.length
-        ? p.missing.map((m) => `<div class="check-item"><span style="color:var(--bad)">✗</span><b>${m.key}</b><span class="muted">${m.desc}</span></div>`).join('') +
-          '<p class="muted" style="font-size:12.5px;margin-top:10px">在商户平台 → 账户中心 → API安全 获取，填入 app/.env 后运行 npm run pay:check 验证。</p>'
+        ? '<div class="check-item" style="margin-top:10px">✅ 微信支付凭据已配齐</div>'
+        : wxMissing.length
+        ? wxMissing
+            .map(
+              (m) =>
+                `<div class="check-item" style="margin-top:10px"><span style="color:var(--bad)">✗</span><b>${m.key}</b><span class="muted">${m.desc}</span></div>`
+            )
+            .join('') + '<p class="muted" style="font-size:12.5px;margin-top:10px">在商户平台 → 账户中心 → API安全 获取。</p>'
         : ''}
     </div>`;
+
+  const btn = $('#payCheckBtn');
+  if (btn) btn.onclick = runPayCheck;
+}
+
+/** 支付宝连通性自检：真实调用接口，报告每项能力是否可用 */
+async function runPayCheck() {
+  const btn = $('#payCheckBtn');
+  const box = $('#payCheckBox');
+  if (!btn || !box) return;
+  btn.disabled = true;
+  btn.textContent = '检测中…';
+  box.innerHTML = '';
+  try {
+    const r = await api('/api/admin/pay-check', { method: 'POST' });
+    const a = r.alipay || {};
+    const row = (label, item, okText, failText) => {
+      const ok = item && item.ok;
+      return `<div class="check-item" style="margin-top:10px">
+        <span style="color:${ok ? 'var(--ok, #18a058)' : 'var(--bad)'}">${ok ? '✓' : '✗'}</span>
+        <b>${label}</b>
+        <span class="muted">${ok ? okText : `${failText}${item && item.code ? '（' + item.code + '）' : ''}`}</span>
+      </div>`;
+    };
+    box.innerHTML = `
+      <div style="margin-top:12px">
+        ${row('基础接口（查单）', a.query, '正常', '异常')}
+        ${row('手机网站支付（wap.pay）', a.wap, '收银台可打开，可跳转付款', '未签约或未生效')}
+        ${row('当面付扫码（precreate）', a.qr, '二维码下单正常，可用于扫码收款', '不可用')}
+        <p class="muted" style="font-size:12.5px;margin:12px 0 0">
+          手机网站支付未生效时，前端「支付宝扫码」渠道仍可正常收款（用户在支付宝里扫码付款）。
+          如需跳转式付款，请到开放平台 → 产品绑定 → 手机网站支付 → 确认签约状态为「已生效」。
+        </p>
+      </div>`;
+  } catch (e) {
+    box.innerHTML = `<div class="check-item" style="margin-top:12px"><span style="color:var(--bad)">✗</span><b>检测失败</b><span class="muted">${esc(e.message)}</span></div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '测试支付宝连通性';
+  }
 }
 
 /* ---------------- 启动 ---------------- */

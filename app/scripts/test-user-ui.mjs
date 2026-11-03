@@ -1,0 +1,310 @@
+/**
+ * 用户中心 UI 自测（jsdom + 假 fetch）
+ * 覆盖：未登录登录页 / 登录成功 / 用户中心各区块 / 分享 / 设置弹层 / 退出
+ * 用法：node scripts/test-user-ui.mjs
+ */
+import { readFileSync } from 'node:fs';
+import { JSDOM } from 'jsdom';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const html = readFileSync(join(ROOT, 'public', 'index.html'), 'utf8');
+const appJs = readFileSync(join(ROOT, 'public', 'app.js'), 'utf8');
+
+const VIEWER = {
+  id: 'u_abc123456789',
+  nickname: '测试用户',
+  phone: '13800001234',
+  phoneMasked: '138****1234',
+  initial: '测',
+  points: 100,
+  coupons: [
+    { id: 'c1', title: '新人立减 5 元', amount: 500, expiresAt: Date.now() + 86400000 },
+    { id: 'c2', title: '满 20 减 3 元', amount: 300, expiresAt: Date.now() + 86400000 },
+  ],
+  address: { name: '张三', phone: '13800001234', detail: '北京市朝阳区测试路 1 号' },
+  balance: 1200,
+  createdAt: Date.now() - 86400000,
+  orders: [
+    { id: 'O1', title: '会员月卡', amount: 1200, status: 'paid', createdAt: Date.now() },
+    {
+      id: 'O2',
+      productId: 'demo_001',
+      title: '测试商品',
+      amount: 1200,
+      status: 'pending',
+      channel: 'alipay_qr',
+      channelName: '支付宝扫码',
+      createdAt: Date.now() - 60000,
+    },
+  ],
+};
+
+const BOOTSTRAP = {
+  user: { id: 'demo-user', nickname: '游客' },
+  loggedIn: false,
+  balance: 0,
+  provider: 'mock',
+  payScene: 'native',
+  wechatReady: false,
+  wxMchId: null,
+  cloud: { ready: true, endpoint: 'x' },
+  site: { name: '手机App支付骨架', tagline: '', hasIcon: false, iconUrl: null, iconVer: 'default' },
+  products: [{ id: 'demo_001', title: '测试商品', amount: 1, desc: 'x', tag: '示例' }],
+  contents: [
+    { id: 'n1', title: '新人立减 5 元', desc: '注册即送，首单可用', tag: '活动', image: null, link: '', sort: 1, active: true },
+    { id: 'n2', title: '怎么用余额支付', desc: '先充值，下单时选余额', tag: '', image: null, link: '/faq', sort: 2, active: true },
+  ],
+  orders: [],
+};
+
+let token = '';
+const calls = [];
+function fakeFetch(url, opts = {}) {
+  const path = String(url).split('?')[0];
+  const method = (opts.method || 'GET').toUpperCase();
+  const auth = (opts.headers && opts.headers.Authorization) || '';
+  if (auth) token = String(auth).replace(/^Bearer\s+/i, '');
+  let body = null;
+  try {
+    body = opts.body ? JSON.parse(opts.body) : null;
+  } catch {
+    body = null;
+  }
+  calls.push({ path, method, auth: Boolean(auth), body });
+
+  const json = (body, status = 200) =>
+    Promise.resolve({
+      ok: status < 400,
+      status,
+      json: () => Promise.resolve(body),
+    });
+
+  if (path === '/api/bootstrap') return json({ ...BOOTSTRAP, orders: token ? VIEWER.orders : [] });
+  if (path === '/api/orders' && method === 'GET') return json({ orders: token ? VIEWER.orders : [] });
+  if (path === '/api/orders/O2/pay') {
+    // 模拟「上次其实已经付成功、只是回调没到」：服务端直接回已付，不再重复收款
+    const paid = { ...VIEWER.orders[1], status: 'paid', paidAt: Date.now() };
+    VIEWER.orders[1] = paid;
+    return json({ mode: 'already_paid', order: paid });
+  }
+  if (path === '/api/auth/login') return json({ token: 'tk_test', viewer: VIEWER });
+  if (path === '/api/auth/register') return json({ token: 'tk_test', viewer: VIEWER }, 201);
+  if (path === '/api/auth/me') return token ? json({ viewer: VIEWER }) : json({ message: '未登录' }, 401);
+  if (path === '/api/auth/profile') {
+    const body = JSON.parse(opts.body || '{}');
+    Object.assign(VIEWER, body);
+    if (body.nickname) VIEWER.initial = body.nickname.slice(0, 1);
+    return json({ viewer: VIEWER });
+  }
+  if (path === '/api/auth/password') return json({ ok: true });
+  return json({}, 404);
+}
+
+const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'https://example.com/?sharecode=TESTCODE' });
+const { window } = dom;
+window.fetch = fakeFetch;
+Object.defineProperty(window, 'localStorage', {
+  value: {
+    store: {},
+    getItem(k) {
+      return this.store[k] || null;
+    },
+    setItem(k, v) {
+      this.store[k] = String(v);
+    },
+    removeItem(k) {
+      delete this.store[k];
+    },
+    clear() {
+      this.store = {};
+    },
+  },
+});
+window.matchMedia = () => ({ matches: false, addEventListener() {}, removeEventListener() {} });
+window.navigator.standalone = false;
+
+// 执行 app.js
+window.eval(appJs);
+
+const $ = (s) => window.document.querySelector(s);
+const text = (s) => ($(s) ? $(s).textContent.replace(/\s+/g, ' ').trim() : '');
+const results = [];
+const check = (name, ok, extra = '') => {
+  results.push({ name, ok, extra });
+  console.log(`${ok ? '✔' : '✘'} ${name}${extra ? ' — ' + extra : ''}`);
+};
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+async function goMine() {
+  const tab = [...window.document.querySelectorAll('.tab')].find((t) => t.dataset.tab === 'mine');
+  tab.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(30);
+}
+
+await wait(120);
+
+// 0. 首页：商品卡片 + 后台配置的内容卡片
+check('首页商品卡片', window.document.querySelectorAll('.goods-card').length === 1, text('.goods-name'));
+check(
+  '首页显示后台配置的内容',
+  window.document.querySelectorAll('.content-card').length === 2 && text('.section-head').length >= 0,
+  String(window.document.querySelectorAll('.content-card').length)
+);
+check('首页内容标题正确', text('.content-title').includes('新人立减'), text('.content-title'));
+check('未登录时首页头像显示占位', text('.hero-avatar').includes('游'), text('.hero-avatar'));
+
+// 1. 未登录：登录页
+await goMine();
+check('未登录显示登录页', !!$('#authPhone') && !!$('#authPwd'));
+check('登录页有登录/注册按钮', !!$('[data-act="login"]') && !!$('[data-act="register"]'));
+check('登录页标题', text('.auth-head h2') === '登录后使用', text('.auth-head h2'));
+
+// 2. 非法手机号拦截
+$('#authPhone').value = '123';
+$('#authPwd').value = '123456';
+$('[data-act="login"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+check('非法手机号被拦截', text('#toast').includes('11 位手机号'), text('#toast'));
+check('未发起登录请求', !calls.some((c) => c.path === '/api/auth/login'));
+
+// 3. 正常登录
+$('#authPhone').value = '13800001234';
+$('#authPwd').value = 'test123456';
+$('[data-act="login"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(80);
+token = window.localStorage.getItem('user_token_v1');
+check('登录后写入令牌', token === 'tk_test', String(token));
+check('登录请求已发出', calls.some((c) => c.path === '/api/auth/login' && c.method === 'POST'));
+
+// 4. 用户中心各区块
+check('显示昵称', text('.profile-name').includes('测试用户'), text('.profile-name'));
+check('显示脱敏手机号', text('.profile-sub').includes('138****1234'), text('.profile-sub'));
+const stats = [...window.document.querySelectorAll('.stat b')].map((e) => e.textContent.trim());
+check('余额/积分/优惠券三项', stats.length === 3 && stats[0] === '¥12.00' && stats[1] === '100' && stats[2] === '2', stats.join(','));
+check('收货地址已显示', text('.addr-name').includes('张三') && text('.addr-detail').includes('北京市'), text('.addr-detail'));
+check('优惠券列表', window.document.querySelectorAll('.coupon').length === 2);
+check('头像可点击更换', Boolean($('.avatar-btn')) && text('.avatar-btn').includes('📷'), text('.avatar-btn'));
+$('[data-act="edit-avatar"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+check('头像弹层可换图', text('.sheet h3') === '我的头像' && Boolean($('[data-act="pick-avatar"]')), text('.sheet h3'));
+$('.sheet [data-act="close"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
+check('订单列表', window.document.querySelectorAll('.order-row').length === 2, text('.order-title'));
+check('分享区存在', !!$('[data-act="share-copy"]') && !!$('[data-act="share-more"]') && !!$('[data-act="share-qr"]'));
+const setRows = [...window.document.querySelectorAll('.set-row')].map((e) => e.textContent.trim());
+check('设置项 5 条', setRows.length === 5, setRows.join(' | '));
+check(
+  '设置项内容正确',
+  ['修改密码', '刷新数据', '清除缓存', '关于', '退出登录'].every((k, i) => setRows[i].includes(k)),
+  setRows.join(' | ')
+);
+
+// 4b. 「支付中」订单：点进去直接进支付界面，且复用同一笔订单付款
+const pendingRow = [...window.document.querySelectorAll('.order-row')].find((r) => r.dataset.id === 'O2');
+check('待支付订单有「继续支付」提示', Boolean(pendingRow) && pendingRow.textContent.includes('继续支付'), pendingRow ? pendingRow.textContent.replace(/\s+/g, ' ').trim() : '');
+check('待支付筛选包含支付中订单', text('.mchips').includes('待支付 1'), text('.mchips'));
+pendingRow.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+check('点支付中订单直接进支付界面', text('.sheet h3') === '继续支付', text('.sheet h3'));
+check(
+  '支付界面显示原订单号与金额',
+  text('.sheet .sheet-sub').includes('O2') && text('.amount-big').includes('12.00'),
+  text('.sheet .sheet-sub')
+);
+check('支付界面有立即支付按钮', Boolean($('.sheet [data-act="pay-order"]')));
+$('.sheet [data-act="pay-order"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(140);
+const payCall = calls.filter((c) => c.path === '/api/orders/O2/pay' && c.method === 'POST').pop();
+check(
+  '继续支付复用同一笔订单，不新建',
+  Boolean(payCall) && !calls.some((c) => c.path === '/api/orders' && c.method === 'POST'),
+  payCall ? JSON.stringify(payCall.body) : '未发出支付请求'
+);
+check('已付款时直接给成功反馈', text('.success-title') === '支付成功', text('.success-title'));
+$('.sheet [data-act="close"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
+check('支付后列表状态同步为已支付', window.document.querySelectorAll('.status.paid').length === 2);
+
+// 5. 分享：复制链接
+let copied = '';
+window.navigator.clipboard = { writeText: (t) => { copied = t; return Promise.resolve(); } };
+window.isSecureContext = true;
+$('[data-act="share-copy"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+check('复制的是带 sharecode 的链接', copied === 'https://example.com/?sharecode=TESTCODE', copied);
+
+// 6. 二维码弹层
+$('[data-act="share-qr"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+const qrSrc = ($('.qr-img') || {}).src || '';
+check('二维码图片地址含 t 参数', qrSrc.includes('/api/qr?t=') && qrSrc.includes('sharecode=TESTCODE'), qrSrc.slice(0, 60));
+$('.sheet [data-act="close"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
+
+// 7. 改昵称
+$('[data-act="edit-nickname"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+check('改昵称弹层输入框有当前值', ($('#nickInput') || {}).value === '测试用户');
+$('#nickInput').value = '新名字';
+$('[data-act="save-nickname"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(80);
+check('昵称已更新到页面', text('.profile-name').includes('新名字'), text('.profile-name'));
+
+// 8. 改地址
+$('[data-act="edit-address"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+$('#addrName').value = '李四';
+$('#addrPhone').value = '13900001111';
+$('#addrDetail').value = '上海市浦东新区测试路 2 号';
+$('[data-act="save-address"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(80);
+check('地址已更新', text('.addr-name').includes('李四') && text('.addr-detail').includes('上海市'), text('.addr-detail'));
+
+// 9. 改密码校验
+$('[data-act="change-password"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+$('#pwdOld').value = 'test123456';
+$('#pwdNew').value = '123';
+$('[data-act="save-password"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+check('新密码过短被拦截', text('#toast').includes('至少 6 位'), text('#toast'));
+$('#pwdNew').value = 'newpass123';
+$('[data-act="save-password"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
+check('改密码成功请求', calls.some((c) => c.path === '/api/auth/password'));
+
+// 10. 关于
+$('[data-act="about"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+check('关于弹层显示应用名', text('.about-name').includes('手机App支付骨架'), text('.about-name'));
+$('.sheet [data-act="close"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
+
+// 11. 退出登录
+$('[data-act="logout"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
+check('退出后清空令牌', !window.localStorage.getItem('user_token_v1'));
+check('退出后回到登录页', !!$('#authPhone') && !$('.stat-row'));
+
+// 12. 未登录点购买 → 引导登录
+const homeTab = [...window.document.querySelectorAll('.tab')].find((t) => t.dataset.tab === 'home');
+homeTab.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+const buyBtn = $('[data-act="buy"]');
+if (buyBtn) {
+  buyBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(60);
+  check('未登录购买被引导到登录', !!$('#authPhone'), text('#toast'));
+} else {
+  check('首页有购买按钮', false, '未找到 buy 按钮');
+}
+
+const failed = results.filter((r) => !r.ok);
+console.log(`\n结果：${results.length - failed.length}/${results.length} 通过`);
+if (failed.length) {
+  console.log('失败项：' + failed.map((f) => f.name).join('、'));
+  process.exit(1);
+}

@@ -19,18 +19,58 @@ const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
-const { sign, signPayload, verify, getProvider, channelName } = require('./src/payments');
+const { sign, signPayload, verify, getProvider, channelName, providers } = require('./src/payments');
 const { WechatPay } = require('./src/wechatpay');
+const { Alipay } = require('./src/alipay');
 
 const PORT = Number(process.env.PORT || 3000);
 const PUBLIC_DIR = path.join(__dirname, 'public');
 
 /** 微信支付客户端：凭据齐全时为实例，否则为 null（自动降级到模拟渠道） */
 const wxClient = WechatPay.fromEnv();
-const PROVIDER = (process.env.PAY_PROVIDER || (wxClient ? 'wechat' : 'mock')).toLowerCase();
+/** 支付宝客户端：凭据齐全时为实例，否则 null */
+const alipayClient = Alipay.fromEnv();
+
+/**
+ * 手机网站支付（wap.pay）签约探测。
+ * wap.pay 只返回一个签名 URL，构造阶段看不出权限问题，必须真实请求一次才知道。
+ * 结果缓存 10 分钟：没签约时前端就只展示「支付宝扫码」，避免用户看到支付宝调试错误页。
+ */
+let alipayWapProbe = { ok: null, at: 0, code: null };
+async function probeAlipayWap(force = false) {
+  if (!alipayClient) return false;
+  const fresh = alipayWapProbe.ok !== null && Date.now() - alipayWapProbe.at < 10 * 60 * 1000;
+  if (!force && fresh) return alipayWapProbe.ok;
+  try {
+    const url = alipayClient.buildPagePayUrl({ outTradeNo: 'PROBE' + Date.now(), totalAmountFen: 1, subject: '签约探测', wap: true });
+    const r = await fetch(url, {
+      headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) Mobile Safari/604.1' },
+    });
+    const html = new TextDecoder('gbk').decode(Buffer.from(await r.arrayBuffer()));
+    const denied = /insufficient-isv-permissions|isv\.insufficient/i.test(html);
+    alipayWapProbe = { ok: !denied, at: Date.now(), code: denied ? 'insufficient-isv-permissions' : null };
+  } catch (e) {
+    alipayWapProbe = { ok: false, at: Date.now(), code: 'probe-failed' };
+    console.warn('[alipay] wap 探测失败:', e.message);
+  }
+  console.log(`[alipay] 手机网站支付${alipayWapProbe.ok ? '可用' : '不可用（自动走扫码渠道）'}`);
+  return alipayWapProbe.ok;
+}
+// 启动后异步探一次，不阻塞服务起来
+setTimeout(() => probeAlipayWap().catch(() => {}), 2000);
+const PROVIDER = (
+  process.env.PAY_PROVIDER || (alipayClient ? 'alipay' : wxClient ? 'wechat' : 'mock')
+).toLowerCase();
 
 /** 管理后台密码（.env 的 ADMIN_PASSWORD；不设置则后台不可登录） */
 const ADMIN_PASSWORD = (process.env.ADMIN_PASSWORD || '').trim();
+
+/**
+ * 预览网关要求的 sharecode（.env 的 PUBLIC_SHARECODE）。
+ * 网关会把 URL query 里的 sharecode 剥掉，服务端读不到，只能靠环境变量兜底，
+ * 否则「添加到主屏幕」的 start_url 变成 /，点开就被网关 403 拦住。
+ */
+const PUBLIC_SHARECODE = (process.env.PUBLIC_SHARECODE || '').trim();
 
 function adminToken(expMs) {
   const sig = crypto.createHmac('sha256', ADMIN_PASSWORD).update('admin|' + expMs).digest('base64url');
@@ -74,6 +114,8 @@ const MIME = {
 /* ------------------------------------------------------------------ */
 
 const store = require('./src/cloudstore');
+// 网页版用户体系：手机号 + 密码登录，资料 / 余额 / 订单存云库
+const users = require('./src/userstore');
 // 小程序云库只读客户端：管理后台查看小程序用户手机号（跨应用，独立云环境）
 const mpstore = require('./src/mpstore');
 // iOS App（PWA）图标与启动图生成：sharp 优先，纯 JS 兜底
@@ -117,6 +159,86 @@ async function refreshProducts() {
   return all;
 }
 
+/** 从请求头取当前登录用户 id（令牌无效返回 null） */
+/** 会话 Cookie：预览网关会剥掉认证请求头，Cookie 作为可靠传输通道 */
+function setSessionCookie(res, token) {
+  try {
+    res.setHeader(
+      'Set-Cookie',
+      `ut=${encodeURIComponent(token)}; Path=/; Max-Age=${30 * 24 * 3600}; SameSite=Lax`
+    );
+  } catch {
+    /* 忽略 */
+  }
+}
+
+function currentUserId(req) {
+  const h = req.headers || {};
+  const cands = [];
+  if (h['authorization']) cands.push(h['authorization']);
+  if (h['x-user-token']) cands.push(h['x-user-token']);
+  if (h['cookie']) {
+    const m = String(h['cookie']).match(/(?:^|;\s*)(?:ut|token)=([^;]+)/);
+    if (m) cands.push(decodeURIComponent(m[1]));
+  }
+  if (req._bodyToken) cands.push(req._bodyToken);
+  if (req._url) {
+    const t = req._url.searchParams.get('t');
+    if (t) cands.push(t);
+  }
+  // 预览网关会注入它自己的 authorization 头，逐个尝试，取第一个能解出用户的
+  for (const c of cands) {
+    const uid = users.readToken(c);
+    if (uid) return uid;
+  }
+  return null;
+}
+
+/** 渠道选择：优先用户选的渠道（必须已配置好），否则回落到默认渠道 */
+function pickChannel(requested) {
+  const id = String(requested || '').toLowerCase();
+  const p = providers[id];
+  if (p && p.id !== 'balance' && p.id !== 'mock' && (!p.isReady || p.isReady())) return id;
+  return PROVIDER;
+}
+
+/** 手机号脱敏：199****3741 */
+function maskPhone(phone) {
+  const raw = String(phone || '').replace(/\D/g, '');
+  if (raw.length < 7) return phone || '';
+  return raw.slice(0, 3) + '****' + raw.slice(-4);
+}
+
+/** 对外输出用户资料（含脱敏手机号、余额、积分、优惠券、地址、订单） */
+async function publicViewer(userId) {
+  const data = await users.getUser(userId);
+  if (!data) return null;
+  const p = data.profile;
+  return {
+    id: p.id,
+    nickname: p.nickname,
+    phone: p.phone,
+    phoneMasked: maskPhone(p.phone),
+    initial: String(p.nickname || '用').trim().slice(0, 1),
+    avatar: p.avatar || null,
+    points: p.points,
+    coupons: p.coupons,
+    address: p.address,
+    balance: data.balance,
+    createdAt: p.createdAt,
+    orders: data.orders.map((o) => ({
+      id: o.id,
+      productId: o.product_id,
+      title: o.title,
+      amount: o.amount,
+      channel: o.channel,
+      status: o.status,
+      createdAt: o.created_at ? new Date(o.created_at).getTime() : null,
+      paidAt: o.paid_at ? new Date(o.paid_at).getTime() : null,
+    })),
+  };
+}
+
 function newOrderId() {
   return 'O' + Date.now().toString(36).toUpperCase() + crypto.randomBytes(3).toString('hex').toUpperCase();
 }
@@ -128,6 +250,10 @@ function newOrderId() {
 let site = {
   name: process.env.APP_NAME || '手机App支付骨架',
   tagline: '',
+  notice: '', // 首页公告（后台可改）
+  enableRegister: true, // 是否开放注册
+  showMock: true, // 是否向用户展示模拟收银台
+  showBalance: true, // 是否向用户展示余额支付
   iconMime: null,
   iconData: null, // 纯 base64（不带 data: 前缀）
   iconThumb: null, // 96px 小图 dataURL，同步给小程序用
@@ -144,6 +270,10 @@ async function loadSite() {
   site = {
     name: s.name || site.name,
     tagline: s.tagline || '',
+    notice: s.notice || '',
+    enableRegister: s.enableRegister !== false,
+    showMock: s.showMock !== false,
+    showBalance: s.showBalance !== false,
     iconMime: s.iconMime,
     iconData: s.iconData,
     iconThumb: s.iconThumb,
@@ -213,6 +343,10 @@ function publicSite() {
   return {
     name: site.name,
     tagline: site.tagline || '',
+    notice: site.notice || '',
+    enableRegister: site.enableRegister !== false,
+    showMock: site.showMock !== false,
+    showBalance: site.showBalance !== false,
     hasIcon,
     iconVer: hasIcon ? site.iconVer || '1' : 'default',
     iconUrl: '/api/brand/icon?v=' + encodeURIComponent(hasIcon ? site.iconVer || '1' : 'default'),
@@ -224,6 +358,10 @@ const ICON_MAX_BYTES = 512 * 1024;
 /** 同步给小程序的小图上限（base64 解码后字节数） */
 const ICON_THUMB_MAX_BYTES = 200 * 1024;
 const ICON_MIME_OK = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+/** 用户头像：前端压到 192px 的 JPEG，正常 8~20KB，留足余量 */
+const AVATAR_MAX_BYTES = 256 * 1024;
+/** 首页内容配图：前端压到 720px，限制 400KB */
+const CONTENT_IMAGE_MAX_BYTES = 400 * 1024;
 
 /** 解析前端传来的 data URL：data:image/png;base64,xxxx */
 function parseDataUrl(s) {
@@ -249,8 +387,9 @@ function sendJSON(res, code, data) {
   res.end(body);
 }
 
-function readBody(req) {
-  return new Promise((resolve, reject) => {
+async function readBody(req) {
+  if (req._bodyParsed) return req._bodyParsed;
+  req._bodyParsed = await new Promise((resolve, reject) => {
     let raw = '';
     let size = 0;
     req.on('data', (chunk) => {
@@ -272,6 +411,7 @@ function readBody(req) {
     });
     req.on('error', reject);
   });
+  return req._bodyParsed;
 }
 
 /** 保留原始报文的读取（微信支付回调验签必须用原始字节，不能先 parse 再 stringify） */
@@ -312,7 +452,31 @@ function publicOrder(order) {
     createdAt: order.createdAt,
     paidAt: order.paidAt || null,
     refundedAt: order.refundedAt || null,
+    transactionId: order.transactionId || null,
   };
+}
+
+/** 用户表 30 秒缓存：后台订单列表附带买家信息用 */
+let userMapCache = { at: 0, map: null };
+async function userMap() {
+  if (!users.enabled) return {};
+  const now = Date.now();
+  if (userMapCache.map && now - userMapCache.at < 30000) return userMapCache.map;
+  try {
+    const list = await users.listUsers();
+    const map = {};
+    for (const u of list) map[u.id] = { phone: u.phone || '', nickname: u.nickname || '' };
+    userMapCache = { at: now, map };
+    return map;
+  } catch {
+    return userMapCache.map || {};
+  }
+}
+
+/** 后台订单视图：在 publicOrder 基础上附买家（手机号/昵称） */
+function adminOrder(order, map) {
+  const buyer = (order.userId && map && map[order.userId]) || null;
+  return { ...publicOrder(order), userId: order.userId || null, buyer };
 }
 
 /* ------------------------------------------------------------------ */
@@ -329,6 +493,74 @@ function settleOrder(order, source) {
   order.paidAt = Date.now();
   order.settleSource = source;
   return { ok: true };
+}
+
+/**
+ * 主动同步：向支付宝查单，确认已付款就入账。
+ * 异步通知可能延迟/丢失（公司网络、网关限流、notify_url 未生效等），
+ * 这里是兜底通道——用户点「我已完成支付」、页面轮询、后台对账都走它。
+ */
+const SYNC_INTERVAL_MS = 4000; // 同一订单最小查单间隔，避免轮询打爆支付宝接口
+async function syncOrderFromChannel(order, { force = false } = {}) {
+  if (!order) return { order, checked: false, reason: 'noorder' };
+  if (order.status !== 'pending') return { order, checked: false, reason: 'notpending' };
+  const isAlipay = order.channel === 'alipay' || order.channel === 'alipay_qr';
+  if (!isAlipay || !alipayClient) return { order, checked: false, reason: 'nochannel' };
+
+  const now = Date.now();
+  if (!force && order.lastSyncAt && now - order.lastSyncAt < SYNC_INTERVAL_MS) {
+    return { order, checked: false, reason: 'throttled' };
+  }
+  order.lastSyncAt = now;
+
+  try {
+    const q = await alipayClient.query(order.id);
+    const tradeStatus = q.trade_status || q.tradeStatus || '';
+    if (!['TRADE_SUCCESS', 'TRADE_FINISHED'].includes(tradeStatus)) {
+      return { order, checked: true, paid: false, tradeStatus: tradeStatus || 'WAIT_BUYER_PAY' };
+    }
+    const fen = Math.round(Number(q.total_amount || q.totalAmount || 0) * 100);
+    if (fen && fen !== order.amount) {
+      console.warn('[sync] 金额不一致，拒绝入账', order.id, fen, order.amount);
+      return { order, checked: true, paid: false, reason: 'amountmismatch', tradeStatus };
+    }
+    order.transactionId = q.trade_no || q.tradeNo || order.transactionId || null;
+    settleOrder(order, 'query');
+    await persistOrder(order);
+    console.log(`[sync] 订单 ${order.id} 主动查单确认已支付，交易号 ${order.transactionId || '-'}`);
+    return { order, checked: true, paid: true, tradeStatus };
+  } catch (e) {
+    const code = (e.detail && (e.detail.subCode || e.detail.code)) || e.code || null;
+    // ACQ.TRADE_NOT_EXIST：买家还没扫码，属正常情况
+    return { order, checked: true, paid: false, error: code || e.message, tradeStatus: 'WAIT_BUYER_PAY' };
+  }
+}
+
+/** 后台补偿：定时把「待支付但实际已付」的支付宝订单补记入账 */
+function startPendingSyncSweeper() {
+  const tick = async () => {
+    if (!alipayClient) return;
+    const now = Date.now();
+    const targets = db.orders
+      .filter(
+        (o) =>
+          o.status === 'pending' &&
+          (o.channel === 'alipay' || o.channel === 'alipay_qr') &&
+          now - (o.createdAt || 0) > 60 * 1000 &&
+          now - (o.createdAt || 0) < 60 * 60 * 1000
+      )
+      .slice(-5);
+    for (const o of targets) {
+      try {
+        const r = await syncOrderFromChannel(o, { force: true });
+        if (r.paid) console.log(`[sweeper] 补记订单 ${o.id}`);
+      } catch (e) {
+        /* 单笔失败不影响下一轮 */
+      }
+    }
+  };
+  setInterval(() => tick().catch(() => {}), 60 * 1000);
+  setTimeout(() => tick().catch(() => {}), 15 * 1000);
 }
 
 /** 退款：真实渠道先调渠道退款接口，站内渠道退回余额；落库失败会抛错由调用方回滚 */
@@ -350,11 +582,19 @@ async function refundOrder(order) {
   }
   order.status = 'refunded';
   order.refundedAt = Date.now();
+  let refundedBalance = null;
   if (order.channel === 'balance' || order.channel === 'mock') {
-    db.user.balance += order.amount; // 站内渠道：退回余额
-    await persistBalance();
+    // 站内渠道：退回下单用户自己的余额；没有归属的老订单退回全局账户
+    if (order.userId && users.enabled) {
+      refundedBalance = await users.adjustUserBalance(order.userId, order.amount);
+    } else {
+      db.user.balance += order.amount;
+      await persistBalance();
+      refundedBalance = db.user.balance;
+    }
   }
   await persistOrder(order);
+  return { ok: true, balance: refundedBalance };
 }
 
 /** 模拟渠道：延迟后向本机 notify 接口发一条带签名的异步通知 */
@@ -394,8 +634,38 @@ function scheduleMockNotify(order) {
 /* ------------------------------------------------------------------ */
 
 async function handleApi(req, res, url) {
+  req._url = url;
   const { pathname } = url;
   const method = req.method;
+
+  // 需要签名的报文（微信支付回调）必须保留原始字节，不能提前解析
+  const rawNeeded = /\/notify\//.test(pathname);
+
+  // 预览网关会剥掉 authorization / Cookie 之外的认证通道，先把 body 里的令牌取出来备用
+  if (!rawNeeded && (method === 'POST' || method === 'PUT' || method === 'PATCH')) {
+    try {
+      const b = await readBody(req);
+      if (b && typeof b.__token === 'string') req._bodyToken = b.__token;
+    } catch {
+      /* 非法 JSON 交给后续路由报错 */
+    }
+  }
+
+  // 诊断：预览网关到底放行了哪些通道（只回头名，不含任何值）
+  if (pathname === '/api/_echo') {
+    const body = method === 'POST' ? await readBody(req).catch(() => ({})) : {};
+    return sendJSON(res, 200, {
+      method,
+      headerNames: Object.keys(req.headers || {}).sort(),
+      hasAuthorization: Boolean(req.headers.authorization),
+      hasUserToken: Boolean(req.headers['x-user-token']),
+      hasCookie: Boolean(req.headers.cookie),
+      queryKeys: [...url.searchParams.keys()],
+      hasQueryToken: Boolean(url.searchParams.get('t')),
+      bodyKeys: Object.keys(body || {}),
+      hasBodyToken: Boolean(body && body.__token),
+    });
+  }
 
   // 启动数据
   if (pathname === '/api/bootstrap' && method === 'GET') {
@@ -404,18 +674,153 @@ async function handleApi(req, res, url) {
         message: `云数据库暂不可用：${cloudError || '正在连接'}，请稍后重试`,
       });
     }
+    const uid = currentUserId(req);
+    // 登录用户：余额与订单都用他自己的；游客不返回订单
+    let balance = db.user.balance;
+    let recentOrders = [];
+    if (uid) {
+      try {
+        balance = await users.getUserBalance(uid);
+      } catch (e) {
+        console.error('[bootstrap] 读取用户余额失败:', e.message);
+      }
+      recentOrders = db.orders.filter((o) => o.userId === uid).slice(-20).reverse();
+    }
+    const alipayWap = alipayClient ? await probeAlipayWap() : false;
+    // 首页内容（后台可增删改）；读不到不影响页面主体
+    let contents = [];
+    try {
+      contents = await store.listContents();
+    } catch (e) {
+      console.warn('[bootstrap] 读取首页内容失败:', e.message);
+    }
     return sendJSON(res, 200, {
       user: { id: db.user.id, nickname: db.user.nickname },
-      balance: db.user.balance,
+      loggedIn: Boolean(uid),
+      balance,
       provider: PROVIDER,
       payScene: (process.env.WX_PAY_SCENE || 'auto').toLowerCase(),
       wechatReady: !!wxClient,
+      alipayReady: !!alipayClient,
+      channels: { wechat: !!wxClient, alipay: !!alipayClient && alipayWap, alipayQr: !!alipayClient, mock: true },
       wxMchId: process.env.WX_MCHID || null,
       cloud: { ready: cloudReady, endpoint: store.endpoint || null },
       site: publicSite(),
       products: db.products,
-      orders: db.orders.slice(-20).reverse().map(publicOrder),
+      contents,
+      orders: recentOrders.map(publicOrder),
     });
+  }
+
+  /* ---------------- 用户：注册 / 登录 / 我的 ---------------- */
+
+  if (pathname === '/api/auth/register' && method === 'POST') {
+    if (site.enableRegister === false) {
+      return sendJSON(res, 403, { message: '当前未开放注册，请联系商家开通账号' });
+    }
+    const body = await readBody(req);
+    const phone = String(body.phone || '').replace(/\D/g, '');
+    const password = String(body.password || '');
+    const nickname = String(body.nickname || '').trim().slice(0, 16);
+    if (!/^1[3-9]\d{9}$/.test(phone)) return sendJSON(res, 400, { message: '请输入正确的 11 位手机号' });
+    if (password.length < 6) return sendJSON(res, 400, { message: '密码至少 6 位' });
+    if (password.length > 32) return sendJSON(res, 400, { message: '密码最多 32 位' });
+    try {
+      const out = await users.register({ phone, password, nickname });
+      setSessionCookie(res, out.token);
+      return sendJSON(res, 201, { token: out.token, viewer: await publicViewer(out.profile.id) });
+    } catch (e) {
+      const status = e.code === 'PHONE_EXISTS' ? 409 : 502;
+      return sendJSON(res, status, { message: e.message || '注册失败' });
+    }
+  }
+
+  if (pathname === '/api/auth/login' && method === 'POST') {
+    const body = await readBody(req);
+    const phone = String(body.phone || '').replace(/\D/g, '');
+    const password = String(body.password || '');
+    if (!phone || !password) return sendJSON(res, 400, { message: '请输入手机号和密码' });
+    try {
+      const out = await users.login({ phone, password });
+      setSessionCookie(res, out.token);
+      return sendJSON(res, 200, { token: out.token, viewer: await publicViewer(out.profile.id) });
+    } catch (e) {
+      const status = e.code === 'NO_USER' || e.code === 'BAD_PASSWORD' ? 401 : 502;
+      return sendJSON(res, status, { message: e.message || '登录失败' });
+    }
+  }
+
+  if (pathname === '/api/auth/me' && method === 'GET') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '未登录' });
+    try {
+      const viewer = await publicViewer(uid);
+      if (!viewer) return sendJSON(res, 401, { message: '账号不存在' });
+      return sendJSON(res, 200, { viewer });
+    } catch (e) {
+      return sendJSON(res, 502, { message: e.message || '读取用户信息失败' });
+    }
+  }
+
+  if (pathname === '/api/auth/profile' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '未登录' });
+    const body = await readBody(req);
+    const patch = {};
+    if (body.nickname !== undefined) {
+      const nickname = String(body.nickname || '').trim().slice(0, 16);
+      if (!nickname) return sendJSON(res, 400, { message: '昵称不能为空' });
+      patch.nickname = nickname;
+    }
+    if (body.address !== undefined) {
+      const a = body.address || {};
+      patch.address = {
+        name: String(a.name || '').trim().slice(0, 20),
+        phone: String(a.phone || '').replace(/\D/g, '').slice(0, 11),
+        detail: String(a.detail || '').trim().slice(0, 120),
+      };
+    }
+    if (body.avatar !== undefined) {
+      // 头像是前端画布压好的方形小图（data URL）；空字符串表示恢复默认头像
+      const raw = String(body.avatar || '').trim();
+      if (!raw) {
+        patch.avatar = '';
+      } else {
+        const parsed = parseDataUrl(raw);
+        if (!parsed) return sendJSON(res, 400, { message: '头像格式不正确，请重新选择图片' });
+        if (!['image/png', 'image/jpeg', 'image/webp'].includes(parsed.mime)) {
+          return sendJSON(res, 400, { message: '头像仅支持 PNG / JPG / WEBP' });
+        }
+        if (parsed.bytes > AVATAR_MAX_BYTES) {
+          return sendJSON(res, 400, { message: '头像太大，请换一张小一点的图片' });
+        }
+        patch.avatar = raw;
+      }
+    }
+    if (!Object.keys(patch).length) return sendJSON(res, 400, { message: '没有要保存的内容' });
+    try {
+      await users.updateProfile(uid, patch);
+      return sendJSON(res, 200, { viewer: await publicViewer(uid) });
+    } catch (e) {
+      return sendJSON(res, 502, { message: e.message || '保存失败' });
+    }
+  }
+
+  if (pathname === '/api/auth/password' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '未登录' });
+    const body = await readBody(req);
+    const oldPassword = String(body.oldPassword || '');
+    const newPassword = String(body.newPassword || '');
+    if (!oldPassword) return sendJSON(res, 400, { message: '请输入原密码' });
+    if (newPassword.length < 6) return sendJSON(res, 400, { message: '新密码至少 6 位' });
+    try {
+      await users.changePassword(uid, oldPassword, newPassword);
+      return sendJSON(res, 200, { ok: true });
+    } catch (e) {
+      const status = e.code === 'BAD_PASSWORD' ? 400 : 502;
+      return sendJSON(res, status, { message: e.message || '修改密码失败' });
+    }
   }
 
   if (pathname === '/api/health' && method === 'GET') {
@@ -518,18 +923,22 @@ async function handleApi(req, res, url) {
   if (pathname === '/manifest.webmanifest' && method === 'GET') {
     const hasIcon = Boolean(site.iconData && site.iconMime);
     const ver = hasIcon ? site.iconVer || '1' : 'default';
-    const share = (url.searchParams.get('sharecode') || '').trim();
+    const share = (url.searchParams.get('sharecode') || PUBLIC_SHARECODE).trim();
     const sq = share ? 'sharecode=' + encodeURIComponent(share) + '&' : '';
     const icon = (size, mode) =>
       `/api/brand/icon.png?${sq}size=${size}&mode=${mode}&v=${encodeURIComponent(ver)}`;
     const manifest = {
+      id: '/',
       name: site.name,
       short_name: site.name.slice(0, 12),
       description: site.tagline || site.name,
       start_url: '/' + (sq ? '?' + sq.replace(/&$/, '') : ''),
       scope: '/',
       display: 'standalone',
+      display_override: ['standalone', 'minimal-ui'],
       orientation: 'portrait',
+      lang: 'zh-CN',
+      dir: 'ltr',
       background_color: '#f4f5f9',
       theme_color: '#f4f5f9',
       icons: [
@@ -560,13 +969,15 @@ async function handleApi(req, res, url) {
 
   // 创建订单
   if (pathname === '/api/orders' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录后再下单' });
     const body = await readBody(req);
     const product = db.products.find((p) => p.id === body.productId);
     if (!product) return sendJSON(res, 400, { message: '商品不存在或已下架' });
 
     const order = {
       id: newOrderId(),
-      userId: db.user.id,
+      userId: uid,
       productId: product.id,
       title: product.title,
       amount: product.amount, // 金额一律取服务端商品表，绝不信前端传的金额
@@ -585,9 +996,11 @@ async function handleApi(req, res, url) {
     return sendJSON(res, 201, { order: publicOrder(order) });
   }
 
-  // 订单列表
+  // 订单列表：登录后只看自己的
   if (pathname === '/api/orders' && method === 'GET') {
-    return sendJSON(res, 200, { orders: db.orders.slice(-50).reverse().map(publicOrder) });
+    const uid = currentUserId(req);
+    const list = uid ? db.orders.filter((o) => o.userId === uid) : db.orders.filter((o) => !o.userId);
+    return sendJSON(res, 200, { orders: list.slice(-50).reverse().map(publicOrder) });
   }
 
   // 订单详情 / 收银台轮询
@@ -595,7 +1008,33 @@ async function handleApi(req, res, url) {
   if (detailMatch && method === 'GET') {
     const order = db.orders.find((o) => o.id === detailMatch[1]);
     if (!order) return sendJSON(res, 404, { message: '订单不存在' });
+    // 待支付的支付宝订单：顺带向支付宝查一次单（内部有 4 秒节流），
+    // 这样即使异步通知丢了，用户轮询/点「我已完成支付」也能自动变已支付
+    if (order.status === 'pending') await syncOrderFromChannel(order).catch(() => {});
     return sendJSON(res, 200, { order: publicOrder(order) });
+  }
+
+  // 主动同步订单状态（「我已完成支付」按钮走这里）：强制查单，不受节流限制
+  const syncMatch = pathname.match(/^\/api\/orders\/([^/]+)\/sync$/);
+  if (syncMatch && method === 'POST') {
+    const order = db.orders.find((o) => o.id === syncMatch[1]);
+    if (!order) return sendJSON(res, 404, { message: '订单不存在' });
+    // 只能同步自己的订单（后台令牌不受限）
+    if (order.userId && currentUserId(req) !== order.userId && !checkAdmin(req)) {
+      return sendJSON(res, 403, { message: '无权操作该订单' });
+    }
+    const r = await syncOrderFromChannel(order, { force: true }).catch((e) => ({
+      order,
+      checked: false,
+      error: e.message,
+    }));
+    return sendJSON(res, 200, {
+      order: publicOrder(order),
+      paid: order.status === 'paid',
+      checked: Boolean(r.checked),
+      tradeStatus: r.tradeStatus || null,
+      reason: r.reason || r.error || null,
+    });
   }
 
   // 发起支付
@@ -604,31 +1043,54 @@ async function handleApi(req, res, url) {
     const body = await readBody(req);
     const order = db.orders.find((o) => o.id === payMatch[1]);
     if (!order) return sendJSON(res, 404, { message: '订单不存在' });
+    if (order.userId && currentUserId(req) !== order.userId && !checkAdmin(req)) {
+      return sendJSON(res, 403, { message: '无权操作该订单' });
+    }
     if (order.status === 'paid') return sendJSON(res, 409, { message: '订单已支付' });
     if (order.status === 'refunded' || order.status === 'closed') {
       return sendJSON(res, 409, { message: '订单已关闭' });
     }
+    // 上次可能已经付成功、只是回调没到：先查一次，确认已付就直接回成功，避免重复下单收款
+    if (order.status === 'pending') {
+      await syncOrderFromChannel(order).catch(() => {});
+      if (order.status === 'paid') {
+        return sendJSON(res, 200, { mode: 'already_paid', order: publicOrder(order) });
+      }
+    }
 
     const channel = body.channel === 'balance' ? 'balance' : body.channel;
     if (channel === 'balance') {
-      if (db.user.balance < order.amount) return sendJSON(res, 400, { message: '余额不足' });
-      const prevBalance = db.user.balance;
-      db.user.balance -= order.amount;
+      // 余额是每个用户自己的账户（accounts 表按 userId 一行），不是全局账户
+      const uid = currentUserId(req);
+      if (!uid) return sendJSON(res, 401, { message: '请先登录后再使用余额支付' });
+      let newBalance;
+      try {
+        newBalance = await users.adjustUserBalance(uid, -order.amount);
+      } catch (e) {
+        if (e.code === 'INSUFFICIENT_BALANCE') return sendJSON(res, 400, { message: '余额不足' });
+        console.error('[pay] 余额扣减失败:', e.message);
+        return sendJSON(res, 502, { message: '余额账户读写失败：' + e.message });
+      }
       order.channel = 'balance';
       settleOrder(order, 'balance');
       try {
-        await persistBalance();
         await persistOrder(order);
       } catch (e) {
-        db.user.balance = prevBalance;
+        // 落库失败要回滚扣款
+        await users.adjustUserBalance(uid, order.amount).catch(() => {});
         return sendJSON(res, 502, { message: '云端写入失败：' + e.message });
       }
-      return sendJSON(res, 200, { mode: 'balance', order: publicOrder(order), balance: db.user.balance });
+      return sendJSON(res, 200, { mode: 'balance', order: publicOrder(order), balance: newBalance });
     }
 
     let provider;
     try {
-      provider = getProvider(PROVIDER);
+      let channelId = pickChannel(body.channel);
+      // 手机网站支付未生效时自动降级为扫码收款，避免用户看到支付宝调试错误页
+      if (channelId === 'alipay' && alipayClient && !(await probeAlipayWap())) {
+        channelId = 'alipay_qr';
+      }
+      provider = getProvider(channelId);
     } catch (e) {
       return sendJSON(res, 400, { message: e.message });
     }
@@ -644,6 +1106,8 @@ async function handleApi(req, res, url) {
       await persistOrder(order);
       return sendJSON(res, 200, {
         mode: result.mode,
+        channel: order.channel,
+        channelName: channelName(order.channel),
         payUrl: result.payUrl || null,
         codeUrl: result.codeUrl || null,
         qrUrl: result.codeUrl ? `/api/qr?t=${encodeURIComponent(result.codeUrl)}` : null,
@@ -694,6 +1158,91 @@ async function handleApi(req, res, url) {
       }
     }
     return sendJSON(res, 200, { ok: true });
+  }
+
+  // 支付宝异步通知：验签 -> 校验金额 -> 幂等入账（支付宝要求返回纯文本 success，否则会重试）
+  if (pathname === '/api/notify/alipay' && method === 'POST') {
+    const raw = await readRawBody(req);
+    const params = Object.fromEntries(new URLSearchParams(raw || ''));
+    const reply = (text) => {
+      res.writeHead(200, { 'Content-Type': 'text/plain; charset=utf-8', 'Cache-Control': 'no-store' });
+      res.end(text);
+    };
+    const client = Alipay.fromEnv();
+    if (!client) {
+      console.warn('[notify/alipay] 支付宝未配置');
+      return reply('failure');
+    }
+    if (!client.verifyNotify(params)) {
+      console.warn('[notify/alipay] 验签失败', params.out_trade_no || '-');
+      return reply('failure');
+    }
+    if (params.app_id && params.app_id !== client.appId) {
+      console.warn('[notify/alipay] app_id 不匹配');
+      return reply('failure');
+    }
+    const order = db.orders.find((o) => o.id === params.out_trade_no);
+    if (!order) {
+      console.warn('[notify/alipay] 未知订单', params.out_trade_no || '-');
+      return reply('success');
+    }
+    if (!['TRADE_SUCCESS', 'TRADE_FINISHED'].includes(params.trade_status)) {
+      console.log('[notify/alipay] 非成功状态', order.id, params.trade_status);
+      return reply('success');
+    }
+    const fen = Math.round(Number(params.total_amount || 0) * 100);
+    if (fen !== order.amount) {
+      console.warn('[notify/alipay] 金额不一致', order.id, fen, order.amount);
+      return reply('failure');
+    }
+    order.transactionId = params.trade_no || null;
+    const result = settleOrder(order, 'notify');
+    await persistOrder(order);
+    console.log(
+      `[notify/alipay] 订单 ${order.id} -> ${order.status}${result.duplicate ? '（重复通知，已幂等处理）' : ''} 支付宝交易号 ${params.trade_no || '-'}`
+    );
+    return reply('success');
+  }
+
+  // 支付宝同步跳回：同步参数不可信，主动查询确认后才入账
+  if (pathname === '/api/alipay/return' && method === 'GET') {
+    const params = Object.fromEntries(url.searchParams);
+    const client = Alipay.fromEnv();
+    const orderId = params.out_trade_no || '';
+    let paid = false;
+    let reason = '';
+    if (!client) {
+      reason = 'noconfig';
+    } else if (!orderId) {
+      reason = 'noorder';
+    } else {
+      try {
+        const q = await client.query(orderId);
+        const okTrade = ['TRADE_SUCCESS', 'TRADE_FINISHED'].includes(q.trade_status);
+        const fen = Math.round(Number(q.total_amount || 0) * 100);
+        const order = db.orders.find((o) => o.id === orderId);
+        if (okTrade && order && fen === order.amount) {
+          order.transactionId = q.trade_no || null;
+          settleOrder(order, 'query');
+          await persistOrder(order);
+          paid = true;
+          console.log(`[alipay/return] 订单 ${order.id} 查询确认已支付`);
+        } else if (!order) {
+          reason = 'noorder';
+        } else {
+          reason = String(q.trade_status || 'unpaid').toLowerCase();
+        }
+      } catch (e) {
+        console.warn('[alipay/return] 查询失败:', e.message);
+        reason = 'queryfail';
+      }
+    }
+    const qs = new URLSearchParams({ result: paid ? 'paid' : 'cancel' });
+    if (orderId) qs.set('orderId', orderId);
+    if (reason) qs.set('reason', reason);
+    if (PUBLIC_SHARECODE) qs.set('sharecode', PUBLIC_SHARECODE);
+    res.writeHead(302, { Location: '/?' + qs.toString() });
+    return res.end();
   }
 
   // 微信支付异步通知：验签 -> 解密 -> 幂等入账
@@ -764,12 +1313,32 @@ async function handleApi(req, res, url) {
   if (refundMatch && method === 'POST') {
     const order = db.orders.find((o) => o.id === refundMatch[1]);
     if (!order) return sendJSON(res, 404, { message: '订单不存在' });
+    let result;
     try {
-      await refundOrder(order);
+      result = await refundOrder(order);
     } catch (e) {
       return sendJSON(res, e.status || 502, { message: `退款失败：${e.message}` });
     }
-    return sendJSON(res, 200, { order: publicOrder(order), balance: db.user.balance });
+    return sendJSON(res, 200, {
+      order: publicOrder(order),
+      balance: result && result.balance != null ? result.balance : db.user.balance,
+    });
+  }
+
+  // 后台：手动同步单笔订单（对账用，强制向支付宝查单）
+  const adminSyncMatch = pathname.match(/^\/api\/admin\/orders\/([^/]+)\/sync$/);
+  if (adminSyncMatch && method === 'POST') {
+    if (!checkAdmin(req)) return sendJSON(res, 401, { message: '登录已过期，请重新登录' });
+    const order = db.orders.find((o) => o.id === adminSyncMatch[1]);
+    if (!order) return sendJSON(res, 404, { message: '订单不存在' });
+    const r = await syncOrderFromChannel(order, { force: true }).catch((e) => ({ checked: false, error: e.message }));
+    return sendJSON(res, 200, {
+      order: publicOrder(order),
+      paid: order.status === 'paid',
+      checked: Boolean(r.checked),
+      tradeStatus: r.tradeStatus || null,
+      reason: r.reason || r.error || null,
+    });
   }
 
   // 支付配置自检：告诉你还缺哪些凭据（不返回任何密钥内容）
@@ -781,7 +1350,58 @@ async function handleApi(req, res, url) {
       wechatReady: !!wxClient,
       missing: WechatPay.missingEnv(),
       notifyUrl: process.env.WX_NOTIFY_URL || null,
+      alipay: {
+        ready: !!alipayClient,
+        appId: process.env.ALIPAY_APP_ID || null,
+        sandbox: String(process.env.ALIPAY_SANDBOX || '') === '1',
+        notifyUrl: process.env.ALIPAY_NOTIFY_URL || null,
+        missing: Alipay.missingEnv(),
+      },
     });
+  }
+
+  // 支付连通性自检：真实请求支付宝，告诉你哪些能力已签约生效
+  if (pathname === '/api/admin/pay-check' && method === 'POST') {
+    if (!checkAdmin(req)) return sendJSON(res, 401, { message: '登录已过期，请重新登录' });
+    const client = Alipay.fromEnv();
+    if (!client) {
+      return sendJSON(res, 200, { alipay: { ready: false, missing: Alipay.missingEnv().map((m) => m.key) } });
+    }
+    const out = { alipay: { ready: true, appId: client.appId, sandbox: !!client.sandbox, query: null, wap: null, qr: null } };
+    const subOf = (e) => (e.detail && (e.detail.subCode || e.detail.code)) || e.code || 'unknown';
+    // ① 基础接口（不需要产品签约）
+    try {
+      await client.query('CHECK' + Date.now());
+      out.alipay.query = { ok: true };
+    } catch (e) {
+      const code = subOf(e);
+      out.alipay.query = { ok: code === 'ACQ.TRADE_NOT_EXIST', code, message: (e.detail && e.detail.subMsg) || e.message };
+    }
+    // ② 手机网站支付：生成链接后真实请求一次，看支付宝是否拒绝
+    const testNo = 'WAPCHECK' + Date.now();
+    try {
+      const url = client.buildPagePayUrl({ outTradeNo: testNo, totalAmountFen: 1, subject: '签约检测', wap: true });
+      const r = await fetch(url, {
+        headers: { 'User-Agent': 'Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) Mobile Safari/604.1' },
+      });
+      const html = new TextDecoder('gbk').decode(Buffer.from(await r.arrayBuffer()));
+      const denied = /insufficient-isv-permissions|isv\.insufficient/i.test(html);
+      out.alipay.wap = { ok: !denied, code: denied ? 'insufficient-isv-permissions' : null, message: denied ? '手机网站支付未签约或未生效' : '收银台可正常打开' };
+      alipayWapProbe = { ok: !denied, at: Date.now(), code: denied ? 'insufficient-isv-permissions' : null };
+    } catch (e) {
+      out.alipay.wap = { ok: false, code: subOf(e), message: e.message };
+    }
+    // ③ 当面付扫码：预下单拿二维码，成功后立即关单
+    const qrNo = 'QRCHECK' + Date.now();
+    try {
+      const codeUrl = await client.precreate({ outTradeNo: qrNo, totalAmountFen: 1, subject: '扫码检测', timeoutExpress: '5m' });
+      out.alipay.qr = { ok: !!codeUrl, code: null, message: codeUrl ? '扫码支付可用' : '未返回二维码' };
+      client.close(qrNo).catch(() => {});
+    } catch (e) {
+      out.alipay.qr = { ok: false, code: subOf(e), message: (e.detail && e.detail.subMsg) || e.message };
+    }
+    console.log('[pay-check]', JSON.stringify(out.alipay));
+    return sendJSON(res, 200, out);
   }
 
   // 把微信返回的 code_url 渲染成二维码图片（native 扫码支付用）
@@ -828,6 +1448,13 @@ async function handleApi(req, res, url) {
       } catch (e) {
         return sendJSON(res, 502, { message: '读取商品失败：' + e.message });
       }
+      let contents = [];
+      try {
+        contents = await store.adminListContents();
+      } catch (e) {
+        console.warn('[admin] 读取首页内容失败:', e.message);
+      }
+      const umap = await userMap();
       return sendJSON(res, 200, {
         stats: {
           orders: db.orders.length,
@@ -838,8 +1465,9 @@ async function handleApi(req, res, url) {
           net: gross - refundSum, // 净收入
           balance: db.user.balance,
         },
-        orders: db.orders.slice(-100).reverse().map(publicOrder),
+        orders: db.orders.slice(-200).reverse().map((o) => adminOrder(o, umap)),
         products,
+        contents,
         site: publicSite(),
         mp: { ready: mpstore.enabled, endpoint: mpstore.endpoint || null },
         pay: {
@@ -849,6 +1477,13 @@ async function handleApi(req, res, url) {
           wechatReady: !!wxClient,
           missing: WechatPay.missingEnv(),
           notifyUrl: process.env.WX_NOTIFY_URL || null,
+          alipay: {
+            ready: !!alipayClient,
+            appId: process.env.ALIPAY_APP_ID || null,
+            sandbox: String(process.env.ALIPAY_SANDBOX || '') === '1',
+            notifyUrl: process.env.ALIPAY_NOTIFY_URL || null,
+            missing: Alipay.missingEnv(),
+          },
           cloudReady,
         },
       });
@@ -856,26 +1491,56 @@ async function handleApi(req, res, url) {
 
     // 小程序用户（手机号）：跨云环境只读，走 app_admin_list_users
     if (pathname === '/api/admin/users' && method === 'GET') {
+      // 两个来源合并：网页版 / PWA 用户（本应用云库）+ 小程序用户（独立云环境）
+      let webUsers = [];
+      let webError = null;
       try {
-        const users = await mpstore.listUsers();
+        webUsers = (await users.listUsers()).map((u) => ({
+          id: u.id,
+          phone: u.phone || '',
+          nickname: u.nickname || '',
+          points: Number(u.points || 0),
+          balance: Number(u.balance || 0),
+          source: 'web',
+          createdAt: u.created_at ? new Date(u.created_at).getTime() : null,
+          lastLoginAt: u.last_login_at ? new Date(u.last_login_at).getTime() : null,
+          orderCount: Number(u.order_count || 0),
+          paidAmount: 0,
+        }));
+      } catch (e) {
+        webError = e.message || '读取网页用户失败';
+      }
+
+      try {
+        const mp = await mpstore.listUsers();
         return sendJSON(res, 200, {
           ready: true,
           source: mpstore.endpoint || null,
-          users: users.map((u) => ({
-            id: u.id,
-            phone: u.phone || '',
-            nickname: u.nickname || '',
-            createdAt: u.created_at ? new Date(u.created_at).getTime() : null,
-            lastLoginAt: u.last_login_at ? new Date(u.last_login_at).getTime() : null,
-            orderCount: Number(u.order_count || 0),
-            paidAmount: Number(u.paid_amount || 0),
-          })),
+          webError,
+          users: [
+            ...webUsers,
+            ...mp.map((u) => ({
+              id: u.id,
+              phone: u.phone || '',
+              nickname: u.nickname || '',
+              points: 0,
+              balance: 0,
+              source: 'mp',
+              createdAt: u.created_at ? new Date(u.created_at).getTime() : null,
+              lastLoginAt: u.last_login_at ? new Date(u.last_login_at).getTime() : null,
+              orderCount: Number(u.order_count || 0),
+              paidAmount: Number(u.paid_amount || 0),
+            })),
+          ],
         });
       } catch (e) {
-        return sendJSON(res, e.code === 'MP_NOT_CONFIGURED' ? 501 : 502, {
-          ready: false,
-          users: [],
-          message: e.message || '读取小程序用户失败',
+        // 小程序库不可用时，至少把网页用户返回出来
+        return sendJSON(res, 200, {
+          ready: true,
+          source: null,
+          webError,
+          mpError: e.message || '读取小程序用户失败',
+          users: webUsers,
         });
       }
     }
@@ -893,6 +1558,10 @@ async function handleApi(req, res, url) {
       if ([...name].length > 24) return sendJSON(res, 400, { message: '程序名称最多 24 个字' });
       // 没传 tagline 时视为「不改动」，传空字符串才是清空
       const tagline = body.tagline === undefined ? null : String(body.tagline || '').trim().slice(0, 40);
+      const notice = body.notice === undefined ? null : String(body.notice || '').trim().slice(0, 200);
+      const enableRegister = body.enableRegister === undefined ? undefined : Boolean(body.enableRegister);
+      const showMock = body.showMock === undefined ? undefined : Boolean(body.showMock);
+      const showBalance = body.showBalance === undefined ? undefined : Boolean(body.showBalance);
 
       let iconAction = 'keep';
       let iconMime = null;
@@ -927,7 +1596,19 @@ async function handleApi(req, res, url) {
 
       let saved;
       try {
-        saved = await store.adminSaveSettings({ name, tagline, iconAction, iconMime, iconData, iconThumb, iconVer });
+        saved = await store.adminSaveSettings({
+          name,
+          tagline,
+          notice,
+          enableRegister,
+          showMock,
+          showBalance,
+          iconAction,
+          iconMime,
+          iconData,
+          iconThumb,
+          iconVer,
+        });
       } catch (e) {
         return sendJSON(res, 502, { message: '保存失败：' + e.message });
       }
@@ -935,6 +1616,10 @@ async function handleApi(req, res, url) {
       site = {
         name: (saved && saved.name) || name,
         tagline: saved ? saved.tagline || '' : tagline,
+        notice: saved ? saved.notice || '' : notice,
+        enableRegister: saved ? saved.enableRegister !== false : enableRegister !== false,
+        showMock: saved ? saved.showMock !== false : showMock !== false,
+        showBalance: saved ? saved.showBalance !== false : showBalance !== false,
         iconMime: iconAction === 'set' ? iconMime : iconAction === 'clear' ? null : site.iconMime,
         iconData: iconAction === 'set' ? iconData : iconAction === 'clear' ? null : site.iconData,
         iconThumb: iconAction === 'set' ? iconThumb : iconAction === 'clear' ? null : site.iconThumb,
@@ -943,9 +1628,9 @@ async function handleApi(req, res, url) {
       };
       iconCache = { ver: null, buf: null, mime: null };
       console.log(
-        `[site] 已更新外观：名称「${site.name}」，图标 ${
-          iconAction === 'set' ? '已替换' : iconAction === 'clear' ? '已恢复默认' : '未变'
-        }`
+        `[site] 已更新外观：名称「${site.name}」，公告${site.notice ? '已设置' : '为空'}，注册${
+          site.enableRegister ? '开放' : '关闭'
+        }，图标 ${iconAction === 'set' ? '已替换' : iconAction === 'clear' ? '已恢复默认' : '未变'}`
       );
 
       // 顺带把名称/图标推给小程序云库（失败不影响网页版保存）
@@ -997,17 +1682,75 @@ async function handleApi(req, res, url) {
       }
     }
 
+    // 保存首页内容（新增或更新）
+    if (pathname === '/api/admin/content/save' && method === 'POST') {
+      const body = await readBody(req);
+      const title = String(body.title || '').trim();
+      if (!title) return sendJSON(res, 400, { message: '标题不能为空' });
+      if ([...title].length > 40) return sendJSON(res, 400, { message: '标题最多 40 个字' });
+      let id = String(body.id || '').trim();
+      if (id && !/^[\w-]{1,32}$/.test(id)) return sendJSON(res, 400, { message: '内容 ID 只能包含字母/数字/下划线/短横线' });
+      if (!id) id = 'c' + Date.now().toString(36);
+
+      let image = null;
+      if (body.image) {
+        const parsed = parseDataUrl(body.image);
+        if (!parsed) return sendJSON(res, 400, { message: '配图格式不正确，请重新上传' });
+        if (!ICON_MIME_OK.includes(parsed.mime)) return sendJSON(res, 400, { message: '配图仅支持 PNG / JPG / WEBP' });
+        if (parsed.bytes > CONTENT_IMAGE_MAX_BYTES) {
+          return sendJSON(res, 400, { message: `配图太大（${Math.round(parsed.bytes / 1024)}KB），请换一张或压缩后再传` });
+        }
+        image = String(body.image).trim();
+      }
+
+      const link = String(body.link || '').trim();
+      if (link && !/^(https?:\/\/|\/)/i.test(link)) {
+        return sendJSON(res, 400, { message: '跳转地址要以 http(s):// 或 / 开头' });
+      }
+      try {
+        const saved = await store.adminUpsertContent({
+          id,
+          title,
+          desc: String(body.desc || '').trim().slice(0, 200),
+          tag: String(body.tag || '').trim().slice(0, 10),
+          image,
+          link,
+          sort: Number.isInteger(body.sort) ? body.sort : 100,
+          active: body.active !== false,
+        });
+        return sendJSON(res, 200, { content: saved });
+      } catch (e) {
+        return sendJSON(res, 502, { message: '保存失败：' + e.message });
+      }
+    }
+
+    // 删除首页内容
+    if (pathname === '/api/admin/content/delete' && method === 'POST') {
+      const body = await readBody(req);
+      try {
+        const removed = await store.adminDeleteContent(String(body.id || ''));
+        if (!removed) return sendJSON(res, 404, { message: '内容不存在' });
+        return sendJSON(res, 200, { ok: true });
+      } catch (e) {
+        return sendJSON(res, 502, { message: '删除失败：' + e.message });
+      }
+    }
+
     // 后台退款
     if (pathname === '/api/admin/order/refund' && method === 'POST') {
       const body = await readBody(req);
       const order = db.orders.find((o) => o.id === body.orderId);
       if (!order) return sendJSON(res, 404, { message: '订单不存在' });
+      let result;
       try {
-        await refundOrder(order);
+        result = await refundOrder(order);
       } catch (e) {
         return sendJSON(res, e.status || 502, { message: `退款失败：${e.message}` });
       }
-      return sendJSON(res, 200, { order: publicOrder(order), balance: db.user.balance });
+      return sendJSON(res, 200, {
+        order: publicOrder(order),
+        balance: result && result.balance != null ? result.balance : db.user.balance,
+      });
     }
 
     // 关闭未支付订单
@@ -1093,6 +1836,12 @@ const CORS_ORIGINS = [
   'ionic://localhost',
   'http://localhost',
   'https://localhost',
+  // 拆分布署：前端页面放在自己的备案域名上，接口仍在本服务
+  // 在 .env 里写 CORS_EXTRA_ORIGINS=https://pay.example.com,https://www.example.com
+  ...String(process.env.CORS_EXTRA_ORIGINS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean),
 ];
 
 function applyCors(req, res) {
@@ -1103,7 +1852,7 @@ function applyCors(req, res) {
   res.setHeader('Access-Control-Allow-Origin', origin);
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Admin-Token');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, X-Admin-Token, Authorization, X-User-Token');
   res.setHeader('Access-Control-Max-Age', '86400');
   return true;
 }
@@ -1132,5 +1881,6 @@ server.listen(PORT, () => {
   console.log(`  本地访问: http://localhost:${PORT}`);
   console.log(`  支付渠道: ${PROVIDER}（PAY_PROVIDER 可切换）`);
   initCloud();
+  startPendingSyncSweeper(); // 兜底：每分钟把「已付但状态没变」的支付宝订单补记入账
   console.log('');
 });

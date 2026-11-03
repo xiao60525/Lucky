@@ -7,7 +7,11 @@
   "scripts": {
     "start": "node server.js",
     "dev": "node server.js",
-    "pay:check": "node scripts/pay-check.js"
+    "pay:check": "node scripts/pay-check.js",
+    "alipay:keys": "node scripts/alipay-keys.js",
+    "alipay:doctor": "node scripts/alipay-doctor.mjs",
+    "test:alipay": "node scripts/test-alipay.mjs && node scripts/test-alipay-ui.mjs",
+    "test:ui": "node scripts/test-user-ui.mjs"
   },
   "engines": {
     "node": ">=18"
@@ -16,5 +20,8 @@
     "@tencent-ai/workbuddy-cloud-sdk": "^0.1.4-dev.ca27990.202610161713",
     "qrcode": "^1.5.4",
     "sharp": "^0.35.5"
+  },
+  "devDependencies": {
+    "jsdom": "^30.1.3"
   }
 }
