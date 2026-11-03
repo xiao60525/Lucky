@@ -235,6 +235,7 @@ async function publicViewer(userId) {
     memberLevel: p.memberLevel || null,
     memberExpire: p.memberExpire || null,
     isMember: users.isMember(p),
+    autoRenew: Boolean(p.autoRenew),
     createdAt: p.createdAt,
     orders: data.orders.map((o) => ({
       id: o.id,
@@ -495,7 +496,10 @@ function adminOrder(order, map) {
 
 /** 幂等入账：重复回调不会重复加钱、不会覆盖已退款订单 */
 function settleOrder(order, source) {
-  if (order.status === 'paid') return { ok: true, duplicate: true };
+  if (order.status === 'paid') {
+    order._dup = true; // 标记重复入账，会员开通等后续步骤据此跳过
+    return { ok: true, duplicate: true };
+  }
   if (order.status === 'refunded') return { ok: false, message: '订单已退款，忽略回调' };
   if (order.status === 'closed') return { ok: false, message: '订单已关闭，忽略回调' };
 
@@ -505,21 +509,126 @@ function settleOrder(order, source) {
   return { ok: true };
 }
 
-/** 会员权益：会员商品（memberDays > 0）支付成功后自动开通/续费会员 */
+/** 会员权益：会员商品（memberDays > 0）支付成功后自动开通/续费会员，并写流水。
+ *  充值订单（order.recharge）入账后自动加余额。 */
 async function grantMembershipForOrder(order) {
+  // 充值订单：入账即加余额（app_user_balance_add 内部写余额流水）
+  if (order.recharge) {
+    if (order._dup) return null;
+    if (!users.enabled || !order.userId || order.status !== 'paid') return null;
+    try {
+      const balance = await users.adjustUserBalance(order.userId, order.amount, 'recharge', order.id);
+      console.log(`[recharge] 订单 ${order.id} 充值 ¥${(order.amount / 100).toFixed(2)} 到余额 -> ¥${(balance / 100).toFixed(2)}`);
+      return balance;
+    } catch (e) {
+      console.error('[recharge] 充值入账失败:', order.id, e.message);
+      return null;
+    }
+  }
+  // 重复回调/重复查单不重复开通（settleOrder 会标记 _dup）
+  if (order._dup) return null;
   if (!users.enabled || !order.userId || order.status !== 'paid') return null;
   const p = db.products.find((x) => x.id === order.productId);
   const days = p ? Number(p.memberDays || 0) : 0;
   if (!days) return null;
+  const autoRenew = order.settleSource === 'autorenew';
   try {
-    const expire = await users.grantMember(order.userId, days);
+    const expire = await users.grantMember(order.userId, days, order.productId);
     console.log(`[member] 订单 ${order.id} 开通会员 ${days} 天 -> 到期 ${expire ? new Date(expire).toLocaleString() : '-'}`);
+    await users.appendMemberLog({
+      userId: order.userId,
+      action: autoRenew ? 'autorenew' : 'purchase',
+      source: 'user',
+      days,
+      productId: order.productId || '',
+      orderId: order.id,
+      amount: autoRenew ? order.amount : 0, // 自动续费走余额扣款，记录扣了多少钱；用户主动购买金额在订单里
+      note: autoRenew ? '到期自动续费（余额扣款）' : '',
+      expireAfter: expire ? new Date(expire).toISOString() : '',
+    });
     return expire;
   } catch (e) {
     // 入账已完成，会员开通失败只记日志，不影响支付结果
     console.error('[member] 会员开通失败（订单已入账）:', order.id, e.message);
     return null;
   }
+}
+
+/**
+ * 会员自动续费：到期前 24 小时内，对开启自动续费的用户
+ * 从余额扣除续费商品的金额，自动续一个周期。
+ * 余额不足则记录 autorenew_fail 流水并跳过（下个周期再试，不重复扣）。
+ */
+async function autoRenewMemberTick() {
+  if (!users.enabled) return { checked: 0, renewed: 0 };
+  const DAY = 86400000;
+  const now = Date.now();
+  let list;
+  try {
+    list = await users.listUsers();
+  } catch (e) {
+    return { checked: 0, renewed: 0, error: e.message };
+  }
+  const targets = list.filter((u) => {
+    if (!u.auto_renew) return false;
+    const expire = u.member_expire ? new Date(u.member_expire).getTime() : null;
+    return expire && expire - now < DAY && expire - now > -DAY; // 到期前 24h ~ 过期后 24h
+  });
+  let renewed = 0;
+  for (const u of targets) {
+    try {
+      const productId = u.member_product_id || '';
+      let product = db.products.find((p) => p.id === productId && p.active !== false && Number(p.memberDays) > 0);
+      if (!product) {
+        // 找不到原商品（下架/删除）时，退回最便宜的生效会员商品
+        product = db.products
+          .filter((p) => Number(p.memberDays) > 0 && p.active !== false)
+          .sort((a, b) => a.amount - b.amount)[0];
+      }
+      if (!product) continue; // 没有可续费的会员商品
+      const balance = await users.getUserBalance(u.id);
+      if (balance < product.amount) {
+        await users.appendMemberLog({
+          userId: u.id,
+          action: 'autorenew_fail',
+          source: 'system',
+          days: 0,
+          productId: product.id,
+          amount: product.amount,
+          note: `余额不足（需 ¥${(product.amount / 100).toFixed(2)}，现有 ¥${(balance / 100).toFixed(2)}）`,
+        });
+        continue;
+      }
+      await users.adjustUserBalance(u.id, -product.amount, 'autorenew', '');
+      // 生成续费订单（余额渠道，直接已支付）
+      const order = {
+        id: newOrderId(),
+        userId: u.id,
+        productId: product.id,
+        title: product.title + '（自动续费）',
+        amount: product.amount,
+        channel: 'balance',
+        status: 'paid',
+        settleSource: 'autorenew',
+        createdAt: Date.now(),
+        paidAt: Date.now(),
+      };
+      await store.insertOrder(order);
+      db.orders.push(order);
+      const expire = await grantMembershipForOrder(order);
+      renewed += 1;
+      console.log(`[autorenew] 用户 ${u.id} 自动续费 ${product.title} ¥${(product.amount / 100).toFixed(2)} -> 到期 ${expire ? new Date(expire).toLocaleString() : '-'}`);
+    } catch (e) {
+      console.error('[autorenew] 用户续费失败:', u.id, e.message);
+    }
+  }
+  return { checked: targets.length, renewed };
+}
+
+/** 会员自动续费定时器：每 30 分钟扫一轮 */
+function startMemberAutoRenewSweeper() {
+  setInterval(() => autoRenewMemberTick().catch(() => {}), 30 * 60 * 1000);
+  setTimeout(() => autoRenewMemberTick().catch(() => {}), 20 * 1000);
 }
 
 /**
@@ -598,6 +707,11 @@ async function refundOrder(order) {
     err.status = 409;
     throw err;
   }
+  if (order.recharge) {
+    const err = new Error('充值订单不支持退款，请联系商家处理');
+    err.status = 409;
+    throw err;
+  }
   // 真实渠道：先调微信退款接口，成功后再改本地状态
   if (order.channel && order.channel !== 'mock' && order.channel !== 'balance') {
     const provider = getProvider(order.channel);
@@ -614,7 +728,7 @@ async function refundOrder(order) {
   if (order.channel === 'balance' || order.channel === 'mock') {
     // 站内渠道：退回下单用户自己的余额；没有归属的老订单退回全局账户
     if (order.userId && users.enabled) {
-      refundedBalance = await users.adjustUserBalance(order.userId, order.amount);
+      refundedBalance = await users.adjustUserBalance(order.userId, order.amount, 'refund', order.id);
     } else {
       db.user.balance += order.amount;
       await persistBalance();
@@ -778,6 +892,30 @@ async function handleApi(req, res, url) {
     }
   }
 
+  // 余额流水：登录用户查看自己的余额变动记录
+  if (pathname === '/api/balance/logs' && method === 'GET') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    if (!users.enabled) return sendJSON(res, 501, { message: '未接入用户云库' });
+    const url = new URL(req.url, 'http://x');
+    const limit = Math.min(Number(url.searchParams.get('limit')) || 50, 200);
+    try {
+      const logs = await users.listBalanceLogs(uid, limit);
+      return sendJSON(res, 200, {
+        logs: logs.map((l) => ({
+          id: l.id,
+          delta: Number(l.delta || 0),
+          kind: l.kind || '',
+          ref: l.ref || '',
+          balanceAfter: Number(l.balance_after || 0),
+          createdAt: l.created_at ? new Date(l.created_at).getTime() : null,
+        })),
+      });
+    } catch (e) {
+      return sendJSON(res, 502, { message: '读取余额流水失败：' + e.message });
+    }
+  }
+
   if (pathname === '/api/auth/me' && method === 'GET') {
     const uid = currentUserId(req);
     if (!uid) return sendJSON(res, 401, { message: '未登录' });
@@ -807,6 +945,15 @@ async function handleApi(req, res, url) {
         phone: String(a.phone || '').replace(/\D/g, '').slice(0, 11),
         detail: String(a.detail || '').trim().slice(0, 120),
       };
+    }
+    if (body.autoRenew !== undefined) {
+      // 会员自动续费开关：到期前自动从余额扣款续费
+      try {
+        await users.setAutoRenew(uid, Boolean(body.autoRenew));
+      } catch (e) {
+        return sendJSON(res, 502, { message: '自动续费设置失败：' + e.message });
+      }
+      if (!Object.keys(patch).length) return sendJSON(res, 200, { viewer: await publicViewer(uid) });
     }
     if (body.avatar !== undefined) {
       // 头像是前端画布压好的方形小图（data URL）；空字符串表示恢复默认头像
@@ -1000,6 +1147,34 @@ async function handleApi(req, res, url) {
     const uid = currentUserId(req);
     if (!uid) return sendJSON(res, 401, { message: '请先登录后再下单' });
     const body = await readBody(req);
+
+    // 余额充值订单：body.recharge 为充值金额（分）
+    if (body.recharge !== undefined) {
+      const amount = Math.floor(Number(body.recharge));
+      if (!Number.isFinite(amount) || amount < 100 || amount > 100000 || amount % 100 !== 0) {
+        return sendJSON(res, 400, { message: '充值金额需在 ¥1 ~ ¥1000 之间的整数元' });
+      }
+      const order = {
+        id: newOrderId(),
+        userId: uid,
+        productId: 'recharge',
+        recharge: true,
+        title: `余额充值 ¥${(amount / 100).toFixed(2)}`,
+        amount,
+        channel: null,
+        status: 'created',
+        createdAt: Date.now(),
+      };
+      db.orders.push(order);
+      try {
+        await store.insertOrder(order);
+      } catch (e) {
+        db.orders.pop();
+        return sendJSON(res, 502, { message: '订单创建失败：' + e.message });
+      }
+      return sendJSON(res, 201, { order: publicOrder(order) });
+    }
+
     const product = db.products.find((p) => p.id === body.productId);
     if (!product) return sendJSON(res, 400, { message: '商品不存在或已下架' });
 
@@ -1087,13 +1262,16 @@ async function handleApi(req, res, url) {
     }
 
     const channel = body.channel === 'balance' ? 'balance' : body.channel;
+    if (channel === 'balance' && order.recharge) {
+      return sendJSON(res, 400, { message: '充值订单不能用余额支付' });
+    }
     if (channel === 'balance') {
       // 余额是每个用户自己的账户（accounts 表按 userId 一行），不是全局账户
       const uid = currentUserId(req);
       if (!uid) return sendJSON(res, 401, { message: '请先登录后再使用余额支付' });
       let newBalance;
       try {
-        newBalance = await users.adjustUserBalance(uid, -order.amount);
+        newBalance = await users.adjustUserBalance(uid, -order.amount, 'pay', order.id);
       } catch (e) {
         if (e.code === 'INSUFFICIENT_BALANCE') return sendJSON(res, 400, { message: '余额不足' });
         console.error('[pay] 余额扣减失败:', e.message);
@@ -1105,7 +1283,7 @@ async function handleApi(req, res, url) {
         await persistOrder(order);
       } catch (e) {
         // 落库失败要回滚扣款
-        await users.adjustUserBalance(uid, order.amount).catch(() => {});
+        await users.adjustUserBalance(uid, order.amount, 'refund', order.id).catch(() => {});
         return sendJSON(res, 502, { message: '云端写入失败：' + e.message });
       }
       await grantMembershipForOrder(order);
@@ -1537,6 +1715,8 @@ async function handleApi(req, res, url) {
           memberLevel: u.member_level || null,
           memberExpire: u.member_expire ? new Date(u.member_expire).getTime() : null,
           isMember: Boolean(u.member_expire && new Date(u.member_expire).getTime() > Date.now()),
+          autoRenew: Boolean(u.auto_renew),
+          memberProductId: u.member_product_id || '',
           source: 'web',
           createdAt: u.created_at ? new Date(u.created_at).getTime() : null,
           lastLoginAt: u.last_login_at ? new Date(u.last_login_at).getTime() : null,
@@ -1801,6 +1981,14 @@ async function handleApi(req, res, url) {
       if (days > 3650) return sendJSON(res, 400, { message: '单次最多 3650 天' });
       try {
         const expire = await users.grantMember(body.userId, days);
+        await users.appendMemberLog({
+          userId: body.userId,
+          action: 'grant',
+          source: 'admin',
+          days,
+          note: String(body.note || '后台开通/续费'),
+          expireAfter: expire ? new Date(expire).toISOString() : '',
+        });
         return sendJSON(res, 200, { ok: true, expire });
       } catch (e) {
         return sendJSON(res, 502, { message: '开通失败：' + e.message });
@@ -1811,14 +1999,34 @@ async function handleApi(req, res, url) {
     if (pathname === '/api/admin/member/revoke' && method === 'POST') {
       const body = await readBody(req);
       if (!users.enabled) return sendJSON(res, 501, { message: '未接入用户云库，无法管理会员' });
-      if (!body.userId) return sendJSON(res, 400, { message: '缺少 userId' });
-      try {
-        await users.revokeMember(body.userId);
-        return sendJSON(res, 200, { ok: true });
-      } catch (e) {
-        return sendJSON(res, 502, { message: '取消失败：' + e.message });
-      }
+    if (!body.userId) return sendJSON(res, 400, { message: '缺少 userId' });
+    try {
+      await users.revokeMember(body.userId);
+      await users.appendMemberLog({
+        userId: body.userId,
+        action: 'revoke',
+        source: 'admin',
+        days: 0,
+        note: String(body.note || '后台取消会员'),
+      });
+      return sendJSON(res, 200, { ok: true });
+    } catch (e) {
+      return sendJSON(res, 502, { message: '取消失败：' + e.message });
     }
+  }
+
+  // 会员流水：后台查看每个会员是自购 / 自动续费 / 赠送
+  if (pathname === '/api/admin/member/logs' && method === 'GET') {
+    if (!users.enabled) return sendJSON(res, 501, { message: '未接入用户云库' });
+    const url = new URL(req.url, 'http://x');
+    const uid = url.searchParams.get('userId') || '';
+    try {
+      const logs = await users.listMemberLogs(uid, Math.min(Number(url.searchParams.get('limit')) || 200, 500));
+      return sendJSON(res, 200, { logs });
+    } catch (e) {
+      return sendJSON(res, 502, { message: '读取流水失败：' + e.message });
+    }
+  }
 
     // 关闭未支付订单
     if (pathname === '/api/admin/order/close' && method === 'POST') {
@@ -1949,5 +2157,6 @@ server.listen(PORT, () => {
   console.log(`  支付渠道: ${PROVIDER}（PAY_PROVIDER 可切换）`);
   initCloud();
   startPendingSyncSweeper(); // 兜底：每分钟把「已付但状态没变」的支付宝订单补记入账
+  startMemberAutoRenewSweeper(); // 会员自动续费：每 30 分钟扫一遍到期用户
   console.log('');
 });

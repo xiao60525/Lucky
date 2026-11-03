@@ -560,26 +560,29 @@ function memberBannerHTML(v) {
   const hasGoods = state.products.some((p) => Number(p.memberDays) > 0);
   const expire = active ? new Date(v.memberExpire).toLocaleDateString('zh-CN') : '';
   const daysLeft = active ? Math.max(1, Math.ceil((v.memberExpire - Date.now()) / 86400000)) : 0;
+  const renewTag = active && v.autoRenew ? '<span class="tag tag-gold">自动续费已开启</span>' : '';
   return `
     <button class="member-card ${active ? 'is-member' : ''}" data-act="open-member">
       <span class="member-crown">👑</span>
       <span class="member-main">
         <b>${active ? '会员生效中' : hasGoods ? '开通会员' : '会员中心'}</b>
-        <i>${active ? `有效期至 ${expire} · 剩 ${daysLeft} 天` : hasGoods ? '专属权益 · 点此开通' : '敬请期待'}</i>
+        <i>${active ? `有效期至 ${expire} · 剩 ${daysLeft} 天 ${renewTag}` : hasGoods ? '专属权益 · 点此开通' : '敬请期待'}</i>
       </span>
       <span class="member-arrow">›</span>
     </button>`;
 }
 
-/** 会员中心弹层：展示会员商品，点击直接走支付流程 */
+/** 会员中心弹层：展示会员商品 + 自动续费开关 */
 function memberSheet() {
-  const active = isMemberActive(state.viewer);
+  const v = state.viewer;
+  const active = isMemberActive(v);
   const goods = state.products.filter((p) => Number(p.memberDays) > 0);
+  const renewOn = Boolean(v.autoRenew);
   openSheet(`
     <h3>会员中心</h3>
     <div class="member-status ${active ? 'on' : ''}">
       <b>${active ? '👑 会员生效中' : '当前不是会员'}</b>
-      <i>${active ? `有效期至 ${new Date(state.viewer.memberExpire).toLocaleDateString('zh-CN')}` : '开通后立享会员专属权益'}</i>
+      <i>${active ? `有效期至 ${new Date(v.memberExpire).toLocaleDateString('zh-CN')}` : '开通后立享会员专属权益'}</i>
     </div>
     ${
       goods.length
@@ -597,8 +600,129 @@ function memberSheet() {
             .join('')}</div>`
         : '<p class="sheet-sub">商家还没有上架会员商品，敬请期待</p>'
     }
-    <p class="cashier-note">购买会员商品支付成功后自动开通，重复购买到期时间自动顺延</p>
+    <button class="autorenew-row ${renewOn ? 'on' : ''}" data-act="toggle-autorenew">
+      <span class="autorenew-main">
+        <b>🔄 自动续费</b>
+        <i>${renewOn ? '到期前自动从余额扣款续费，随时可关' : '开启后到期自动续费，不再断档'}</i>
+      </span>
+      <span class="switch ${renewOn ? 'on' : ''}"><span class="knob"></span></span>
+    </button>
+    <p class="cashier-note">购买会员商品支付成功后自动开通，重复购买到期时间自动顺延${renewOn ? '；自动续费将从余额扣款，请保持余额充足' : ''}</p>
+    <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>
   `);
+}
+
+/** 开/关会员自动续费 */
+async function toggleAutoRenew() {
+  const next = !state.viewer.autoRenew;
+  if (next && isMemberActive(state.viewer) && state.viewer.balance < 100) {
+    toast('开启前请先确认余额充足，续费将从余额扣款');
+  }
+  try {
+    await api('/api/auth/profile', { method: 'POST', body: JSON.stringify({ autoRenew: next }) });
+    state.viewer.autoRenew = next;
+    toast(next ? '已开启自动续费' : '已关闭自动续费');
+    memberSheet();
+    render();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+/* ---------------- 余额中心：余额流水 + 充值 ---------------- */
+
+const BALANCE_KIND_TEXT = {
+  recharge: '充值',
+  pay: '消费',
+  refund: '退款',
+  autorenew: '会员自动续费',
+  admin: '后台调整',
+};
+
+function balKindText(l) {
+  const t = BALANCE_KIND_TEXT[l.kind] || '余额变动';
+  return l.ref ? `${t} · ${l.ref}` : t;
+}
+
+/** 余额中心弹层：当前余额 + 充值入口 + 流水列表 */
+function balanceSheet() {
+  openSheet(`
+    <h3>余额中心</h3>
+    <div class="member-status on">
+      <b>¥${((state.viewer.balance || 0) / 100).toFixed(2)}</b>
+      <i>余额可用于下单支付、会员自动续费</i>
+    </div>
+    <button class="btn-primary" data-act="recharge" style="margin-top:12px">充值到余额</button>
+    <div class="bal-log-head">余额流水</div>
+    <div id="balLogs"><p class="sheet-sub">加载中…</p></div>
+    <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>
+  `);
+  loadBalanceLogs();
+}
+
+async function loadBalanceLogs() {
+  try {
+    const r = await api('/api/balance/logs?limit=50');
+    const rows = r.logs || [];
+    const box = window.document.querySelector('#balLogs');
+    if (!box) return;
+    box.innerHTML = rows.length
+      ? `<div class="bal-logs">${rows
+          .map((l) => {
+            const delta = Number(l.delta || 0);
+            const t = l.createdAt ? new Date(l.createdAt).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '';
+            return `<div class="bal-row">
+          <span class="bal-main"><b>${esc(balKindText(l))}</b><i>${t}</i></span>
+          <span class="bal-delta ${delta >= 0 ? 'plus' : 'minus'}">${delta >= 0 ? '+' : '-'}¥${(Math.abs(delta) / 100).toFixed(2)}</span>
+        </div>`;
+          })
+          .join('')}</div>`
+      : '<p class="sheet-sub">还没有流水，充值后这里会显示记录</p>';
+  } catch (e) {
+    const box = window.document.querySelector('#balLogs');
+    if (box) box.innerHTML = `<p class="sheet-sub" style="color:#d4523c">${esc(e.message)}</p>`;
+  }
+}
+
+/** 充值弹层：选金额 → 确认支付（走真实渠道） */
+function rechargeSheet() {
+  const presets = [1000, 3000, 5000, 10000];
+  const cur = sheetState.rechargeAmount || 0;
+  openSheet(`
+    <h3>余额充值</h3>
+    <p class="sheet-sub">充值后用于下单支付、会员自动续费</p>
+    <div class="rchip-row">
+      ${presets.map((a) => `<button class="rchip ${cur === a ? 'on' : ''}" data-act="recharge-pick" data-a="${a}">¥${a / 100}</button>`).join('')}
+      <button class="rchip ${cur && !presets.includes(cur) ? 'on' : ''}" data-act="recharge-custom">自定义</button>
+    </div>
+    ${cur && !presets.includes(cur) ? '<label class="field"><span>金额（元）</span><input id="rcAmount" type="number" min="1" max="1000" step="1" value="' + (cur / 100) + '" /></label>' : ''}
+    <button class="btn-primary" data-act="recharge-go" style="margin-top:12px">去支付${cur ? ' ' + yuan(cur) : ''}</button>
+    <button class="btn-ghost" data-act="open-balance" style="margin-top:10px">返回余额中心</button>
+  `);
+}
+
+function rechargeGo() {
+  const amount = Number(sheetState.rechargeAmount || 0);
+  if (!amount || amount < 100 || amount > 100000 || amount % 100 !== 0) {
+    return toast('请选择或输入充值金额');
+  }
+  const customInput = $('#rcAmount');
+  let finalAmount = amount;
+  if (customInput && customInput.value) {
+    const yuan2 = Math.floor(Number(customInput.value));
+    if (!Number.isFinite(yuan2) || yuan2 < 1 || yuan2 > 1000) return toast('金额需在 ¥1 ~ ¥1000 之间');
+    finalAmount = yuan2 * 100;
+  }
+  sheetState.product = {
+    id: 'recharge',
+    recharge: true,
+    title: '余额充值',
+    desc: `充值 ¥${(finalAmount / 100).toFixed(2)} 到余额`,
+    amount: finalAmount,
+  };
+  const firstChannel = channelList().find((c) => c.id !== 'balance');
+  sheetState.channel = sheetState.channel === 'balance' || !sheetState.channel ? (firstChannel ? firstChannel.id : 'alipay') : sheetState.channel;
+  confirmSheet();
 }
 
 function renderUserCenter() {  const v = state.viewer;
@@ -626,7 +750,9 @@ function renderUserCenter() {  const v = state.viewer;
         </div>
       </div>
       <div class="stat-row">
-        <div class="stat"><b>${yuan(v.balance)}</b><span>余额</span></div>
+        <button class="stat stat-btn" data-act="open-balance" aria-label="余额中心">
+          <b>${yuan(v.balance)}</b><span>余额 ›</span>
+        </button>
         <div class="stat"><b>${v.points}</b><span>积分</span></div>
         <div class="stat"><b>${coupons.length}</b><span>优惠券</span></div>
       </div>
@@ -1011,7 +1137,9 @@ function channelList() {
 }
 
 function channelItemsHTML(selected) {
-  return channelList()
+  // 充值订单不能用余额支付，过滤掉余额渠道
+  const list = channelList().filter((c) => !(sheetState.product && sheetState.product.recharge && c.id === 'balance'));
+  return list
     .map(
       (c) => `
         <button class="pay-item ${selected === c.id ? 'selected' : ''}" data-act="channel" data-id="${c.id}">
@@ -1183,7 +1311,7 @@ async function doPay() {
   try {
     const created = await api('/api/orders', {
       method: 'POST',
-      body: JSON.stringify({ productId: sheetState.product.id }),
+      body: JSON.stringify(sheetState.product.recharge ? { recharge: sheetState.product.amount } : { productId: sheetState.product.id }),
     });
     const res = await api(`/api/orders/${created.order.id}/pay`, {
       method: 'POST',
@@ -1202,7 +1330,7 @@ async function doPay() {
 function showSuccess(order) {
   // 会员商品支付成功后，静默刷新一次用户信息，让会员状态立即生效
   const p = state.products.find((x) => x.id === order.productId);
-  if (p && Number(p.memberDays) > 0) refreshMe().catch(() => {});
+  if ((p && Number(p.memberDays) > 0) || order.recharge) refreshMe().catch(() => {});
   sheetState.type = 'success';
   openSheet(`
     <div class="success-wrap">
@@ -1375,6 +1503,8 @@ view.addEventListener('click', async (e) => {
   }
 
   if (act === 'open-member') return memberSheet();
+  if (act === 'toggle-autorenew') return toggleAutoRenew();
+  if (act === 'open-balance') return balanceSheet();
 
   if (act === 'buy') {
     if (!state.viewer) {
@@ -1440,6 +1570,39 @@ sheetEl.addEventListener('click', async (e) => {
 
   if (act === 'clear-avatar') {
     await saveAvatar('');
+    return;
+  }
+
+  if (act === 'toggle-autorenew') {
+    await toggleAutoRenew();
+    return;
+  }
+
+  if (act === 'open-balance') {
+    balanceSheet();
+    return;
+  }
+
+  if (act === 'recharge') {
+    sheetState.rechargeAmount = 3000; // 默认 ¥30
+    rechargeSheet();
+    return;
+  }
+
+  if (act === 'recharge-pick') {
+    sheetState.rechargeAmount = Number(el.dataset.a);
+    rechargeSheet();
+    return;
+  }
+
+  if (act === 'recharge-custom') {
+    sheetState.rechargeAmount = 2000; // 自定义档，配合输入框改金额
+    rechargeSheet();
+    return;
+  }
+
+  if (act === 'recharge-go') {
+    rechargeGo();
     return;
   }
 

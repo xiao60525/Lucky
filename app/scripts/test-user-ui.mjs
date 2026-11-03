@@ -26,6 +26,9 @@ const VIEWER = {
   address: { name: '张三', phone: '13800001234', detail: '北京市朝阳区测试路 1 号' },
   balance: 1200,
   createdAt: Date.now() - 86400000,
+  memberLevel: 'member',
+  memberExpire: Date.now() + 15 * 86400000,
+  autoRenew: false,
   orders: [
     { id: 'O1', title: '会员月卡', amount: 1200, status: 'paid', createdAt: Date.now() },
     {
@@ -51,7 +54,10 @@ const BOOTSTRAP = {
   wxMchId: null,
   cloud: { ready: true, endpoint: 'x' },
   site: { name: '手机App支付骨架', tagline: '', hasIcon: false, iconUrl: null, iconVer: 'default' },
-  products: [{ id: 'demo_001', title: '测试商品', amount: 1, desc: 'x', tag: '示例' }],
+  products: [
+    { id: 'demo_001', title: '测试商品', amount: 1, desc: 'x', tag: '示例' },
+    { id: 'member_month', title: '会员月卡', amount: 1200, desc: '30 天权益', tag: '会员', memberDays: 30 },
+  ],
   contents: [
     { id: 'n1', title: '新人立减 5 元', desc: '注册即送，首单可用', tag: '活动', image: null, link: '', sort: 1, active: true },
     { id: 'n2', title: '怎么用余额支付', desc: '先充值，下单时选余额', tag: '', image: null, link: '/faq', sort: 2, active: true },
@@ -99,6 +105,15 @@ function fakeFetch(url, opts = {}) {
     return json({ viewer: VIEWER });
   }
   if (path === '/api/auth/password') return json({ ok: true });
+  if (path === '/api/balance/logs')
+    return json({
+      logs: [
+        { id: 1, delta: 3000, kind: 'recharge', ref: 'OABC', balanceAfter: 4200, createdAt: Date.now() - 60000 },
+        { id: 2, delta: -1200, kind: 'pay', ref: 'O1', balanceAfter: 1200, createdAt: Date.now() - 120000 },
+      ],
+    });
+  if (path === '/api/orders' && method === 'POST' && body && body.recharge)
+    return json({ order: { id: 'OR1', title: '余额充值 ¥30.00', amount: body.recharge, status: 'created', createdAt: Date.now() } }, 201);
   return json({}, 404);
 }
 
@@ -147,7 +162,7 @@ async function goMine() {
 await wait(120);
 
 // 0. 首页：商品卡片 + 后台配置的内容卡片
-check('首页商品卡片', window.document.querySelectorAll('.goods-card').length === 1, text('.goods-name'));
+check('首页商品卡片', window.document.querySelectorAll('.goods-card').length === 2, text('.goods-name'));
 check(
   '首页显示后台配置的内容',
   window.document.querySelectorAll('.content-card').length === 2 && text('.section-head').length >= 0,
@@ -186,6 +201,37 @@ const stats = [...window.document.querySelectorAll('.stat b')].map((e) => e.text
 check('余额/积分/优惠券三项', stats.length === 3 && stats[0] === '¥12.00' && stats[1] === '100' && stats[2] === '2', stats.join(','));
 check('收货地址已显示', text('.addr-name').includes('张三') && text('.addr-detail').includes('北京市'), text('.addr-detail'));
 check('优惠券列表', window.document.querySelectorAll('.coupon').length === 2);
+check('会员卡显示生效中', text('.member-card').includes('会员生效中') && text('.member-card').includes('剩'), text('.member-card'));
+
+// 4.1 会员中心 + 自动续费开关
+$('[data-act="open-member"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+check('会员中心弹层', text('.sheet h3') === '会员中心', text('.sheet h3'));
+check('会员商品列出', window.document.querySelectorAll('.member-item').length === 1);
+check('自动续费开关存在', Boolean($('.autorenew-row')) && !$('.autorenew-row').classList.contains('on'));
+$('.autorenew-row').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
+check('开启自动续费请求', calls.some((c) => c.path === '/api/auth/profile' && c.body && c.body.autoRenew === true));
+check('开关状态切换为开', $('.autorenew-row').classList.contains('on'));
+$('.sheet [data-act="close"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
+check('会员卡显示自动续费角标', text('.member-card').includes('自动续费已开启'), text('.member-card'));
+
+// 4.2 余额中心：流水 + 充值
+$('[data-act="open-balance"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(120);
+check('余额中心弹层', text('.sheet h3') === '余额中心', text('.sheet h3'));
+check('余额流水两行', window.document.querySelectorAll('.bal-row').length === 2, String(window.document.querySelectorAll('.bal-row').length));
+check('流水有充值入账', text('.bal-logs').includes('+¥30.00') && text('.bal-logs').includes('充值'), text('.bal-logs').replace(/\s+/g, ' ').slice(0, 80));
+$('[data-act="recharge"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
+check('充值弹层金额档', window.document.querySelectorAll('.rchip').length === 5, String(window.document.querySelectorAll('.rchip').length));
+$('[data-act="recharge-go"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
+check('充值进确认单且无余额渠道', text('.sheet h3') === '确认订单' && !text('.pay-list').includes('余额'), text('.sheet h3'));
+$('#mask').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
+
 check('头像可点击更换', Boolean($('.avatar-btn')) && text('.avatar-btn').includes('📷'), text('.avatar-btn'));
 $('[data-act="edit-avatar"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(40);

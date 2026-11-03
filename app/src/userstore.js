@@ -109,6 +109,8 @@ function normalizeProfile(row) {
     avatar: row.avatar || null,
     memberLevel: row.member_level || null,
     memberExpire: row.member_expire ? new Date(row.member_expire).getTime() : null,
+    autoRenew: Boolean(row.auto_renew),
+    memberProductId: row.member_product_id || '',
     createdAt: row.created_at ? new Date(row.created_at).getTime() : null,
     lastLoginAt: row.last_login_at ? new Date(row.last_login_at).getTime() : null,
   };
@@ -198,9 +200,13 @@ async function getUser(userId) {
   };
 }
 
-/** 开通/续费会员：p_days 为购买商品配置的天数，返回新的到期时间戳（ms），失败返回 null */
-async function grantMember(userId, days) {
-  const data = await call('app_user_grant_member', { p_secret: secret, p_id: userId, p_days: Number(days) }, '开通会员');
+/** 开通/续费会员：p_days 为购买商品配置的天数，p_productId 记录续费来源商品；返回新的到期时间戳（ms） */
+async function grantMember(userId, days, productId = '') {
+  const data = await call(
+    'app_user_grant_member',
+    { p_secret: secret, p_id: userId, p_days: Number(days), p_product_id: String(productId || '') },
+    '开通会员'
+  );
   return data ? new Date(data).getTime() : null;
 }
 
@@ -208,6 +214,34 @@ async function grantMember(userId, days) {
 async function revokeMember(userId) {
   await call('app_user_revoke_member', { p_secret: secret, p_id: userId }, '取消会员');
   return true;
+}
+
+/** 开关自动续费，返回新状态 */
+async function setAutoRenew(userId, on) {
+  const data = await call('app_user_set_autorenew', { p_secret: secret, p_id: userId, p_on: Boolean(on) }, '自动续费');
+  return Boolean(data);
+}
+
+/** 写一条会员流水（购买 / 自动续费 / 后台赠送 / 取消 / 续费失败） */
+async function appendMemberLog(entry) {
+  try {
+    await call('app_member_log_add', { p_secret: secret, p_log: entry }, '会员流水');
+    return true;
+  } catch (e) {
+    // 流水失败不影响主流程，但要留痕便于排查
+    console.error('[member-log] 写流水失败:', e.message);
+    return false;
+  }
+}
+
+/** 读会员流水：userId 为空返回全部用户最近记录 */
+async function listMemberLogs(userId = '', limit = 200) {
+  const data = await call(
+    'app_member_log_list',
+    { p_secret: secret, p_user_id: String(userId || ''), p_limit: Number(limit) || 200 },
+    '会员流水'
+  );
+  return Array.isArray(data) ? data : [];
 }
 
 /** 改资料（昵称 / 收货地址） */
@@ -222,12 +256,12 @@ async function getUserBalance(userId) {
   return Number(data) || 0;
 }
 
-/** 原子加减用户余额（分为单位，delta 可负）。余额不足时抛 INSUFFICIENT_BALANCE */
-async function adjustUserBalance(userId, delta) {
+/** 原子加减用户余额（分为单位，delta 可负），并写余额流水。余额不足时抛 INSUFFICIENT_BALANCE */
+async function adjustUserBalance(userId, delta, kind = '', ref = '') {
   try {
     const data = await call(
       'app_user_balance_add',
-      { p_secret: secret, p_id: userId, p_delta: Number(delta) },
+      { p_secret: secret, p_id: userId, p_delta: Number(delta), p_kind: String(kind || ''), p_ref: String(ref || '') },
       '更新余额'
     );
     return Number(data) || 0;
@@ -239,6 +273,16 @@ async function adjustUserBalance(userId, delta) {
     }
     throw e;
   }
+}
+
+/** 读余额流水（最近在前） */
+async function listBalanceLogs(userId, limit = 100) {
+  const data = await call(
+    'app_balance_log_list',
+    { p_secret: secret, p_user_id: String(userId || ''), p_limit: Number(limit) || 100 },
+    '余额流水'
+  );
+  return Array.isArray(data) ? data : [];
 }
 
 /** 改密码：先验旧密码 */
@@ -271,8 +315,12 @@ module.exports = {
   getUser,
   getUserBalance,
   adjustUserBalance,
+  listBalanceLogs,
   grantMember,
   revokeMember,
+  setAutoRenew,
+  appendMemberLog,
+  listMemberLogs,
   isMember,
   updateProfile,
   changePassword,

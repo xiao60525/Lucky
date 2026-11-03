@@ -737,14 +737,49 @@ function renderUsers() {
 
 /* ---------------- 会员管理 ---------------- */
 
+const MEMBER_ACTION_TEXT = {
+  purchase: '自购',
+  autorenew: '自动续费',
+  grant: '后台赠送',
+  revoke: '后台取消',
+  autorenew_fail: '续费失败',
+};
+
+function memberSourceTag(log) {
+  if (!log) return '<span class="muted">—</span>';
+  const map = {
+    purchase: ['tag-green', '客户自购'],
+    autorenew: ['tag-orange', '自动续费'],
+    grant: ['tag-blue', '后台赠送'],
+  };
+  const m = map[log.action];
+  if (!m) return '<span class="muted">—</span>';
+  return `<span class="tag ${m[0]}">${m[1]}</span>`;
+}
+
 function memberBadge(u) {
   if (u.isMember) {
     const d = u.memberExpire ? new Date(u.memberExpire) : null;
     const left = d ? Math.ceil((d.getTime() - Date.now()) / 86400000) : 0;
     const soon = left <= 7 ? 'tag-orange' : 'tag-green';
-    return `<span class="tag ${soon}">会员 · 剩 ${left} 天</span><div class="muted" style="font-size:11.5px;margin-top:2px">${d ? fmtTime(d.getTime()) : ''}</div>`;
+    const renew = u.autoRenew ? ' <span class="tag tag-orange">自动续费</span>' : '';
+    return `<span class="tag ${soon}">会员 · 剩 ${left} 天</span>${renew}<div class="muted" style="font-size:11.5px;margin-top:2px">${d ? fmtTime(d.getTime()) : ''}</div>`;
   }
+  if (u.autoRenew) return '<span class="tag tag-orange">已开自动续费</span>';
   return '<span class="muted">—</span>';
+}
+
+function memberLogRow(l) {
+  const action = MEMBER_ACTION_TEXT[l.action] || l.action;
+  const amount = Number(l.amount || 0) ? ` ¥${yuan(Number(l.amount))}` : '';
+  const days = Number(l.days || 0) ? ` +${l.days}天` : '';
+  const expire = l.expire_after ? ` · 到期 ${fmtTime(new Date(l.expire_after).getTime())}` : '';
+  const src = l.source === 'admin' ? '后台' : l.source === 'system' ? '系统' : '用户';
+  return `<tr>
+    <td class="muted" style="font-size:11.5px;white-space:nowrap">${fmtTime(new Date(l.created_at).getTime())}</td>
+    <td>${action}${days}${amount} <span class="muted" style="font-size:11px">(${src})</span></td>
+    <td class="muted" style="font-size:11.5px">${esc(l.order_id || l.note || '')}</td>
+  </tr>`;
 }
 
 function renderMembers() {
@@ -752,45 +787,84 @@ function renderMembers() {
     <div class="card">
       <h3>会员管理</h3>
       <p class="muted" style="font-size:12.5px;margin:0 0 12px">
-        用户在手机端购买「会员商品」（商品里配置了会员天数）后自动开通；这里可以手工开通 / 续费 / 取消。
-        续费天数会累加到现有到期时间上。商品在 <b>商品</b> 页设置「会员天数」。
+        用户在手机端购买「会员商品」后自动开通；开启「自动续费」的用户到期前 24 小时自动从余额扣款续费，余额不足会记录失败并跳过。
+        「来源」列显示会员是<b>客户自购 / 自动续费 / 后台赠送</b>；点「记录」可查看该用户全部会员流水。
+        商品在 <b>商品</b> 页设置「会员天数」。
       </p>
       <div id="memberTable"><p class="muted">加载中…</p></div>
     </div>`;
 
   api('/api/admin/users')
-    .then((r) => {
+    .then(async (r) => {
       const box = $('#memberTable');
       if (!box) return;
       const list = r.users || [];
       const web = list.filter((u) => u.source === 'web');
       const members = web.filter((u) => u.isMember);
       const soon = members.filter((u) => u.memberExpire && u.memberExpire - Date.now() < 7 * 86400000);
+      const autoN = web.filter((u) => u.autoRenew).length;
+      // 每个用户最近一条来源流水，判断会员是自购 / 自动续费 / 后台赠送
+      let latestLog = {};
+      try {
+        const lr = await api('/api/admin/member/logs?limit=500');
+        (lr.logs || []).forEach((l) => {
+          if (['purchase', 'autorenew', 'grant'].includes(l.action) && !latestLog[l.user_id]) latestLog[l.user_id] = l;
+        });
+      } catch (e) {
+        /* 流水读取失败不阻塞列表 */
+      }
       box.innerHTML = `
         <div class="ostat-row">
           <div class="ostat"><b>${members.length}</b><span>生效会员</span></div>
           <div class="ostat ${soon.length ? 'warn' : ''}"><b>${soon.length}</b><span>7 天内到期</span></div>
+          <div class="ostat"><b>${autoN}</b><span>自动续费</span></div>
           <div class="ostat"><b>${web.length}</b><span>注册用户</span></div>
         </div>
         ${
           web.length
-            ? `<table><thead><tr><th>手机号</th><th>昵称</th><th>会员状态</th><th>余额</th><th>订单数</th><th>操作</th></tr></thead><tbody>${web
+            ? `<table><thead><tr><th>手机号</th><th>昵称</th><th>会员状态</th><th>来源</th><th>余额</th><th>订单数</th><th>操作</th></tr></thead><tbody>${web
                 .map(
                   (u) => `<tr>
                 <td style="font-family:monospace;font-size:13px">${u.phone || '<span class="muted">未绑定</span>'}</td>
                 <td>${u.nickname || '<span class="muted">—</span>'}</td>
                 <td>${memberBadge(u)}</td>
+                <td>${memberSourceTag(latestLog[u.id])}</td>
                 <td>¥${yuan(u.balance || 0)}</td>
                 <td>${u.orderCount || 0}</td>
                 <td style="white-space:nowrap">
                   <button class="op" data-mgrant="${u.id}" data-name="${esc(u.nickname || u.phone)}">开通/续费</button>
+                  <button class="op" data-mlog="${u.id}" data-name="${esc(u.nickname || u.phone)}">记录</button>
                   ${u.isMember ? `<button class="op danger" data-mrevoke="${u.id}" data-name="${esc(u.nickname || u.phone)}">取消</button>` : ''}
                 </td>
               </tr>`
                 )
-                .join('')}</tbody></table>`
+                .join('')}</tbody></table>
+            <div id="memberLogBox" style="margin-top:14px"></div>`
             : '<p class="muted">还没有网页版注册用户。</p>'
         }`;
+
+      document.querySelectorAll('[data-mlog]').forEach((b) => {
+        b.onclick = async () => {
+          const box2 = $('#memberLogBox');
+          if (!box2) return;
+          box2.innerHTML = '<p class="muted">加载流水…</p>';
+          try {
+            const lr = await api(`/api/admin/member/logs?userId=${encodeURIComponent(b.dataset.mlog)}&limit=50`);
+            const logs = lr.logs || [];
+            box2.innerHTML = `<div class="card">
+              <h3 style="margin-top:0">「${esc(b.dataset.name)}」的会员记录</h3>
+              ${
+                logs.length
+                  ? `<table><thead><tr><th>时间</th><th>操作</th><th>订单 / 备注</th></tr></thead><tbody>${logs.map(memberLogRow).join('')}</tbody></table>`
+                  : '<p class="muted">暂无记录</p>'
+              }
+            </div>`;
+            box2.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+          } catch (e) {
+            box2.innerHTML = `<p style="color:var(--bad);font-size:13px">读取失败：${e.message}</p>`;
+          }
+        };
+      });
 
       document.querySelectorAll('[data-mgrant]').forEach((b) => {
         b.onclick = async () => {
