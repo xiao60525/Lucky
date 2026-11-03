@@ -127,6 +127,7 @@ async function api(path, options = {}) {
   if (!res.ok) {
     const err = new Error(data.message || `请求失败(${res.status})`);
     err.status = res.status;
+    err.code = data.code || null;
     throw err;
   }
   return data;
@@ -399,7 +400,11 @@ function renderHome() {
               (p, i) => `
         <button class="goods-card${p.memberOnly && !viewerIsMember() ? ' is-locked' : ''}" data-act="buy" data-id="${esc(p.id)}">
           ${p.memberOnly ? '<span class="goods-badge">会员专享</span>' : ''}
-          <span class="goods-emoji">${GOODS_ICONS[i % GOODS_ICONS.length]}</span>
+          ${
+            p.image
+              ? `<span class="goods-thumb"><img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy" /></span>`
+              : `<span class="goods-emoji">${GOODS_ICONS[i % GOODS_ICONS.length]}</span>`
+          }
           <span class="goods-name">${esc(p.title)}</span>
           ${p.desc ? `<span class="goods-desc">${esc(p.desc)}</span>` : ''}
           <span class="goods-foot">
@@ -502,9 +507,26 @@ function mineChannelName(o) {
   return names[o.channel] || '';
 }
 
-/** 待支付 / 支付中：都还能继续付款 */
+/** 未支付订单只保留 30 分钟（与服务端 ORDER_TTL_MINUTES 一致），超时订单服务端会删除，前端同步隐藏 */
+const ORDER_TTL_MS = 30 * 60 * 1000;
+
+/** 未支付且已超时：视同已关闭，不再提供继续支付入口 */
+function orderExpired(o) {
+  return (
+    Boolean(o) &&
+    (o.status === 'created' || o.status === 'pending') &&
+    Date.now() - (Number(o.createdAt) || 0) > ORDER_TTL_MS
+  );
+}
+
+/** 列表里去掉超时未支付的订单 */
+function dropExpiredOrders(list) {
+  return (list || []).filter((o) => !orderExpired(o));
+}
+
+/** 待支付 / 支付中：都还能继续付款（超时的不算） */
 function isUnpaid(o) {
-  return Boolean(o) && (o.status === 'created' || o.status === 'pending');
+  return Boolean(o) && (o.status === 'created' || o.status === 'pending') && !orderExpired(o);
 }
 
 function mineOrderRow(o) {
@@ -744,7 +766,7 @@ async function loadBalanceLogs() {
 
 /** 订单列表弹层：从「我的」页入口点进来，替代直接铺在页面上 */
 function ordersSheet() {
-  const orders = state.orders || [];
+  const orders = dropExpiredOrders(state.orders);
   const paidSum = orders
     .filter((o) => o.status === 'paid' || o.status === 'refunded')
     .reduce((s, o) => s + (Number(o.amount) || 0), 0);
@@ -895,8 +917,8 @@ async function doAuth(isRegister) {
     state.viewer = out.viewer;
     state.balance = Number(out.viewer.balance) || 0; // 余额支付弹层用自己账户的余额
     const { orders } = await api('/api/orders');
-    state.orders = orders;
-    state.viewer.orders = orders;
+    state.orders = dropExpiredOrders(orders);
+    state.viewer.orders = state.orders;
     toast(isRegister ? '注册成功，已登录' : '登录成功');
     render();
   } catch (e) {
@@ -913,8 +935,8 @@ async function refreshMe() {
     return null;
   }
   const { orders } = await api('/api/orders');
-  state.orders = orders;
-  state.viewer.orders = orders;
+  state.orders = dropExpiredOrders(orders);
+  state.viewer.orders = state.orders;
   render();
   return state.viewer;
 }
@@ -1349,7 +1371,7 @@ function qrSheet(order, qrUrl, channel) {
 
 /** 订单入列表：已存在就替换，避免继续支付后出现两行相同订单 */
 function upsertOrder(order) {
-  if (!order || !order.id) return;
+  if (!order || !order.id || orderExpired(order)) return;
   const idx = state.orders.findIndex((o) => o.id === order.id);
   if (idx > -1) state.orders[idx] = { ...state.orders[idx], ...order };
   else state.orders.unshift(order);
@@ -1506,6 +1528,13 @@ function orderSheet(order) {
  * 收银台未关闭时用户又点了一次二维码支付，也能从这里重新打开二维码。
  */
 function continuePaySheet(order) {
+  if (orderExpired(order)) {
+    state.orders = state.orders.filter((o) => o.id !== order.id);
+    closeSheet();
+    render();
+    toast(`订单超过 ${Math.round(ORDER_TTL_MS / 60000)} 分钟未支付，已自动关闭，请重新下单`);
+    return;
+  }
   const channels = channelList();
   const prev = sheetState.type === 'continue' && sheetState.order && sheetState.order.id === order.id ? sheetState.channel : null;
   const sameChannel = channels.find((c) => c.id === order.channel);
@@ -1547,6 +1576,13 @@ function continuePaySheet(order) {
 /** 点订单行：没付完的直接进支付界面，其他看详情 */
 function openOrder(order) {
   if (!order) return;
+  if (orderExpired(order)) {
+    state.orders = state.orders.filter((o) => o.id !== order.id);
+    closeSheet();
+    render();
+    toast(`订单超过 ${Math.round(ORDER_TTL_MS / 60000)} 分钟未支付，已自动关闭`);
+    return;
+  }
   if (isUnpaid(order)) continuePaySheet(order);
   else orderSheet(order);
 }
@@ -1669,7 +1705,7 @@ sheetEl.addEventListener('click', async (e) => {
   if (act === 'mine-filter') {
     mineOrderFilter = el.dataset.f || 'all';
     const box = window.document.querySelector('#ordersBox');
-    if (box) box.innerHTML = mineOrderList(state.orders || []);
+    if (box) box.innerHTML = mineOrderList(dropExpiredOrders(state.orders));
     return;
   }
 
@@ -1840,6 +1876,13 @@ sheetEl.addEventListener('click', async (e) => {
       el.disabled = false;
       el.textContent = label;
       toast(err.message);
+      // 订单已超时被服务端删除：本地同步移除，回到列表
+      if (err.code === 'order_expired' || err.status === 404) {
+        state.orders = state.orders.filter((o) => o.id !== id);
+        if (state.viewer) state.viewer.orders = state.orders;
+        closeSheet();
+        render();
+      }
     }
   }
 

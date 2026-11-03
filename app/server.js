@@ -66,6 +66,45 @@ const PROVIDER = (
 const ADMIN_PASSWORD = (process.env.ADMIN_PASSWORD || '').trim();
 const ADMIN_USER = (process.env.ADMIN_USER || 'admin').trim();
 
+/* 管理员凭据：后台改过密码后以库里的为准（scrypt 哈希），没改过则回退 .env。
+ * token 签名用独立密钥，改密码不会把当前登录状态踢下线。 */
+const ADMIN_TOKEN_KEY = (process.env.ADMIN_TOKEN_SECRET || process.env.PAY_SECRET || ADMIN_PASSWORD || 'admin-dev-token').trim();
+let adminCred = null; // { user, pwdHash, pwdSalt } | null
+
+function scryptHash(password, salt) {
+  return crypto.scryptSync(String(password), String(salt), 64).toString('hex');
+}
+
+function currentAdminUser() {
+  return (adminCred && adminCred.user) || ADMIN_USER;
+}
+
+/** 后台是否可用：库里有凭据，或 .env 里配了 ADMIN_PASSWORD */
+function adminReady() {
+  return Boolean((adminCred && adminCred.pwdHash && adminCred.pwdSalt) || ADMIN_PASSWORD);
+}
+
+/** 校验管理员密码（库内 scrypt 优先，其次 .env 明文比较） */
+function verifyAdminPassword(password) {
+  const pwd = typeof password === 'string' ? password : '';
+  if (!pwd) return false;
+  if (adminCred && adminCred.pwdHash && adminCred.pwdSalt) {
+    const got = Buffer.from(scryptHash(pwd, adminCred.pwdSalt), 'hex');
+    const want = Buffer.from(adminCred.pwdHash, 'hex');
+    return got.length === want.length && crypto.timingSafeEqual(got, want);
+  }
+  if (!ADMIN_PASSWORD) return false;
+  return pwd.length === ADMIN_PASSWORD.length && crypto.timingSafeEqual(Buffer.from(pwd), Buffer.from(ADMIN_PASSWORD));
+}
+
+async function loadAdminCred() {
+  try {
+    adminCred = await store.getAdminCredentials();
+  } catch (e) {
+    console.warn('[admin] 读取管理员凭据失败，继续使用 .env 配置：' + e.message);
+  }
+}
+
 /* 支付宝周期扣款（免密自动续费）：
  * 需要商家在支付宝开放平台签约「周期扣款」产品，并在 .env 打开 ALIPAY_CYCLE_ENABLED=1。
  * 签约金额/周期取会员商品价格；签约成功后到期由支付宝代扣，无需用户余额。 */
@@ -89,18 +128,18 @@ function cycleReady() {
 const PUBLIC_SHARECODE = (process.env.PUBLIC_SHARECODE || '').trim();
 
 function adminToken(expMs) {
-  const sig = crypto.createHmac('sha256', ADMIN_PASSWORD).update('admin|' + expMs).digest('base64url');
+  const sig = crypto.createHmac('sha256', ADMIN_TOKEN_KEY).update('admin|' + expMs).digest('base64url');
   return expMs.toString(36) + '.' + sig;
 }
 
 function checkAdmin(req) {
-  if (!ADMIN_PASSWORD) return false;
+  if (!adminReady()) return false;
   const auth = String(req.headers['x-admin-token'] || '');
   const dot = auth.indexOf('.');
   if (dot < 1) return false;
   const exp = parseInt(auth.slice(0, dot), 36);
   if (!exp || exp < Date.now()) return false;
-  const expect = crypto.createHmac('sha256', ADMIN_PASSWORD).update('admin|' + exp).digest('base64url');
+  const expect = crypto.createHmac('sha256', ADMIN_TOKEN_KEY).update('admin|' + exp).digest('base64url');
   const got = auth.slice(dot + 1);
   return got.length === expect.length && crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expect));
 }
@@ -144,6 +183,64 @@ let db = {
   products: CATALOG,
 };
 
+/* 未支付订单保留时长：超时直接删除（默认 30 分钟，可用 .env ORDER_TTL_MINUTES 调整） */
+const ORDER_TTL_MINUTES = Math.max(1, Number(process.env.ORDER_TTL_MINUTES) || 30);
+const ORDER_TTL_MS = ORDER_TTL_MINUTES * 60 * 1000;
+
+function isUnpaidStatus(status) {
+  return status === 'created' || status === 'pending';
+}
+
+/** 未支付且已超时（这类订单一律当废弃处理） */
+function isOrderExpired(order, now = Date.now()) {
+  return Boolean(order) && isUnpaidStatus(order.status) && now - (order.createdAt || 0) > ORDER_TTL_MS;
+}
+
+/** 内存里先剔除超时未支付订单，返回剔除条数（数组原地修改，避免其他引用失效） */
+function purgeExpiredOrdersLocal(now = Date.now()) {
+  const keep = [];
+  let removed = 0;
+  for (const o of db.orders) {
+    if (isOrderExpired(o, now)) removed++;
+    else keep.push(o);
+  }
+  if (removed) db.orders.splice(0, db.orders.length, ...keep);
+  return removed;
+}
+
+/** 定时清理：内存 + 云库双清，云库是唯一事实来源，失败只告警不中断服务 */
+async function purgeExpiredOrders() {
+  // 先给超时的「支付中」订单补查一次单：万一用户已付款、只是回调延迟，不能误删
+  const stalePending = db.orders.filter((o) => o.status === 'pending' && isOrderExpired(o));
+  for (const o of stalePending) {
+    try {
+      await syncOrderFromChannel(o, { force: true });
+    } catch (e) {
+      console.warn('[order] 清理前查单失败 ' + o.id + '：' + e.message);
+    }
+  }
+  const localRemoved = purgeExpiredOrdersLocal();
+  let remoteRemoved = 0;
+  try {
+    remoteRemoved = await store.purgeStaleOrders(ORDER_TTL_MINUTES);
+  } catch (e) {
+    console.warn('[order] 清理超时订单失败：' + e.message);
+  }
+  if (localRemoved || remoteRemoved) {
+    console.log(`[order] 已删除超时未支付订单：内存 ${localRemoved} 笔，云库 ${remoteRemoved} 笔（阈值 ${ORDER_TTL_MINUTES} 分钟）`);
+  }
+  return localRemoved + remoteRemoved;
+}
+
+/** 启动定时清理：每 60 秒扫一次（首次延迟 5 秒，等云端状态加载完） */
+function startOrderJanitor() {
+  const tick = () => {
+    purgeExpiredOrders().catch((e) => console.warn('[order] 清理任务异常：' + e.message));
+  };
+  setTimeout(tick, 5000).unref?.();
+  setInterval(tick, 60 * 1000).unref?.();
+}
+
 /** 从云端加载状态；失败时抛错，由接口层明确告知用户，不做静默降级 */
 async function loadState() {
   const state = await store.getState();
@@ -171,7 +268,7 @@ async function refreshProducts() {
   const all = await store.adminListProducts();
   db.products = all
     .filter((p) => p.active)
-    .map(({ id, title, desc, amount, tag, memberDays, memberOnly, memberPrice }) => ({
+    .map(({ id, title, desc, amount, tag, memberDays, memberOnly, memberPrice, image }) => ({
       id,
       title,
       desc,
@@ -180,6 +277,7 @@ async function refreshProducts() {
       memberDays: Number(memberDays) || 0,
       memberOnly: Boolean(memberOnly),
       memberPrice: Number(memberPrice) || 0,
+      image: image || '',
     }));
   return all;
 }
@@ -392,6 +490,8 @@ const ICON_MIME_OK = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
 const AVATAR_MAX_BYTES = 256 * 1024;
 /** 首页内容配图：前端压到 720px，限制 400KB */
 const CONTENT_IMAGE_MAX_BYTES = 400 * 1024;
+/** 商品图：前端压到 640px 的 JPEG，限制 300KB */
+const PRODUCT_IMAGE_MAX_BYTES = 300 * 1024;
 
 /** 解析前端传来的 data URL：data:image/png;base64,xxxx */
 function parseDataUrl(s) {
@@ -1287,6 +1387,7 @@ async function handleApi(req, res, url) {
   if (pathname === '/api/orders' && method === 'POST') {
     const uid = currentUserId(req);
     if (!uid) return sendJSON(res, 401, { message: '请先登录后再下单' });
+    purgeExpiredOrdersLocal(); // 顺手清掉自己缓存里已超时的未支付单
     const body = await readBody(req);
 
     // 余额充值订单：body.recharge 为充值金额（分）
@@ -1365,6 +1466,7 @@ async function handleApi(req, res, url) {
 
   // 订单列表：登录后只看自己的
   if (pathname === '/api/orders' && method === 'GET') {
+    purgeExpiredOrdersLocal();
     const uid = currentUserId(req);
     const list = uid ? db.orders.filter((o) => o.userId === uid) : db.orders.filter((o) => !o.userId);
     return sendJSON(res, 200, { orders: list.slice(-50).reverse().map(publicOrder) });
@@ -1375,6 +1477,11 @@ async function handleApi(req, res, url) {
   if (detailMatch && method === 'GET') {
     const order = db.orders.find((o) => o.id === detailMatch[1]);
     if (!order) return sendJSON(res, 404, { message: '订单不存在' });
+    if (isOrderExpired(order)) {
+      purgeExpiredOrdersLocal();
+      await purgeExpiredOrders().catch(() => {});
+      return sendJSON(res, 404, { message: '订单已超过 ' + ORDER_TTL_MINUTES + ' 分钟未支付，已自动关闭' });
+    }
     // 待支付的支付宝订单：顺带向支付宝查一次单（内部有 4 秒节流），
     // 这样即使异步通知丢了，用户轮询/点「我已完成支付」也能自动变已支付
     if (order.status === 'pending') await syncOrderFromChannel(order).catch(() => {});
@@ -1410,6 +1517,14 @@ async function handleApi(req, res, url) {
     const body = await readBody(req);
     const order = db.orders.find((o) => o.id === payMatch[1]);
     if (!order) return sendJSON(res, 404, { message: '订单不存在' });
+    if (isOrderExpired(order)) {
+      purgeExpiredOrdersLocal();
+      await purgeExpiredOrders().catch(() => {});
+      return sendJSON(res, 400, {
+        code: 'order_expired',
+        message: `订单超过 ${ORDER_TTL_MINUTES} 分钟未支付，已自动关闭，请重新下单`,
+      });
+    }
     if (order.userId && currentUserId(req) !== order.userId && !checkAdmin(req)) {
       return sendJSON(res, 403, { message: '无权操作该订单' });
     }
@@ -1843,22 +1958,60 @@ async function handleApi(req, res, url) {
 
   if (pathname === '/api/admin/login' && method === 'POST') {
     const body = await readBody(req);
-    if (!ADMIN_PASSWORD) {
-      return sendJSON(res, 503, { message: '服务端未设置 ADMIN_PASSWORD，管理后台不可用' });
+    if (!adminReady()) {
+      return sendJSON(res, 503, { message: '后台还没有设置管理员密码，请先在服务端 .env 配置 ADMIN_PASSWORD' });
     }
-    // 账号：.env ADMIN_USER（默认 admin）；不传账号时按默认账号处理（兼容旧客户端）
+    // 账号：后台改过就用库里的，否则 .env ADMIN_USER（默认 admin）；不传账号时按默认账号处理（兼容旧客户端）
     const sentUser = typeof body.user === 'string' ? body.user.trim() : '';
-    const userOk = !sentUser || sentUser.toLowerCase() === ADMIN_USER.toLowerCase();
-    const pwdOk =
-      typeof body.password === 'string' &&
-      body.password.length === ADMIN_PASSWORD.length &&
-      crypto.timingSafeEqual(Buffer.from(body.password), Buffer.from(ADMIN_PASSWORD));
+    const userOk = !sentUser || sentUser.toLowerCase() === currentAdminUser().toLowerCase();
+    const pwdOk = verifyAdminPassword(body.password);
     if (!userOk || !pwdOk) return sendJSON(res, 401, { message: '管理员账号或密码错误' });
-    return sendJSON(res, 200, { token: adminToken(Date.now() + 12 * 3600 * 1000), expiresIn: 12 * 3600, user: ADMIN_USER });
+    return sendJSON(res, 200, {
+      token: adminToken(Date.now() + 12 * 3600 * 1000),
+      expiresIn: 12 * 3600,
+      user: currentAdminUser(),
+    });
   }
 
   if (pathname.startsWith('/api/admin/') && pathname !== '/api/admin/login') {
     if (!checkAdmin(req)) return sendJSON(res, 401, { message: '未登录或登录已过期' });
+
+    // 管理员账号密码：查看当前账号 / 修改（需要验证当前密码）
+    if (pathname === '/api/admin/credentials' && method === 'GET') {
+      return sendJSON(res, 200, {
+        user: currentAdminUser(),
+        source: adminCred && adminCred.pwdHash ? 'db' : 'env',
+        updatedAt: adminCred ? adminCred.updatedAt : null,
+      });
+    }
+
+    if (pathname === '/api/admin/credentials' && method === 'POST') {
+      const body = await readBody(req);
+      if (!verifyAdminPassword(body.currentPassword)) {
+        return sendJSON(res, 400, { message: '当前密码不正确' });
+      }
+      const nextUser = String(body.user || '').trim();
+      if (!/^[A-Za-z0-9_-]{3,24}$/.test(nextUser)) {
+        return sendJSON(res, 400, { message: '账号需 3~24 位，只能用字母 / 数字 / 下划线 / 短横线' });
+      }
+      const nextPwd = typeof body.password === 'string' ? body.password : '';
+      const changePwd = nextPwd.length > 0;
+      if (changePwd && nextPwd.length < 6) return sendJSON(res, 400, { message: '新密码至少 6 位' });
+      const salt = crypto.randomBytes(16).toString('hex');
+      const hash = changePwd
+        ? scryptHash(nextPwd, salt)
+        : adminCred && adminCred.pwdHash
+          ? adminCred.pwdHash
+          : scryptHash(ADMIN_PASSWORD, salt);
+      const finalSalt = changePwd ? salt : adminCred && adminCred.pwdSalt ? adminCred.pwdSalt : salt;
+      try {
+        const saved = await store.setAdminCredentials({ user: nextUser, pwdHash: hash, pwdSalt: finalSalt });
+        adminCred = saved;
+        return sendJSON(res, 200, { ok: true, user: currentAdminUser(), changedPassword: changePwd });
+      } catch (e) {
+        return sendJSON(res, 502, { message: '保存失败：' + e.message });
+      }
+    }
 
     // 概览：统计 + 全部订单 + 全部商品 + 支付配置
     if (pathname === '/api/admin/overview' && method === 'GET') {
@@ -2080,6 +2233,24 @@ async function handleApi(req, res, url) {
       let id = String(body.id || '').trim();
       if (id && !/^[\w-]{1,32}$/.test(id)) return sendJSON(res, 400, { message: '商品 ID 只能是字母/数字/下划线/短横线' });
       if (!id) id = 'p' + Date.now().toString(36);
+
+      // 商品图：没传该字段 = 不改图；传空串 = 清空；传 dataURL = 换图
+      let image;
+      if (body.image !== undefined && body.image !== null) {
+        const raw = String(body.image).trim();
+        if (!raw) {
+          image = '';
+        } else {
+          const parsed = parseDataUrl(raw);
+          if (!parsed) return sendJSON(res, 400, { message: '商品图片格式不正确，请重新上传' });
+          if (!ICON_MIME_OK.includes(parsed.mime)) return sendJSON(res, 400, { message: '商品图片仅支持 PNG / JPG / WEBP' });
+          if (parsed.bytes > PRODUCT_IMAGE_MAX_BYTES) {
+            return sendJSON(res, 400, { message: `商品图片太大（${Math.round(parsed.bytes / 1024)}KB），请换一张或压缩后再传` });
+          }
+          image = raw;
+        }
+      }
+
       try {
         const saved = await store.adminUpsertProduct({
           id,
@@ -2092,6 +2263,7 @@ async function handleApi(req, res, url) {
           memberDays: Math.max(0, Math.floor(Number(body.memberDays)) || 0),
           memberOnly: Boolean(body.memberOnly),
           memberPrice: Math.max(0, Math.floor(Number(body.memberPrice)) || 0),
+          image,
         });
         await refreshProducts();
         return sendJSON(res, 200, { product: saved });
@@ -2306,6 +2478,7 @@ let cloudError = null;
 async function initCloud(retry = 0) {
   try {
     await loadState();
+    await loadAdminCred();
     cloudReady = true;
     cloudError = null;
     console.log(
@@ -2375,5 +2548,6 @@ server.listen(PORT, () => {
   initCloud();
   startPendingSyncSweeper(); // 兜底：每分钟把「已付但状态没变」的支付宝订单补记入账
   startMemberAutoRenewSweeper(); // 会员自动续费：每 30 分钟扫一遍到期用户
+  startOrderJanitor(); // 未支付订单 30 分钟自动删除
   console.log('');
 });

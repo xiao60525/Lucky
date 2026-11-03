@@ -86,6 +86,7 @@ async function getState() {
       memberDays: Number(p.member_days) || 0,
       memberOnly: p.member_only === true,
       memberPrice: Number(p.member_price) || 0,
+      image: p.image || '',
     })),
   };
 }
@@ -152,6 +153,7 @@ function productRow(p) {
     memberDays: Number(p.member_days) || 0,
     memberOnly: p.member_only === true,
     memberPrice: Number(p.member_price) || 0,
+    image: p.image || '',
   };
 }
 
@@ -163,23 +165,23 @@ async function adminListProducts() {
 
 /** 新增/更新商品 */
 async function adminUpsertProduct(p) {
+  const product = {
+    id: p.id,
+    title: p.title,
+    description: p.desc,
+    amount: p.amount,
+    tag: p.tag,
+    sort: p.sort,
+    active: p.active,
+    memberDays: Number(p.memberDays) || 0,
+    memberOnly: Boolean(p.memberOnly),
+    memberPrice: Number(p.memberPrice) || 0,
+  };
+  // 传了 image 才写图片列：不传 = 保留原图，传空串 = 清空
+  if (p.image !== undefined && p.image !== null) product.image = p.image;
   const row = await call(
     'app_admin_upsert_product',
-    {
-      p_secret: secret,
-      p_product: {
-        id: p.id,
-        title: p.title,
-        description: p.desc,
-        amount: p.amount,
-        tag: p.tag,
-        sort: p.sort,
-        active: p.active,
-        memberDays: Number(p.memberDays) || 0,
-        memberOnly: Boolean(p.memberOnly),
-        memberPrice: Number(p.memberPrice) || 0,
-      },
-    },
+    { p_secret: secret, p_product: product },
     '保存商品'
   );
   return row ? productRow(row) : null;
@@ -313,10 +315,47 @@ async function adminDeleteContent(id) {
   return contentRow(row);
 }
 
-/** 健康检查：确认云端连通、密钥有效 */
-async function ping() {
+/** 删除超时未支付订单（分钟数），返回实际删除条数 */
+async function purgeStaleOrders(minutes = 30) {
+  const n = await call(
+    'app_purge_stale_orders',
+    { p_secret: secret, p_minutes: Math.max(1, Math.floor(Number(minutes)) || 30) },
+    '清理超时订单'
+  );
+  return Number(n) || 0;
+}
+
+/** 健康检查：确认云端连通、密钥有效 */async function ping() {
   const state = await getState();
   return { ok: true, orders: state.orders.length, balance: state.account ? state.account.balance : null };
+}
+
+/* ---------------- 管理员账号密码 ---------------- */
+
+function adminCredRow(row) {
+  if (!row) return null;
+  return {
+    user: row.user_name || '',
+    pwdHash: row.pwd_hash || '',
+    pwdSalt: row.pwd_salt || '',
+    updatedAt: toMs(row.updated_at),
+  };
+}
+
+/** 读取管理员凭据（null = 还没在后台改过，回退 .env） */
+async function getAdminCredentials() {
+  const row = await call('app_admin_get_credentials', { p_secret: secret }, '读取管理员账号');
+  return adminCredRow(row);
+}
+
+/** 保存管理员凭据（账号 + 密码哈希/盐） */
+async function setAdminCredentials({ user, pwdHash, pwdSalt }) {
+  const row = await call(
+    'app_admin_set_credentials',
+    { p_secret: secret, p_user: user, p_hash: pwdHash, p_salt: pwdSalt },
+    '保存管理员账号'
+  );
+  return adminCredRow(row);
 }
 
 module.exports = {
@@ -336,4 +375,7 @@ module.exports = {
   adminListContents,
   adminUpsertContent,
   adminDeleteContent,
+  getAdminCredentials,
+  setAdminCredentials,
+  purgeStaleOrders,
 };

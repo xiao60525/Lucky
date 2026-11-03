@@ -127,6 +127,7 @@ const NAV = [
   ['site', '🎨', '外观'],
   ['preview', '📱', '页面预览'],
   ['pay', '💳', '支付'],
+  ['settings', '⚙️', '设置'],
 ];
 
 function render() {
@@ -156,7 +157,7 @@ function render() {
     </div>`;
   document.querySelectorAll('.nav-btn').forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; render(); }));
   $('#logoutBtn').onclick = () => { state.token = ''; sessionStorage.removeItem('admin_token'); render(); };
-  ({ overview: renderOverview, products: renderProducts, members: renderMembers, contents: renderContents, orders: renderOrders, users: renderUsers, site: renderSite, preview: renderPreview, pay: renderPay })[state.tab]();
+  ({ overview: renderOverview, products: renderProducts, members: renderMembers, contents: renderContents, orders: renderOrders, users: renderUsers, site: renderSite, preview: renderPreview, pay: renderPay, settings: renderSettings })[state.tab]();
 }
 
 function renderOverview() {
@@ -322,9 +323,14 @@ function exportOrdersCsv(orders) {
   toast(`已导出 ${list.length} 条订单`);
 }
 
+/** 正在编辑的商品图（dataURL，空串 = 无图） */
+const productDraft = { image: '' };
+
 function renderProducts() {
   const ps = state.data.products;
   let pfilter = 'all';
+  // 正在编辑的商品图（dataURL；空串 = 不要图）
+  productDraft.image = '';
   const pChips = () => {
     const counts = { all: ps.length, active: 0, inactive: 0, member: 0, only: 0 };
     ps.forEach((p) => {
@@ -357,6 +363,15 @@ function renderProducts() {
         <div><label>会员专享</label><select id="f-memberonly"><option value="0">否 · 所有人可买</option><option value="1">是 · 仅会员可买</option></select></div>
         <div><label>会员价（元，0=无优惠）</label><input id="f-memberprice" type="number" min="0" step="0.01" value="0" placeholder="如 9.90" /></div>
         <div class="full"><label>描述</label><input id="f-desc" /></div>
+        <div class="full">
+          <label>商品图片（可选，显示在手机端商品卡上）</label>
+          <div class="brand-btns">
+            <label class="btn ghost" for="f-img" style="padding:7px 12px;font-size:12.5px">选择图片</label>
+            <button class="op" id="f-img-clear" type="button">移除</button>
+          </div>
+          <input type="file" id="f-img" accept="image/png,image/jpeg,image/webp" style="display:none" />
+          <div class="prod-preview" id="f-img-preview"></div>
+        </div>
       </div>
       <div class="row-actions">
         <button class="btn" id="saveBtn">保存</button>
@@ -372,6 +387,20 @@ function renderProducts() {
 
   $('#saveBtn').onclick = saveProduct;
   $('#resetBtn').onclick = () => fillForm(null);
+  $('#f-img').onchange = (e) => {
+    const f = e.target.files && e.target.files[0];
+    e.target.value = '';
+    if (!f) return;
+    pickProductImage(f)
+      .then(() => renderProductPreview())
+      .catch((err) => toast(err.message || '图片处理失败'));
+  };
+  $('#f-img-clear').onclick = () => {
+    productDraft.image = '';
+    renderProductPreview();
+    toast('商品图已移除，点保存生效');
+  };
+  renderProductPreview();
   if (ps.length) {
     const renderProductRows = () => {
       const box = $('#productRows');
@@ -387,11 +416,16 @@ function renderProducts() {
             (pfilter === 'member' && Number(p.memberDays) > 0))
       );
       box.innerHTML = fl.length
-        ? `<table><thead><tr><th>ID</th><th>名称</th><th>价格</th><th>会员</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${fl
+        ? `<table><thead><tr><th>图片</th><th>ID</th><th>名称</th><th>价格</th><th>会员</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${fl
             .map(
               (p) => `<tr>
-            <td style="font-family:monospace;font-size:12px">${p.id}</td>
-            <td>${p.title}${p.tag ? ` <span class="muted">·${p.tag}</span>` : ''}</td>
+            <td>${
+              p.image
+                ? `<img src="${esc(p.image)}" alt="" style="width:46px;height:46px;border-radius:10px;object-fit:cover;display:block" />`
+                : '<span class="muted">无</span>'
+            }</td>
+            <td style="font-family:monospace;font-size:12px">${esc(p.id)}</td>
+            <td>${esc(p.title)}${p.tag ? ` <span class="muted">·${esc(p.tag)}</span>` : ''}</td>
             <td>¥${yuan(p.amount)}${Number(p.memberPrice) > 0 ? `<div class="muted" style="font-size:11.5px">会员 ¥${yuan(p.memberPrice)}</div>` : ''}</td>
             <td>${
               [
@@ -404,14 +438,16 @@ function renderProducts() {
             <td class="muted">${p.sort}</td>
             <td>${p.active ? '<span class="tag paid">上架</span>' : '<span class="tag off">下架</span>'}</td>
             <td style="white-space:nowrap">
-              <button class="op" data-edit='${JSON.stringify(p).replace(/'/g, '&#39;')}'>编辑</button>
-              <button class="op danger" data-del="${p.id}">删除</button>
+              <button class="op" data-pedit="${esc(p.id)}">编辑</button>
+              <button class="op danger" data-del="${esc(p.id)}">删除</button>
             </td>
           </tr>`
             )
             .join('')}</tbody></table>`
         : '<p class="search-none muted">没有匹配的商品，换个筛选条件或关键词试试</p>';
-      box.querySelectorAll('[data-edit]').forEach((b) => (b.onclick = () => fillForm(JSON.parse(b.dataset.edit))));
+      box.querySelectorAll('[data-pedit]').forEach(
+        (b) => (b.onclick = () => fillForm(ps.find((x) => x.id === b.dataset.pedit)))
+      );
       box.querySelectorAll('[data-del]').forEach((b) => (b.onclick = () => delProduct(b.dataset.del)));
     };
     renderProductRows();
@@ -442,6 +478,44 @@ function fillForm(p) {
   $('#f-memberonly').value = p && p.memberOnly ? '1' : '0';
   $('#f-memberprice').value = p && Number(p.memberPrice) > 0 ? (Number(p.memberPrice) / 100).toFixed(2) : '0';
   $('#f-desc').value = p ? p.desc || '' : '';
+  productDraft.image = p && p.image ? p.image : '';
+  renderProductPreview();
+}
+
+/** 商品图预览（后台表单里的小方块） */
+function renderProductPreview() {
+  const box = $('#f-img-preview');
+  if (!box) return;
+  box.innerHTML = productDraft.image
+    ? `<img src="${esc(productDraft.image)}" alt="商品图预览" />`
+    : '<span class="muted" style="font-size:12px">未选择图片（手机端会显示一个默认图标）</span>';
+}
+
+/** 商品图：最长边压到 640px，JPEG，控制在 300KB 以内 */
+async function pickProductImage(file) {
+  if (!/^image\//.test(file.type)) throw new Error('请选择图片文件');
+  if (file.size > 8 * 1024 * 1024) throw new Error('图片太大，请选 8MB 以内的');
+  const dataUrl = await new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(new Error('图片读取失败'));
+    r.readAsDataURL(file);
+  });
+  const img = await loadImage(dataUrl);
+  const scale = Math.min(1, 640 / Math.max(img.width, img.height));
+  const w = Math.max(1, Math.round(img.width * scale));
+  const h = Math.max(1, Math.round(img.height * scale));
+  const cv = document.createElement('canvas');
+  cv.width = w;
+  cv.height = h;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, w, h);
+  ctx.drawImage(img, 0, 0, w, h);
+  let out = cv.toDataURL('image/jpeg', 0.84);
+  if (out.length > 280 * 1024) out = cv.toDataURL('image/jpeg', 0.7);
+  productDraft.image = out;
+  toast(`商品图已就绪（${w}×${h}，${Math.round((out.length * 0.75) / 1024)}KB）`);
 }
 
 async function saveProduct() {
@@ -464,6 +538,7 @@ async function saveProduct() {
         memberDays: Math.max(0, parseInt($('#f-memberdays').value, 10) || 0),
         memberOnly: $('#f-memberonly').value === '1',
         memberPrice: Math.round((parseFloat($('#f-memberprice').value) || 0) * 100),
+        image: productDraft.image || '',
       }),
     });
     toast('已保存');
@@ -1622,6 +1697,82 @@ async function runPayCheck() {
     btn.disabled = false;
     btn.textContent = '测试支付宝连通性';
   }
+}
+
+/* ---------------- 设置：管理员账号密码 ---------------- */
+
+function renderSettings() {
+  $('#panel').innerHTML = `
+    <div class="card">
+      <h3>管理员账号</h3>
+      <p class="muted" style="font-size:12.5px;line-height:1.7;margin:0 0 14px">
+        这里可以修改后台登录用的账号和密码，保存后立即生效（下次登录用新账号密码）。
+        当前这台设备已登录的状态不会掉线。
+      </p>
+      <div class="form-grid">
+        <div><label>管理员账号 *</label><input id="ac-user" maxlength="24" placeholder="如 admin" /></div>
+        <div><label>当前密码 *（验证身份）</label><input id="ac-cur" type="password" autocomplete="current-password" placeholder="修改前先输入当前密码" /></div>
+        <div><label>新密码（留空 = 只改账号）</label><input id="ac-new" type="password" autocomplete="new-password" placeholder="至少 6 位" /></div>
+        <div><label>确认新密码</label><input id="ac-new2" type="password" autocomplete="new-password" placeholder="再输入一次" /></div>
+      </div>
+      <div class="row-actions">
+        <button class="btn" id="ac-save">保存修改</button>
+      </div>
+      <p class="muted" id="ac-meta" style="font-size:12px;margin:12px 0 0"></p>
+    </div>
+
+    <div class="card">
+      <h3>关于登录</h3>
+      <div class="cfg-row"><span>账号来源</span><b id="ac-src">读取中…</b></div>
+      <div class="cfg-row"><span>密码存储</span><b>加盐哈希（scrypt），不保存明文</b></div>
+      <div class="cfg-row"><span>登录有效期</span><b>12 小时</b></div>
+      <p class="muted" style="font-size:12.5px;line-height:1.7;margin:12px 0 0">
+        还没在这里改过的话，账号密码来自服务端 <code>.env</code> 的 <code>ADMIN_USER</code> / <code>ADMIN_PASSWORD</code>；
+        在这里改过之后，以这里保存的为准。忘记密码时，把库里这行记录删掉即可回退到 <code>.env</code>。
+      </p>
+    </div>`;
+
+  const meta = $('#ac-src');
+  api('/api/admin/credentials')
+    .then((d) => {
+      $('#ac-user').value = d.user || '';
+      if (meta) meta.textContent = d.source === 'db' ? '后台设置（已修改过）' : '服务端 .env 默认配置';
+      const extra = $('#ac-meta');
+      if (extra && d.updatedAt) extra.textContent = '上次修改：' + new Date(d.updatedAt).toLocaleString('zh-CN');
+    })
+    .catch((e) => {
+      if (meta) meta.textContent = '读取失败：' + e.message;
+    });
+
+  $('#ac-save').onclick = async () => {
+    const btn = $('#ac-save');
+    const user = ($('#ac-user').value || '').trim();
+    const cur = $('#ac-cur').value || '';
+    const pwd = $('#ac-new').value || '';
+    const pwd2 = $('#ac-new2').value || '';
+    if (!/^[A-Za-z0-9_-]{3,24}$/.test(user)) return toast('账号需 3~24 位，只能用字母 / 数字 / 下划线 / 短横线');
+    if (!cur) return toast('请输入当前密码');
+    if (pwd && pwd.length < 6) return toast('新密码至少 6 位');
+    if (pwd && pwd !== pwd2) return toast('两次输入的新密码不一致');
+    btn.disabled = true;
+    btn.textContent = '保存中…';
+    try {
+      const r = await api('/api/admin/credentials', {
+        method: 'POST',
+        body: JSON.stringify({ user, currentPassword: cur, password: pwd }),
+      });
+      sessionStorage.setItem('admin_user', r.user || user);
+      $('#ac-cur').value = '';
+      $('#ac-new').value = '';
+      $('#ac-new2').value = '';
+      toast(r.changedPassword ? '账号和密码已更新' : '账号已更新');
+      render();
+    } catch (e) {
+      toast(e.message);
+      btn.disabled = false;
+      btn.textContent = '保存修改';
+    }
+  };
 }
 
 /* ---------------- 启动 ---------------- */

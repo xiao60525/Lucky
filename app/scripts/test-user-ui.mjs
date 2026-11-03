@@ -41,6 +41,8 @@ const VIEWER = {
       channelName: '支付宝扫码',
       createdAt: Date.now() - 60000,
     },
+    // 40 分钟前创建、一直没支付：超过 30 分钟，服务端已删除，前端也不该再展示
+    { id: 'O3', title: '超时未支付订单', amount: 500, status: 'created', createdAt: Date.now() - 40 * 60 * 1000 },
   ],
 };
 
@@ -57,7 +59,7 @@ const BOOTSTRAP = {
   products: [
     { id: 'demo_001', title: '测试商品', amount: 1, desc: 'x', tag: '示例' },
     { id: 'member_month', title: '会员月卡', amount: 1200, desc: '30 天权益', tag: '会员', memberDays: 30 },
-    { id: 'vip_kit', title: '会员专属礼包', amount: 1900, desc: '仅会员可买', tag: '', memberOnly: true, memberPrice: 990 },
+    { id: 'vip_kit', title: '会员专属礼包', amount: 1900, desc: '仅会员可买', tag: '', memberOnly: true, memberPrice: 990, image: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=' },
   ],
   contents: [
     { id: 'n1', title: '新人立减 5 元', desc: '注册即送，首单可用', tag: '活动', image: null, link: '', sort: 1, active: true },
@@ -169,6 +171,19 @@ await wait(120);
 
 // 0. 首页：商品卡片 + 后台配置的内容卡片
 check('首页商品卡片', window.document.querySelectorAll('.goods-card').length === 3, text('.goods-name'));
+// 商品图：后台配了图就显示图片，没配图回退到默认图标
+const imgCard = [...window.document.querySelectorAll('.goods-card')].find((c) => c.dataset.id === 'vip_kit');
+const plainCard = [...window.document.querySelectorAll('.goods-card')].find((c) => c.dataset.id === 'demo_001');
+check(
+  '商品图前台渲染',
+  Boolean(imgCard) && Boolean(imgCard.querySelector('.goods-thumb img')?.getAttribute('src')?.startsWith('data:image/png')),
+  imgCard ? imgCard.querySelector('.goods-thumb img')?.getAttribute('src')?.slice(0, 32) || '' : ''
+);
+check(
+  '无图商品回退默认图标',
+  Boolean(plainCard) && Boolean(plainCard.querySelector('.goods-emoji')) && !plainCard.querySelector('.goods-thumb'),
+  plainCard ? plainCard.textContent.replace(/\s+/g, ' ').trim() : ''
+);
 // 会员专享：角标 + 会员价（当前登录用户是会员，应按会员价展示并划线原价）
 const vipCard = [...window.document.querySelectorAll('.goods-card')].find((c) => c.dataset.id === 'vip_kit');
 check('会员专享商品有角标', Boolean(vipCard) && vipCard.textContent.includes('会员专享'), vipCard ? vipCard.textContent.replace(/\s+/g, ' ').trim() : '');
@@ -277,6 +292,11 @@ check('订单入口存在且页面不直接铺订单', Boolean($('[data-act="ope
 $('[data-act="open-orders"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(40);
 check('订单列表', window.document.querySelectorAll('.sheet .order-row').length === 2, text('.sheet .order-title'));
+check(
+  '超时未支付订单不展示',
+  ![...window.document.querySelectorAll('.sheet .order-row')].some((r) => r.dataset.id === 'O3'),
+  [...window.document.querySelectorAll('.sheet .order-row')].map((r) => r.dataset.id).join(',')
+);
 check('分享区存在', !!$('[data-act="share-copy"]') && !!$('[data-act="share-more"]') && !!$('[data-act="share-qr"]'));
 check('设置中心入口存在', Boolean($('[data-act="settings"]')) && window.document.querySelectorAll('.set-row').length === 1);
 
