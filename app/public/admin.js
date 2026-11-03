@@ -345,7 +345,20 @@ function renderProducts() {
     <div class="card">
       <h3>全部商品（${ps.length}）</h3>
       ${ps.length
-        ? `<table><thead><tr><th>ID</th><th>名称</th><th>价格</th><th>会员</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${ps
+        ? `<div class="search-box"><input id="productSearch" placeholder="🔍 搜商品 ID / 名称" /></div><div id="productRows"></div>`
+        : '<p class="muted">还没有商品，先在上面新增一个</p>'}
+    </div>`;
+
+  $('#saveBtn').onclick = saveProduct;
+  $('#resetBtn').onclick = () => fillForm(null);
+  if (ps.length) {
+    const renderProductRows = () => {
+      const box = $('#productRows');
+      if (!box) return;
+      const q = ($('#productSearch').value || '').trim().toLowerCase();
+      const fl = ps.filter((p) => !q || `${p.id} ${p.title}`.toLowerCase().includes(q));
+      box.innerHTML = fl.length
+        ? `<table><thead><tr><th>ID</th><th>名称</th><th>价格</th><th>会员</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${fl
             .map(
               (p) => `<tr>
             <td style="font-family:monospace;font-size:12px">${p.id}</td>
@@ -361,13 +374,17 @@ function renderProducts() {
           </tr>`
             )
             .join('')}</tbody></table>`
-        : '<p class="muted">还没有商品，先在上面新增一个</p>'}
-    </div>`;
-
-  $('#saveBtn').onclick = saveProduct;
-  $('#resetBtn').onclick = () => fillForm(null);
-  document.querySelectorAll('[data-edit]').forEach((b) => (b.onclick = () => fillForm(JSON.parse(b.dataset.edit))));
-  document.querySelectorAll('[data-del]').forEach((b) => (b.onclick = () => delProduct(b.dataset.del)));
+        : '<p class="search-none muted">没有匹配的商品，换个关键词试试</p>';
+      box.querySelectorAll('[data-edit]').forEach((b) => (b.onclick = () => fillForm(JSON.parse(b.dataset.edit))));
+      box.querySelectorAll('[data-del]').forEach((b) => (b.onclick = () => delProduct(b.dataset.del)));
+    };
+    renderProductRows();
+    let ptimer = null;
+    $('#productSearch').oninput = () => {
+      clearTimeout(ptimer);
+      ptimer = setTimeout(renderProductRows, 200);
+    };
+  }
 }
 
 function fillForm(p) {
@@ -462,7 +479,19 @@ function renderContents() {
     <div class="card">
       <h3>全部内容（${cs.length}）</h3>
       ${cs.length
-        ? `<table><thead><tr><th>配图</th><th>标题</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${cs
+        ? `<div class="search-box"><input id="contentSearch" placeholder="🔍 搜标题 / 描述" /></div><div id="contentRows"></div>`
+        : '<p class="muted">还没有内容，先在上面新增一条</p>'}
+    </div>`;
+
+  renderContentPreview();
+  if (cs.length) {
+    const renderContentRows = () => {
+      const box = $('#contentRows');
+      if (!box) return;
+      const q = ($('#contentSearch').value || '').trim().toLowerCase();
+      const fl = cs.filter((c) => !q || `${c.title || ''} ${c.desc || ''}`.toLowerCase().includes(q));
+      box.innerHTML = fl.length
+        ? `<table><thead><tr><th>配图</th><th>标题</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${fl
             .map(
               (c) => `<tr>
             <td>${
@@ -480,10 +509,19 @@ function renderContents() {
           </tr>`
             )
             .join('')}</tbody></table>`
-        : '<p class="muted">还没有内容，先在上面新增一条</p>'}
-    </div>`;
-
-  renderContentPreview();
+        : '<p class="search-none muted">没有匹配的内容，换个关键词试试</p>';
+      box.querySelectorAll('[data-cedit]').forEach(
+        (b) => (b.onclick = () => fillContentForm(cs.find((x) => x.id === b.dataset.cedit)))
+      );
+      box.querySelectorAll('[data-cdel]').forEach((b) => (b.onclick = () => delContent(b.dataset.cdel)));
+    };
+    renderContentRows();
+    let ctimer = null;
+    $('#contentSearch').oninput = () => {
+      clearTimeout(ctimer);
+      ctimer = setTimeout(renderContentRows, 200);
+    };
+  }
   $('#c-img').onchange = (e) => {
     const f = e.target.files && e.target.files[0];
     e.target.value = '';
@@ -742,9 +780,17 @@ function renderUsers() {
       const mpCount = list.filter((u) => u.source === 'mp').length;
       box.innerHTML = `
         <p class="muted" style="font-size:12.5px;margin:0 0 10px">共 ${list.length} 位用户（网页版 ${webCount} · 小程序 ${mpCount}），累计支付 ¥${yuan(paidSum)}</p>
-        <table>
+        <div class="search-box"><input id="userSearch" placeholder="🔍 搜手机号 / 昵称" /></div>
+        <div id="userRows"></div>`;
+      const renderUserRows = () => {
+        const rows = $('#userRows');
+        if (!rows) return;
+        const q = ($('#userSearch').value || '').trim().toLowerCase();
+        const fl = list.filter((u) => !q || `${u.phone || ''} ${u.nickname || ''}`.toLowerCase().includes(q));
+        rows.innerHTML = fl.length
+          ? `<table>
           <thead><tr><th>手机号</th><th>昵称</th><th>来源</th><th>积分</th><th>余额</th><th>注册时间</th><th>最近登录</th><th>订单数</th><th>累计支付</th></tr></thead>
-          <tbody>${list
+          <tbody>${fl
             .map(
               (u) => `<tr>
               <td style="font-family:monospace;font-size:13px">${u.phone || '<span class="muted">未绑定</span>'}</td>
@@ -761,7 +807,15 @@ function renderUsers() {
             </tr>`
             )
             .join('')}</tbody>
-        </table>`;
+        </table>`
+          : '<p class="search-none muted">没有匹配的用户，换个关键词试试</p>';
+      };
+      renderUserRows();
+      let utimer = null;
+      $('#userSearch').oninput = () => {
+        clearTimeout(utimer);
+        utimer = setTimeout(renderUserRows, 200);
+      };
     })
     .catch((e) => {
       const box = $('#userTable');
@@ -860,9 +914,20 @@ function renderMembers() {
         </div>
         ${
           web.length
-            ? `<table><thead><tr><th>手机号</th><th>昵称</th><th>会员状态</th><th>来源</th><th>余额</th><th>订单数</th><th>操作</th></tr></thead><tbody>${web
-                .map(
-                  (u) => `<tr>
+            ? `<div class="search-box"><input id="memberSearch" placeholder="🔍 搜手机号 / 昵称" /></div><div id="memberRows"></div>
+            <div id="memberLogBox" style="margin-top:14px"></div>`
+            : '<p class="muted">还没有网页版注册用户。</p>'
+        }`;
+
+      const renderMemberRows = () => {
+        const rows = $('#memberRows');
+        if (!rows) return;
+        const q = ($('#memberSearch').value || '').trim().toLowerCase();
+        const fl = web.filter((u) => !q || `${u.phone || ''} ${u.nickname || ''}`.toLowerCase().includes(q));
+        rows.innerHTML = fl.length
+          ? `<table><thead><tr><th>手机号</th><th>昵称</th><th>会员状态</th><th>来源</th><th>余额</th><th>订单数</th><th>操作</th></tr></thead><tbody>${fl
+              .map(
+                (u) => `<tr>
                 <td style="font-family:monospace;font-size:13px">${u.phone || '<span class="muted">未绑定</span>'}</td>
                 <td>${u.nickname || '<span class="muted">—</span>'}</td>
                 <td>${memberBadge(u)}</td>
@@ -875,65 +940,72 @@ function renderMembers() {
                   ${u.isMember ? `<button class="op danger" data-mrevoke="${u.id}" data-name="${esc(u.nickname || u.phone)}">取消</button>` : ''}
                 </td>
               </tr>`
-                )
-                .join('')}</tbody></table>
-            <div id="memberLogBox" style="margin-top:14px"></div>`
-            : '<p class="muted">还没有网页版注册用户。</p>'
-        }`;
+              )
+              .join('')}</tbody></table>`
+          : '<p class="search-none muted">没有匹配的用户，换个关键词试试</p>';
 
-      document.querySelectorAll('[data-mlog]').forEach((b) => {
-        b.onclick = async () => {
-          const box2 = $('#memberLogBox');
-          if (!box2) return;
-          box2.innerHTML = '<p class="muted">加载流水…</p>';
-          try {
-            const lr = await api(`/api/admin/member/logs?userId=${encodeURIComponent(b.dataset.mlog)}&limit=50`);
-            const logs = lr.logs || [];
-            box2.innerHTML = `<div class="card">
-              <h3 style="margin-top:0">「${esc(b.dataset.name)}」的会员记录</h3>
-              ${
-                logs.length
-                  ? `<table><thead><tr><th>时间</th><th>操作</th><th>订单 / 备注</th></tr></thead><tbody>${logs.map(memberLogRow).join('')}</tbody></table>`
-                  : '<p class="muted">暂无记录</p>'
-              }
-            </div>`;
-            box2.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-          } catch (e) {
-            box2.innerHTML = `<p style="color:var(--bad);font-size:13px">读取失败：${e.message}</p>`;
-          }
-        };
-      });
+        rows.querySelectorAll('[data-mlog]').forEach((b) => {
+          b.onclick = async () => {
+            const box2 = $('#memberLogBox');
+            if (!box2) return;
+            box2.innerHTML = '<p class="muted">加载流水…</p>';
+            try {
+              const lr = await api(`/api/admin/member/logs?userId=${encodeURIComponent(b.dataset.mlog)}&limit=50`);
+              const logs = lr.logs || [];
+              box2.innerHTML = `<div class="card">
+                <h3 style="margin-top:0">「${esc(b.dataset.name)}」的会员记录</h3>
+                ${
+                  logs.length
+                    ? `<table><thead><tr><th>时间</th><th>操作</th><th>订单 / 备注</th></tr></thead><tbody>${logs.map(memberLogRow).join('')}</tbody></table>`
+                    : '<p class="muted">暂无记录</p>'
+                }
+              </div>`;
+              box2.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            } catch (e) {
+              box2.innerHTML = `<p style="color:var(--bad);font-size:13px">读取失败：${e.message}</p>`;
+            }
+          };
+        });
 
-      document.querySelectorAll('[data-mgrant]').forEach((b) => {
-        b.onclick = async () => {
-          const input = prompt(`给「${b.dataset.name}」开通/续费多少天会员？\n（30=月卡 90=季卡 365=年卡，会累加到当前到期时间）`, '30');
-          if (input === null) return;
-          const days = parseInt(input, 10);
-          if (!Number.isFinite(days) || days <= 0) return toast('请输入大于 0 的天数');
-          try {
-            const r = await api('/api/admin/member/grant', {
-              method: 'POST',
-              body: JSON.stringify({ userId: b.dataset.mgrant, days }),
-            });
-            toast('已开通，到期 ' + (r.expire ? fmtTime(new Date(r.expire).getTime()) : '成功'));
-            renderMembers();
-          } catch (e) {
-            toast(e.message);
-          }
+        rows.querySelectorAll('[data-mgrant]').forEach((b) => {
+          b.onclick = async () => {
+            const input = prompt(`给「${b.dataset.name}」开通/续费多少天会员？\n（30=月卡 90=季卡 365=年卡，会累加到当前到期时间）`, '30');
+            if (input === null) return;
+            const days = parseInt(input, 10);
+            if (!Number.isFinite(days) || days <= 0) return toast('请输入大于 0 的天数');
+            try {
+              const r = await api('/api/admin/member/grant', {
+                method: 'POST',
+                body: JSON.stringify({ userId: b.dataset.mgrant, days }),
+              });
+              toast('已开通，到期 ' + (r.expire ? fmtTime(new Date(r.expire).getTime()) : '成功'));
+              renderMembers();
+            } catch (e) {
+              toast(e.message);
+            }
+          };
+        });
+        rows.querySelectorAll('[data-mrevoke]').forEach((b) => {
+          b.onclick = async () => {
+            if (!confirm(`确定取消「${b.dataset.name}」的会员？用户端立即失效。`)) return;
+            try {
+              await api('/api/admin/member/revoke', { method: 'POST', body: JSON.stringify({ userId: b.dataset.mrevoke }) });
+              toast('已取消会员');
+              renderMembers();
+            } catch (e) {
+              toast(e.message);
+            }
+          };
+        });
+      };
+      renderMemberRows();
+      let mtimer = null;
+      const msearch = $('#memberSearch');
+      if (msearch)
+        msearch.oninput = () => {
+          clearTimeout(mtimer);
+          mtimer = setTimeout(renderMemberRows, 200);
         };
-      });
-      document.querySelectorAll('[data-mrevoke]').forEach((b) => {
-        b.onclick = async () => {
-          if (!confirm(`确定取消「${b.dataset.name}」的会员？用户端立即失效。`)) return;
-          try {
-            await api('/api/admin/member/revoke', { method: 'POST', body: JSON.stringify({ userId: b.dataset.mrevoke }) });
-            toast('已取消会员');
-            renderMembers();
-          } catch (e) {
-            toast(e.message);
-          }
-        };
-      });
     })
     .catch((e) => {
       const box = $('#memberTable');
