@@ -324,6 +324,23 @@ function exportOrdersCsv(orders) {
 
 function renderProducts() {
   const ps = state.data.products;
+  let pfilter = 'all';
+  const pChips = () => {
+    const counts = { all: ps.length, active: 0, inactive: 0, member: 0 };
+    ps.forEach((p) => {
+      if (p.active) counts.active++;
+      else counts.inactive++;
+      if (Number(p.memberDays) > 0) counts.member++;
+    });
+    return [
+      ['all', '全部'],
+      ['active', '上架'],
+      ['inactive', '下架'],
+      ['member', '会员商品'],
+    ]
+      .map(([k, label]) => `<button class="ochip ${pfilter === k ? 'on' : ''}" data-pf="${k}">${label}${counts[k] ? ` <i>${counts[k]}</i>` : ''}</button>`)
+      .join('');
+  };
   $('#panel').innerHTML = `
     <div class="card">
       <h3 id="formTitle">新增商品</h3>
@@ -345,7 +362,7 @@ function renderProducts() {
     <div class="card">
       <h3>全部商品（${ps.length}）</h3>
       ${ps.length
-        ? `<div class="search-box"><input id="productSearch" placeholder="🔍 搜商品 ID / 名称" /></div><div id="productRows"></div>`
+        ? `<div class="ochips">${pChips()}</div><div class="search-box"><input id="productSearch" placeholder="🔍 搜商品 ID / 名称" /></div><div id="productRows"></div>`
         : '<p class="muted">还没有商品，先在上面新增一个</p>'}
     </div>`;
 
@@ -356,7 +373,14 @@ function renderProducts() {
       const box = $('#productRows');
       if (!box) return;
       const q = ($('#productSearch').value || '').trim().toLowerCase();
-      const fl = ps.filter((p) => !q || `${p.id} ${p.title}`.toLowerCase().includes(q));
+      const fl = ps.filter(
+        (p) =>
+          (!q || `${p.id} ${p.title}`.toLowerCase().includes(q)) &&
+          (pfilter === 'all' ||
+            (pfilter === 'active' && p.active) ||
+            (pfilter === 'inactive' && !p.active) ||
+            (pfilter === 'member' && Number(p.memberDays) > 0))
+      );
       box.innerHTML = fl.length
         ? `<table><thead><tr><th>ID</th><th>名称</th><th>价格</th><th>会员</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${fl
             .map(
@@ -374,7 +398,7 @@ function renderProducts() {
           </tr>`
             )
             .join('')}</tbody></table>`
-        : '<p class="search-none muted">没有匹配的商品，换个关键词试试</p>';
+        : '<p class="search-none muted">没有匹配的商品，换个筛选条件或关键词试试</p>';
       box.querySelectorAll('[data-edit]').forEach((b) => (b.onclick = () => fillForm(JSON.parse(b.dataset.edit))));
       box.querySelectorAll('[data-del]').forEach((b) => (b.onclick = () => delProduct(b.dataset.del)));
     };
@@ -384,6 +408,13 @@ function renderProducts() {
       clearTimeout(ptimer);
       ptimer = setTimeout(renderProductRows, 200);
     };
+    document.querySelectorAll('[data-pf]').forEach((b) => {
+      b.onclick = () => {
+        pfilter = b.dataset.pf;
+        document.querySelectorAll('[data-pf]').forEach((x) => x.classList.toggle('on', x === b));
+        renderProductRows();
+      };
+    });
   }
 }
 
@@ -447,6 +478,18 @@ const contentDraft = { image: '' };
 
 function renderContents() {
   const cs = state.data.contents || [];
+  let cfilter = 'all';
+  const cChips = () => {
+    const counts = { all: cs.length, active: 0, hidden: 0 };
+    cs.forEach((c) => (c.active ? counts.active++ : counts.hidden++));
+    return [
+      ['all', '全部'],
+      ['active', '上线'],
+      ['hidden', '隐藏'],
+    ]
+      .map(([k, label]) => `<button class="ochip ${cfilter === k ? 'on' : ''}" data-cf="${k}">${label}${counts[k] ? ` <i>${counts[k]}</i>` : ''}</button>`)
+      .join('');
+  };
   $('#panel').innerHTML = `
     <div class="card">
       <h3 id="cFormTitle">新增首页内容</h3>
@@ -479,7 +522,7 @@ function renderContents() {
     <div class="card">
       <h3>全部内容（${cs.length}）</h3>
       ${cs.length
-        ? `<div class="search-box"><input id="contentSearch" placeholder="🔍 搜标题 / 描述" /></div><div id="contentRows"></div>`
+        ? `<div class="ochips">${cChips()}</div><div class="search-box"><input id="contentSearch" placeholder="🔍 搜标题 / 描述" /></div><div id="contentRows"></div>`
         : '<p class="muted">还没有内容，先在上面新增一条</p>'}
     </div>`;
 
@@ -489,7 +532,11 @@ function renderContents() {
       const box = $('#contentRows');
       if (!box) return;
       const q = ($('#contentSearch').value || '').trim().toLowerCase();
-      const fl = cs.filter((c) => !q || `${c.title || ''} ${c.desc || ''}`.toLowerCase().includes(q));
+      const fl = cs.filter(
+        (c) =>
+          (!q || `${c.title || ''} ${c.desc || ''}`.toLowerCase().includes(q)) &&
+          (cfilter === 'all' || (cfilter === 'active' ? c.active : !c.active))
+      );
       box.innerHTML = fl.length
         ? `<table><thead><tr><th>配图</th><th>标题</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${fl
             .map(
@@ -509,7 +556,7 @@ function renderContents() {
           </tr>`
             )
             .join('')}</tbody></table>`
-        : '<p class="search-none muted">没有匹配的内容，换个关键词试试</p>';
+        : '<p class="search-none muted">没有匹配的内容，换个筛选条件或关键词试试</p>';
       box.querySelectorAll('[data-cedit]').forEach(
         (b) => (b.onclick = () => fillContentForm(cs.find((x) => x.id === b.dataset.cedit)))
       );
@@ -521,6 +568,13 @@ function renderContents() {
       clearTimeout(ctimer);
       ctimer = setTimeout(renderContentRows, 200);
     };
+    document.querySelectorAll('[data-cf]').forEach((b) => {
+      b.onclick = () => {
+        cfilter = b.dataset.cf;
+        document.querySelectorAll('[data-cf]').forEach((x) => x.classList.toggle('on', x === b));
+        renderContentRows();
+      };
+    });
   }
   $('#c-img').onchange = (e) => {
     const f = e.target.files && e.target.files[0];
@@ -778,15 +832,42 @@ function renderUsers() {
       const paidSum = list.reduce((s, u) => s + (u.paidAmount || 0), 0);
       const webCount = list.filter((u) => u.source === 'web').length;
       const mpCount = list.filter((u) => u.source === 'mp').length;
+      let usrc = 'all';
+      let umember = 'all';
+      const userChips = () => {
+        const srcCounts = { all: list.length, web: webCount, mp: mpCount };
+        const memCounts = {
+          all: list.length,
+          member: list.filter((u) => u.isMember).length,
+          normal: list.filter((u) => !u.isMember).length,
+        };
+        const chip = (group, k, label, n) =>
+          `<button class="ochip ${(group === 'src' ? usrc : umember) === k ? 'on' : ''}" data-uf="${group}:${k}">${label}${n ? ` <i>${n}</i>` : ''}</button>`;
+        return (
+          chip('src', 'all', '全部', srcCounts.all) +
+          chip('src', 'web', '网页/APP', srcCounts.web) +
+          chip('src', 'mp', '小程序', srcCounts.mp) +
+          '<span class="ochip-sep"></span>' +
+          chip('mem', 'all', '不限身份', memCounts.all) +
+          chip('mem', 'member', '会员', memCounts.member) +
+          chip('mem', 'normal', '普通', memCounts.normal)
+        );
+      };
       box.innerHTML = `
         <p class="muted" style="font-size:12.5px;margin:0 0 10px">共 ${list.length} 位用户（网页版 ${webCount} · 小程序 ${mpCount}），累计支付 ¥${yuan(paidSum)}</p>
+        <div class="ochips">${userChips()}</div>
         <div class="search-box"><input id="userSearch" placeholder="🔍 搜手机号 / 昵称" /></div>
         <div id="userRows"></div>`;
       const renderUserRows = () => {
         const rows = $('#userRows');
         if (!rows) return;
         const q = ($('#userSearch').value || '').trim().toLowerCase();
-        const fl = list.filter((u) => !q || `${u.phone || ''} ${u.nickname || ''}`.toLowerCase().includes(q));
+        const fl = list.filter(
+          (u) =>
+            (!q || `${u.phone || ''} ${u.nickname || ''}`.toLowerCase().includes(q)) &&
+            (usrc === 'all' || u.source === usrc) &&
+            (umember === 'all' || (umember === 'member' ? u.isMember : !u.isMember))
+        );
         rows.innerHTML = fl.length
           ? `<table>
           <thead><tr><th>手机号</th><th>昵称</th><th>来源</th><th>积分</th><th>余额</th><th>注册时间</th><th>最近登录</th><th>订单数</th><th>累计支付</th></tr></thead>
@@ -808,7 +889,7 @@ function renderUsers() {
             )
             .join('')}</tbody>
         </table>`
-          : '<p class="search-none muted">没有匹配的用户，换个关键词试试</p>';
+          : '<p class="search-none muted">没有匹配的用户，换个筛选条件或关键词试试</p>';
       };
       renderUserRows();
       let utimer = null;
@@ -816,6 +897,15 @@ function renderUsers() {
         clearTimeout(utimer);
         utimer = setTimeout(renderUserRows, 200);
       };
+      box.querySelectorAll('[data-uf]').forEach((b) => {
+        b.onclick = () => {
+          const [group, k] = b.dataset.uf.split(':');
+          if (group === 'src') usrc = k;
+          else umember = k;
+          box.querySelectorAll(`[data-uf^="${group}:"]`).forEach((x) => x.classList.toggle('on', x === b));
+          renderUserRows();
+        };
+      });
     })
     .catch((e) => {
       const box = $('#userTable');
@@ -908,6 +998,32 @@ function renderMembers() {
       } catch (e) {
         /* 流水读取失败不阻塞列表 */
       }
+      let mfilter = 'all';
+      const mChips = () => {
+        const counts = {
+          all: web.length,
+          active: 0,
+          soon: 0,
+          expired: 0,
+          auto: 0,
+        };
+        web.forEach((u) => {
+          if (u.isMember) {
+            counts.active++;
+            if (u.memberExpire && u.memberExpire - Date.now() < 7 * 86400000) counts.soon++;
+          } else if (u.memberExpire && u.memberExpire < Date.now()) counts.expired++;
+          if (u.autoRenew) counts.auto++;
+        });
+        return [
+          ['all', '全部'],
+          ['active', '生效中'],
+          ['soon', '7天内到期'],
+          ['expired', '已过期'],
+          ['auto', '自动续费'],
+        ]
+          .map(([k, label]) => `<button class="ochip ${mfilter === k ? 'on' : ''}" data-mf="${k}">${label}${counts[k] ? ` <i>${counts[k]}</i>` : ''}</button>`)
+          .join('');
+      };
       box.innerHTML = `
         <div class="ostat-row">
           <div class="ostat"><b>${members.length}</b><span>生效会员</span></div>
@@ -917,7 +1033,7 @@ function renderMembers() {
         </div>
         ${
           web.length
-            ? `<div class="search-box"><input id="memberSearch" placeholder="🔍 搜手机号 / 昵称" /></div><div id="memberRows"></div>
+            ? `<div class="ochips">${mChips()}</div><div class="search-box"><input id="memberSearch" placeholder="🔍 搜手机号 / 昵称" /></div><div id="memberRows"></div>
             <div id="memberLogBox" style="margin-top:14px"></div>`
             : '<p class="muted">还没有网页版注册用户。</p>'
         }`;
@@ -926,7 +1042,15 @@ function renderMembers() {
         const rows = $('#memberRows');
         if (!rows) return;
         const q = ($('#memberSearch').value || '').trim().toLowerCase();
-        const fl = web.filter((u) => !q || `${u.phone || ''} ${u.nickname || ''}`.toLowerCase().includes(q));
+        const fl = web.filter((u) => {
+          if (q && !`${u.phone || ''} ${u.nickname || ''}`.toLowerCase().includes(q)) return false;
+          if (mfilter === 'all') return true;
+          if (mfilter === 'active') return u.isMember;
+          if (mfilter === 'soon') return u.isMember && u.memberExpire && u.memberExpire - Date.now() < 7 * 86400000;
+          if (mfilter === 'expired') return !u.isMember && u.memberExpire && u.memberExpire < Date.now();
+          if (mfilter === 'auto') return Boolean(u.autoRenew);
+          return true;
+        });
         rows.innerHTML = fl.length
           ? `<table><thead><tr><th>手机号</th><th>昵称</th><th>会员状态</th><th>来源</th><th>余额</th><th>订单数</th><th>操作</th></tr></thead><tbody>${fl
               .map(
@@ -945,7 +1069,7 @@ function renderMembers() {
               </tr>`
               )
               .join('')}</tbody></table>`
-          : '<p class="search-none muted">没有匹配的用户，换个关键词试试</p>';
+          : '<p class="search-none muted">没有匹配的用户，换个筛选条件或关键词试试</p>';
 
         rows.querySelectorAll('[data-mlog]').forEach((b) => {
           b.onclick = async () => {
@@ -1009,6 +1133,13 @@ function renderMembers() {
           clearTimeout(mtimer);
           mtimer = setTimeout(renderMemberRows, 200);
         };
+      box.querySelectorAll('[data-mf]').forEach((b) => {
+        b.onclick = () => {
+          mfilter = b.dataset.mf;
+          box.querySelectorAll('[data-mf]').forEach((x) => x.classList.toggle('on', x === b));
+          renderMemberRows();
+        };
+      });
     })
     .catch((e) => {
       const box = $('#memberTable');
