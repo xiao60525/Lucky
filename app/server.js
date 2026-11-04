@@ -374,6 +374,56 @@ function newOrderId() {
 /* 应用外观：程序名称 + 图标（后台可改，存云库，重启不丢）                */
 /* ------------------------------------------------------------------ */
 
+/** 首页展示配置的默认值（库里的 home 只覆盖改过的部分） */
+const HOME_DEFAULTS = {
+  trust: [
+    { icon: '🔒', title: '安全支付', desc: '官方通道', on: true },
+    { icon: '⚡', title: '即时到账', desc: '分钟级', on: true },
+    { icon: '💬', title: '售后无忧', desc: '在线客服', on: true },
+  ],
+  goodsTitle: '在售商品',
+  contentTitle: '精选内容',
+  support: { wechat: '', phone: '', note: '' },
+};
+
+const TRUST_MAX = 4;
+
+/** 把库里的 home 和默认值合并，并裁掉非法内容 —— 前端直接拿来渲染，不再判空 */
+function normalizeHome(raw) {
+  const src = raw && typeof raw === 'object' ? raw : {};
+  const trust = [];
+  if (Array.isArray(src.trust)) {
+    // 后台传了数组就完全按它来（删掉的条目不会被默认值补回来）
+    src.trust.slice(0, TRUST_MAX).forEach((item, i) => {
+      if (!item || typeof item !== 'object') return;
+      const title = String(item.title || '').trim().slice(0, 8);
+      if (!title) return; // 标题为空视为不要这一条
+      const fallbackIcon = HOME_DEFAULTS.trust[i] ? HOME_DEFAULTS.trust[i].icon : '';
+      trust.push({
+        icon: (item.icon === undefined || item.icon === null ? fallbackIcon : String(item.icon)).trim().slice(0, 4),
+        title,
+        desc: String(item.desc || '').trim().slice(0, 10),
+        on: item.on !== false,
+      });
+    });
+  } else {
+    trust.push(...HOME_DEFAULTS.trust.map((t) => ({ ...t })));
+  }
+
+  const support = src.support && typeof src.support === 'object' ? src.support : {};
+  return {
+    trustOn: src.trustOn !== false, // 总开关：关掉后首页不显示服务保障条
+    trust,
+    goodsTitle: String(src.goodsTitle || '').trim().slice(0, 10) || HOME_DEFAULTS.goodsTitle,
+    contentTitle: String(src.contentTitle || '').trim().slice(0, 10) || HOME_DEFAULTS.contentTitle,
+    support: {
+      wechat: String(support.wechat || '').trim().slice(0, 40),
+      phone: String(support.phone || '').trim().slice(0, 40),
+      note: String(support.note || '').trim().slice(0, 120),
+    },
+  };
+}
+
 let site = {
   name: process.env.APP_NAME || '手机App支付骨架',
   tagline: '',
@@ -381,6 +431,7 @@ let site = {
   enableRegister: true, // 是否开放注册
   showMock: true, // 是否向用户展示模拟收银台
   showBalance: true, // 是否向用户展示余额支付
+  home: HOME_DEFAULTS,
   iconMime: null,
   iconData: null, // 纯 base64（不带 data: 前缀）
   iconThumb: null, // 96px 小图 dataURL，同步给小程序用
@@ -401,6 +452,7 @@ async function loadSite() {
     enableRegister: s.enableRegister !== false,
     showMock: s.showMock !== false,
     showBalance: s.showBalance !== false,
+    home: s.home || {},
     iconMime: s.iconMime,
     iconData: s.iconData,
     iconThumb: s.iconThumb,
@@ -474,6 +526,7 @@ function publicSite() {
     enableRegister: site.enableRegister !== false,
     showMock: site.showMock !== false,
     showBalance: site.showBalance !== false,
+    home: normalizeHome(site.home),
     hasIcon,
     iconVer: hasIcon ? site.iconVer || '1' : 'default',
     iconUrl: '/api/brand/icon?v=' + encodeURIComponent(hasIcon ? site.iconVer || '1' : 'default'),
@@ -2043,6 +2096,7 @@ async function handleApi(req, res, url) {
           balance: db.user.balance,
         },
         orders: db.orders.slice(-200).reverse().map((o) => adminOrder(o, umap)),
+        orderTtlMinutes: ORDER_TTL_MINUTES, // 后台按这个数算「剩余支付时间」
         products,
         contents,
         site: publicSite(),
@@ -2145,6 +2199,8 @@ async function handleApi(req, res, url) {
       const enableRegister = body.enableRegister === undefined ? undefined : Boolean(body.enableRegister);
       const showMock = body.showMock === undefined ? undefined : Boolean(body.showMock);
       const showBalance = body.showBalance === undefined ? undefined : Boolean(body.showBalance);
+      // 首页展示配置：传了对象才改（整块覆盖），不传则保持原样
+      const home = body.home === undefined || body.home === null ? undefined : normalizeHome(body.home);
 
       let iconAction = 'keep';
       let iconMime = null;
@@ -2186,6 +2242,7 @@ async function handleApi(req, res, url) {
           enableRegister,
           showMock,
           showBalance,
+          home,
           iconAction,
           iconMime,
           iconData,
@@ -2203,6 +2260,7 @@ async function handleApi(req, res, url) {
         enableRegister: saved ? saved.enableRegister !== false : enableRegister !== false,
         showMock: saved ? saved.showMock !== false : showMock !== false,
         showBalance: saved ? saved.showBalance !== false : showBalance !== false,
+        home: home !== undefined ? home : site.home,
         iconMime: iconAction === 'set' ? iconMime : iconAction === 'clear' ? null : site.iconMime,
         iconData: iconAction === 'set' ? iconData : iconAction === 'clear' ? null : site.iconData,
         iconThumb: iconAction === 'set' ? iconThumb : iconAction === 'clear' ? null : site.iconThumb,

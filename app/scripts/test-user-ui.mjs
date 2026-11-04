@@ -55,7 +55,25 @@ const BOOTSTRAP = {
   wechatReady: false,
   wxMchId: null,
   cloud: { ready: true, endpoint: 'x' },
-  site: { name: '手机App支付骨架', tagline: '', hasIcon: false, iconUrl: null, iconVer: 'default' },
+  site: {
+    name: '手机App支付骨架',
+    tagline: '',
+    hasIcon: false,
+    iconUrl: null,
+    iconVer: 'default',
+    // 后台「外观」页可改的首页展示配置
+    home: {
+      trustOn: true,
+      trust: [
+        { icon: '🛡', title: '正品保障', desc: '假一赔十', on: true },
+        { icon: '🚚', title: '极速发货', desc: '24 小时', on: true },
+        { icon: '💬', title: '在线客服', desc: '随时找我', on: true },
+      ],
+      goodsTitle: '精选好物',
+      contentTitle: '推荐阅读',
+      support: { wechat: 'kefu-test', phone: '13800000000', note: '工作日 9-18 点' },
+    },
+  },
   products: [
     { id: 'demo_001', title: '测试商品', amount: 1, desc: 'x', tag: '示例' },
     { id: 'member_month', title: '会员月卡', amount: 1200, desc: '30 天权益', tag: '会员', memberDays: 30 },
@@ -205,6 +223,25 @@ check('未登录时首页头像显示占位', text('.hero-avatar').includes('游
 
 // 0.1 首页新增：服务保障条 / 商品搜索 / 筛选 chips
 check('首页有服务保障条', window.document.querySelectorAll('.trust-item').length === 3, String(window.document.querySelectorAll('.trust-item').length));
+check(
+  '服务保障条用后台配置的文案',
+  text('.trust-row').includes('正品保障') && text('.trust-row').includes('假一赔十'),
+  text('.trust-row')
+);
+check('板块标题用后台配置的文案', text('.section-head h2').includes('精选好物'), text('.section-head h2'));
+
+// 配了客服微信 → 保障条可点开客服弹层
+$('.trust-item[data-act="support"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(50);
+check('可打开客服弹层', Boolean($('.sheet .sup-row')), text('.sheet h3'));
+check('客服弹层显示微信号', text('.sheet').includes('kefu-test'), text('.sheet .sup-v'));
+window.navigator.clipboard = { writeText: () => Promise.resolve() };
+window.isSecureContext = true;
+$('.sheet [data-act="copy-text"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+check('复制客服号有反馈', text('#toast').includes('已复制'), text('#toast'));
+closeSheetForTest();
+await wait(40);
 check('首页有商品搜索框', Boolean($('#goodsSearch')));
 check(
   '首页有商品筛选 chips',

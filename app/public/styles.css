@@ -1579,3 +1579,46 @@ body.dark .unpaid-main i { color: #d8b062; }
 body.dark .unpaid-go { color: #f0b95a; }
 body.dark .copy-mini { background: #262a36; color: #b7bdcb; }
 body.dark .pull-tip { box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5); }
+
+/* ==================================================================
+   首页配置化：可点击服务保障条 / 客服弹层
+================================================================== */
+.trust-item.is-link {
+  border-style: dashed;
+  cursor: pointer;
+  transition: border-color 0.15s, transform 0.15s;
+}
+.trust-item.is-link:active { transform: scale(0.97); }
+.trust-item.is-link b::after {
+  content: '›';
+  margin-left: 3px;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.sup-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 13px;
+  margin-bottom: 8px;
+  background: #f7f8fc;
+  border: 1px solid var(--line);
+  border-radius: 14px;
+}
+.sup-k {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: var(--muted);
+  min-width: 28px;
+}
+.sup-v {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 14px;
+  font-weight: 600;
+  word-break: break-all;
+}
+
+body.dark .trust-item.is-link { border-color: #3a4053; }
+body.dark .sup-row { background: #232734; }

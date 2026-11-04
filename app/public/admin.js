@@ -261,6 +261,16 @@ function orderTable(orders) {
   const list = filteredOrders(orders);
   if (!orders.length) return '<p class="muted">还没有订单</p>';
   if (!list.length) return '<p class="muted">没有符合条件的订单，换个筛选或关键词试试</p>';
+  const ttlMs = ((state.data && state.data.orderTtlMinutes) || 30) * 60 * 1000;
+  /** 未支付订单的剩余时间：和前台倒计时、服务端自动删除保持一致 */
+  const leftText = (o) => {
+    if (o.status !== 'created' && o.status !== 'pending') return '';
+    const left = (o.createdAt || 0) + ttlMs - Date.now();
+    if (left <= 0) return '<div class="muted" style="font-size:11px;color:#d9534f">已超时，等待清理</div>';
+    const m = Math.floor(left / 60000);
+    const sec = Math.floor((left % 60000) / 1000);
+    return `<div class="muted" style="font-size:11px">剩余 ${m}:${String(sec).padStart(2, '0')}</div>`;
+  };
   return `<div class="otable-wrap"><table><thead><tr><th>订单号</th><th>商品</th><th>买家</th><th>金额</th><th>渠道</th><th>状态</th><th>下单时间</th><th>支付时间</th><th>第三方交易号</th><th>操作</th></tr></thead>
     <tbody>${list
       .map(
@@ -272,7 +282,7 @@ function orderTable(orders) {
       <td style="white-space:nowrap">${orderBuyerText(o)}</td>
       <td style="white-space:nowrap">¥${o.amountText}</td>
       <td class="muted" style="white-space:nowrap">${o.channelName || '-'}</td>
-      <td><span class="tag ${o.status}">${STATUS_TEXT[o.status] || o.status}</span></td>
+      <td><span class="tag ${o.status}">${STATUS_TEXT[o.status] || o.status}</span>${leftText(o)}</td>
       <td class="muted" style="white-space:nowrap">${fmtTime(o.createdAt)}</td>
       <td class="muted" style="white-space:nowrap">${fmtTime(o.paidAt)}</td>
       <td style="font-family:monospace;font-size:11px;max-width:120px;word-break:break-all" title="${esc(o.transactionId || '')}">${
@@ -415,8 +425,13 @@ function renderProducts() {
             (pfilter === 'only' && p.memberOnly) ||
             (pfilter === 'member' && Number(p.memberDays) > 0))
       );
+      // 销量：已支付订单按商品聚合（前台详情页也会显示「已售 N」）
+      const soldMap = {};
+      (state.data.orders || []).forEach((o) => {
+        if (o.status === 'paid' && o.productId) soldMap[o.productId] = (soldMap[o.productId] || 0) + 1;
+      });
       box.innerHTML = fl.length
-        ? `<table><thead><tr><th>图片</th><th>ID</th><th>名称</th><th>价格</th><th>会员</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${fl
+        ? `<table><thead><tr><th>图片</th><th>ID</th><th>名称</th><th>价格</th><th>会员</th><th>销量</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${fl
             .map(
               (p) => `<tr>
             <td>${
@@ -435,6 +450,7 @@ function renderProducts() {
                 .filter(Boolean)
                 .join(' ') || '<span class="muted">—</span>'
             }</td>
+            <td class="muted">${soldMap[p.id] ? `已售 ${soldMap[p.id]}` : '—'}</td>
             <td class="muted">${p.sort}</td>
             <td>${p.active ? '<span class="tag paid">上架</span>' : '<span class="tag off">下架</span>'}</td>
             <td style="white-space:nowrap">
@@ -1273,8 +1289,36 @@ function mpStatusHTML() {
     : '小程序同步：⚠️ 未配置小程序云库（app/.env 的 MP_CLOUD_*），现在只对网页版生效。';
 }
 
+/** 首页配置的默认值：后台表单用它兜底，和后端 normalizeHome 保持一致 */
+const HOME_DEFAULTS_ADMIN = {
+  trust: [
+    { icon: '🔒', title: '安全支付', desc: '官方通道', on: true },
+    { icon: '⚡', title: '即时到账', desc: '分钟级', on: true },
+    { icon: '💬', title: '售后无忧', desc: '在线客服', on: true },
+  ],
+  goodsTitle: '在售商品',
+  contentTitle: '精选内容',
+  support: { wechat: '', phone: '', note: '' },
+};
+
+function siteHomeCfg(site) {
+  const h = (site && site.home) || {};
+  return {
+    trustOn: h.trustOn !== false,
+    trust: Array.isArray(h.trust) && h.trust.length ? h.trust : HOME_DEFAULTS_ADMIN.trust,
+    goodsTitle: h.goodsTitle || HOME_DEFAULTS_ADMIN.goodsTitle,
+    contentTitle: h.contentTitle || HOME_DEFAULTS_ADMIN.contentTitle,
+    support: {
+      wechat: (h.support && h.support.wechat) || '',
+      phone: (h.support && h.support.phone) || '',
+      note: (h.support && h.support.note) || '',
+    },
+  };
+}
+
 function renderSite() {
   const s = state.data.site || { name: '', tagline: '', notice: '', enableRegister: true, showMock: true, showBalance: true, hasIcon: false };
+  const h = siteHomeCfg(s);
   $('#panel').innerHTML = `
     <div class="card">
       <h3>程序名称与图标</h3>
@@ -1326,6 +1370,49 @@ function renderSite() {
         <div><b>显示余额支付</b><p class="muted" style="font-size:12px;margin:2px 0 0">用户用账户余额下单；不想做余额体系可关闭</p></div>
         <input type="checkbox" id="s-bal" ${s.showBalance !== false ? 'checked' : ''} />
       </label>
+    </div>
+
+    <div class="card">
+      <h3>首页展示</h3>
+      <p class="muted" style="font-size:12.5px;margin:0 0 12px">
+        这些内容直接显示在用户手机首页上。改完和上面一起点「保存并生效」。
+      </p>
+
+      <div class="form-grid">
+        <div><label>商品区标题（最多 10 字）</label><input id="h-goodstitle" maxlength="10" value="${esc(h.goodsTitle)}" placeholder="在售商品" /></div>
+        <div><label>内容区标题（最多 10 字）</label><input id="h-contenttitle" maxlength="10" value="${esc(h.contentTitle)}" placeholder="精选内容" /></div>
+      </div>
+
+      <div class="sub-head">
+        <b>服务保障条</b>
+        <label class="mini-switch"><input type="checkbox" id="h-truston" ${h.trustOn !== false ? 'checked' : ''} /> 显示</label>
+      </div>
+      <p class="muted" style="font-size:11.5px;margin:0 0 10px;line-height:1.6">
+        最多 4 条，标题留空即不显示该条。图标可以填一个 emoji 或 1~2 个字。
+      </p>
+      <div id="trustBox">
+        ${[0, 1, 2, 3]
+          .map((i) => {
+            const t = h.trust[i] || { icon: '', title: '', desc: '', on: true };
+            return `<div class="trust-edit">
+              <input class="t-icon" maxlength="2" value="${esc(t.icon || '')}" placeholder="🔒" aria-label="图标" />
+              <input class="t-title" maxlength="8" value="${esc(t.title || '')}" placeholder="标题，如 安全支付" aria-label="标题" />
+              <input class="t-desc" maxlength="10" value="${esc(t.desc || '')}" placeholder="说明，如 官方通道" aria-label="说明" />
+              <label class="t-on-wrap"><input type="checkbox" class="t-on" ${t.on !== false ? 'checked' : ''} /> 显示</label>
+            </div>`;
+          })
+          .join('')}
+      </div>
+
+      <div class="sub-head"><b>客服联系方式</b></div>
+      <p class="muted" style="font-size:11.5px;margin:0 0 10px;line-height:1.6">
+        填了之后，首页服务保障条可以点开「联系客服」，用户能一键复制微信号或电话。
+      </p>
+      <div class="form-grid">
+        <div><label>客服微信</label><input id="h-wechat" maxlength="40" value="${esc(h.support.wechat || '')}" placeholder="如 kefu001" /></div>
+        <div><label>客服电话</label><input id="h-phone" maxlength="40" value="${esc(h.support.phone || '')}" placeholder="如 13800000000" /></div>
+        <div class="full"><label>客服说明（可选）</label><input id="h-note" maxlength="120" value="${esc(h.support.note || '')}" placeholder="如 工作日 9:00-18:00 在线，看到会尽快回复" /></div>
+      </div>
     </div>
 
     <div class="card">
@@ -1440,6 +1527,27 @@ async function saveSite() {
     showMock: !$('#s-mock') || $('#s-mock').checked,
     showBalance: !$('#s-bal') || $('#s-bal').checked,
   };
+
+  // 首页展示配置：服务保障条 + 板块标题 + 客服联系方式
+  const trust = [...document.querySelectorAll('#trustBox .trust-edit')]
+    .map((row) => ({
+      icon: (row.querySelector('.t-icon').value || '').trim(),
+      title: (row.querySelector('.t-title').value || '').trim(),
+      desc: (row.querySelector('.t-desc').value || '').trim(),
+      on: row.querySelector('.t-on').checked,
+    }))
+    .filter((t) => t.title); // 标题留空 = 不要这一条
+  payload.home = {
+    trustOn: !$('#h-truston') || $('#h-truston').checked,
+    trust,
+    goodsTitle: ($('#h-goodstitle').value || '').trim(),
+    contentTitle: ($('#h-contenttitle').value || '').trim(),
+    support: {
+      wechat: ($('#h-wechat').value || '').trim(),
+      phone: ($('#h-phone').value || '').trim(),
+      note: ($('#h-note').value || '').trim(),
+    },
+  };
   if (siteDraft.icon) {
     payload.icon = siteDraft.icon;
     if (siteDraft.thumb) payload.iconThumb = siteDraft.thumb;
@@ -1500,7 +1608,7 @@ function renderPreview() {
             <p>· 名称 / 副标题 / 公告 / 开关 → 下方快捷设置或「外观」页<br/>
                · 首页内容卡片（精选内容、内容页）→「首页内容」页<br/>
                · 商品与价格 →「商品」页<br/>
-               · 图标上传 →「外观」页</p>
+               · 图标上传 / 服务保障条 / 客服联系方式 →「外观」页</p>
           </div>
           <div class="pv-jumps">
             <button class="btn ghost" id="pv-go-site">去外观设置</button>
@@ -1518,6 +1626,8 @@ function renderPreview() {
         <div><label>程序名称 *（最多 24 字）</label><input id="pv-name" maxlength="24" value="${esc(s.name || '')}" placeholder="如 我的小工具" /></div>
         <div><label>副标题（最多 40 字）</label><input id="pv-tagline" maxlength="40" value="${esc(s.tagline || '')}" placeholder="如 一个能付款的小应用" /></div>
         <div class="full"><label>首页公告（最多 200 字，留空不显示）</label><input id="pv-notice" maxlength="200" value="${esc(s.notice || '')}" placeholder="如 新用户下单立减 5 元" /></div>
+        <div><label>商品区标题</label><input id="pv-goodstitle" maxlength="10" value="${esc(siteHomeCfg(s).goodsTitle)}" placeholder="在售商品" /></div>
+        <div><label>内容区标题</label><input id="pv-contenttitle" maxlength="10" value="${esc(siteHomeCfg(s).contentTitle)}" placeholder="精选内容" /></div>
       </div>
       <label class="switch-row">
         <div><b>开放新用户注册</b><p class="muted" style="font-size:12px;margin:2px 0 0">关闭后登录页不再出现注册入口</p></div>
@@ -1567,6 +1677,12 @@ async function savePreviewSettings() {
     enableRegister: $('#pv-reg').checked,
     showMock: $('#pv-mock').checked,
     showBalance: $('#pv-bal').checked,
+    // 只改标题，其余首页配置（服务保障条 / 客服）保持「外观」页里的设置
+    home: {
+      ...((state.data.site && state.data.site.home) || {}),
+      goodsTitle: ($('#pv-goodstitle').value || '').trim(),
+      contentTitle: ($('#pv-contenttitle').value || '').trim(),
+    },
   };
   btn.disabled = true;
   btn.textContent = '保存中…';

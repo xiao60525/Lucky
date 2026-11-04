@@ -109,6 +109,32 @@
   .prod-preview { margin-top:10px; }
   .prod-preview img { max-width:150px; max-height:150px; border-radius:12px; border:1px solid var(--line); display:block; object-fit:cover; }
   .form-grid .full { grid-column:1 / -1; }
+
+  /* 首页展示配置：服务保障条逐行编辑 */
+  .sub-head {
+    display:flex; align-items:center; justify-content:space-between;
+    margin:18px 0 4px; padding-top:14px;
+    border-top:1px dashed #eef0f4;
+  }
+  .sub-head b { font-size:13.5px; }
+  .mini-switch { font-size:12.5px; color:var(--sub); display:inline-flex; align-items:center; gap:5px; cursor:pointer; }
+  .trust-edit {
+    display:grid;
+    grid-template-columns:56px 1fr 1fr 62px;
+    gap:8px; align-items:center;
+    margin-bottom:8px;
+  }
+  .trust-edit input[type="text"],
+  .trust-edit input:not([type]) {
+    width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:9px;
+    font-size:13px; font-family:inherit;
+  }
+  .trust-edit .t-icon { text-align:center; padding-left:4px; padding-right:4px; }
+  .t-on-wrap { font-size:12px; color:var(--sub); display:inline-flex; align-items:center; gap:4px; white-space:nowrap; }
+  @media (max-width:640px){
+    .trust-edit { grid-template-columns:48px 1fr 1fr; }
+    .t-on-wrap { grid-column:1 / -1; }
+  }
   .btn { padding:10px 18px; border:0; border-radius:10px; background:var(--brand); color:#fff; font-size:14px; cursor:pointer; }
   .btn:disabled { opacity:.6; }
   .btn.ghost { background:#fff; color:var(--ink); border:1px solid var(--line); }
@@ -162,6 +188,6 @@
 <body>
 <div class="wrap" id="app"></div>
 <div class="toast" id="toast"></div>
-<script src="./admin.js?v=20261104a"></script>
+<script src="./admin.js?v=20261104b"></script>
 </body>
 </html>

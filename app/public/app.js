@@ -436,7 +436,7 @@ function goodsSectionHTML() {
   const goods = state.products || [];
   if (!goods.length) {
     return `
-      <div class="section-head"><h2>在售商品</h2><span>0 件</span></div>
+      <div class="section-head"><h2>${esc(homeCfg().goodsTitle)}</h2><span>0 件</span></div>
       <div class="card"><div class="empty" style="padding:22px 8px"><p>后台还没有上架商品</p></div></div>`;
   }
   const chips = Object.entries(GOODS_FILTERS)
@@ -447,7 +447,7 @@ function goodsSectionHTML() {
     )
     .join('');
   return `
-    <div class="section-head"><h2>在售商品</h2><span id="goodsMeta">${goods.length} 件</span></div>
+    <div class="section-head"><h2>${esc(homeCfg().goodsTitle)}</h2><span id="goodsMeta">${goods.length} 件</span></div>
     <div class="search-bar">
       <span class="search-icon" aria-hidden="true">🔍</span>
       <input id="goodsSearch" type="search" placeholder="搜索商品名称或描述" value="${esc(state.goodsQuery)}" autocomplete="off" />
@@ -475,6 +475,95 @@ function unpaidBannerHTML() {
       <span class="order-count" data-until="${deadline}">剩余 ${mmss(deadline - Date.now())}</span>
       <span class="unpaid-go">去支付 ›</span>
     </button>`;
+}
+
+/* ---------------- 首页展示配置（后台「站点设置」里改） ---------------- */
+
+const HOME_FALLBACK = {
+  trust: [
+    { icon: '🔒', title: '安全支付', desc: '官方通道', on: true },
+    { icon: '⚡', title: '即时到账', desc: '分钟级', on: true },
+    { icon: '💬', title: '售后无忧', desc: '在线客服', on: true },
+  ],
+  goodsTitle: '在售商品',
+  contentTitle: '精选内容',
+  support: { wechat: '', phone: '', note: '' },
+};
+
+/** 后台没配或字段缺失时回退到默认，保证首页不会出现空白块 */
+function homeCfg() {
+  const h = (state.site && state.site.home) || {};
+  const trust =
+    Array.isArray(h.trust) && h.trust.length ? h.trust.filter((t) => t && t.title && t.on !== false) : HOME_FALLBACK.trust;
+  const support = h.support && typeof h.support === 'object' ? h.support : {};
+  return {
+    trustOn: h.trustOn !== false,
+    trust,
+    goodsTitle: h.goodsTitle || HOME_FALLBACK.goodsTitle,
+    contentTitle: h.contentTitle || HOME_FALLBACK.contentTitle,
+    support: {
+      wechat: support.wechat || '',
+      phone: support.phone || '',
+      note: support.note || '',
+    },
+  };
+}
+
+/** 客服信息是否有内容可展示 */
+function hasSupport() {
+  const s = homeCfg().support;
+  return Boolean(s.wechat || s.phone);
+}
+
+/** 服务保障条：后台可改文案、可关掉单项；配了客服信息时「在线客服」可点开 */
+function trustRowHTML() {
+  const cfg = homeCfg();
+  if (cfg.trustOn === false) return '';
+  const list = cfg.trust;
+  if (!list.length) return '';
+  return `<div class="trust-row">${list
+    .map((t) => {
+      const clickable = hasSupport();
+      const tag = clickable ? 'button' : 'div';
+      return `<${tag} class="trust-item${clickable ? ' is-link' : ''}"${
+        clickable ? ' data-act="support"' : ''
+      }>
+        <span class="trust-ico">${esc(t.icon || '')}</span><b>${esc(t.title)}</b>${
+        t.desc ? `<i>${esc(t.desc)}</i>` : ''
+      }
+      </${tag}>`;
+    })
+    .join('')}</div>`;
+}
+
+/** 客服弹层：微信号 / 手机号一键复制 */
+function supportSheet() {
+  const s = homeCfg().support;
+  if (!s.wechat && !s.phone) return toast('商家还没有填客服联系方式');
+  const rows = [
+    s.wechat
+      ? `<div class="sup-row">
+           <span class="sup-k">微信</span>
+           <span class="sup-v">${esc(s.wechat)}</span>
+           <button class="copy-mini" data-act="copy-text" data-id="${esc(s.wechat)}">复制</button>
+         </div>`
+      : '',
+    s.phone
+      ? `<div class="sup-row">
+           <span class="sup-k">电话</span>
+           <span class="sup-v">${esc(s.phone)}</span>
+           <button class="copy-mini" data-act="copy-text" data-id="${esc(s.phone)}">复制</button>
+         </div>`
+      : '',
+  ].join('');
+  openSheet(`
+    <h3>联系客服</h3>
+    <p class="muted" style="font-size:12.5px;margin:6px 0 14px;line-height:1.7">
+      ${esc(s.note || '有任何问题都可以找我们，看到会尽快回复')}
+    </p>
+    ${rows}
+    <button class="btn-ghost" data-act="close" style="margin-top:14px">关闭</button>
+  `);
 }
 
 function renderHome() {
@@ -517,16 +606,12 @@ function renderHome() {
     ${noticeHTML}
     ${unpaidBannerHTML()}
 
-    <div class="trust-row">
-      <div class="trust-item"><span class="trust-ico">🔒</span><b>安全支付</b><i>官方通道</i></div>
-      <div class="trust-item"><span class="trust-ico">⚡</span><b>即时到账</b><i>分钟级</i></div>
-      <div class="trust-item"><span class="trust-ico">💬</span><b>售后无忧</b><i>在线客服</i></div>
-    </div>
+    ${trustRowHTML()}
 
     ${goodsSectionHTML()}
 
     <div class="section-head">
-      <h2>精选内容</h2>
+      <h2>${esc(homeCfg().contentTitle)}</h2>
       <span>${contents.length ? contents.length + ' 条' : '待添加'}</span>
     </div>
     ${
@@ -1205,7 +1290,9 @@ function copyText(text) {
   ta.select();
   let ok = false;
   try {
-    ok = document.execCommand('copy');
+    if (typeof document.execCommand === 'function') ok = document.execCommand('copy');
+  } catch (e) {
+    ok = false;
   } finally {
     ta.remove();
   }
@@ -1478,11 +1565,11 @@ function skeletonHTML() {
     <div class="sk-row">
       ${'<div class="sk sk-stat"></div>'.repeat(3)}
     </div>
-    <div class="section-head"><h2>在售商品</h2></div>
+    <div class="section-head"><h2>${esc(homeCfg().goodsTitle)}</h2></div>
     <div class="goods-grid">
       ${'<div class="sk-card"><div class="sk sk-block"></div><div class="sk w80"></div><div class="sk w40"></div></div>'.repeat(4)}
     </div>
-    <div class="section-head"><h2>精选内容</h2></div>
+    <div class="section-head"><h2>${esc(homeCfg().contentTitle)}</h2></div>
     <div class="card">
       <div class="sk w60"></div>
       <div class="sk w80"></div>
@@ -2049,6 +2136,10 @@ view.addEventListener('click', async (e) => {
     goodsSheet(el.dataset.id);
     return;
   }
+  if (act === 'support') {
+    supportSheet();
+    return;
+  }
 
   /* 首页商品：筛选 / 清空搜索 */
   if (act === 'goods-filter') {
@@ -2099,6 +2190,11 @@ sheetEl.addEventListener('click', async (e) => {
   if (act === 'copy-order') {
     const ok = await copyText(el.dataset.id || '');
     toast(ok ? '订单号已复制' : '复制失败，请长按手动复制');
+    return;
+  }
+  if (act === 'copy-text') {
+    const ok = await copyText(el.dataset.id || '');
+    toast(ok ? '已复制，去粘贴给客服吧' : '复制失败，请长按手动复制');
     return;
   }
 

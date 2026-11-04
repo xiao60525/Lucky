@@ -204,6 +204,7 @@ function settingsRow(row) {
     enableRegister: row.enable_register !== false,
     showMock: row.show_mock !== false,
     showBalance: row.show_balance !== false,
+    home: row.home && typeof row.home === 'object' ? row.home : {},
     iconMime: row.icon_mime || null,
     iconData: row.icon_data || null,
     iconThumb: row.icon_thumb || null, // 给小程序用的 96px 小图（dataURL）
@@ -234,6 +235,7 @@ async function adminSaveSettings({
   iconData,
   iconThumb,
   iconVer,
+  home,
 }) {
   const row = await call(
     'app_admin_save_settings',
@@ -246,6 +248,8 @@ async function adminSaveSettings({
         enable_register: enableRegister === undefined ? null : String(Boolean(enableRegister)),
         show_mock: showMock === undefined ? null : String(Boolean(showMock)),
         show_balance: showBalance === undefined ? null : String(Boolean(showBalance)),
+        // home 不传 = 不改动；传对象 = 整块覆盖
+        ...(home === undefined || home === null ? {} : { home }),
         icon_action: iconAction || 'keep',
         icon_mime: iconMime || null,
         icon_data: iconData || null,
