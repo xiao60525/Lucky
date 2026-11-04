@@ -29,6 +29,8 @@ const state = {
   orders: [],
   tab: 'home',
   loaded: false,
+  goodsQuery: '', // 首页商品搜索词（纯前端过滤，不落库）
+  goodsFilter: 'all', // all / member / deal / owned
 };
 
 const sheetState = { type: null, product: null, order: null, channel: 'wechat' };
@@ -353,6 +355,108 @@ function contentCardHTML(c, big = false) {
   return `<div class="${cls}">${body}</div>`;
 }
 
+/* ---------------- 首页商品：搜索 + 筛选 + 卡片 ---------------- */
+
+/** 已买过的商品 id（只算已支付订单），用于「已购」标记与筛选 */
+function boughtProductIds() {
+  const set = new Set();
+  (state.orders || []).forEach((o) => {
+    if (o.status === 'paid' && o.productId) set.add(o.productId);
+  });
+  return set;
+}
+
+const GOODS_FILTERS = {
+  all: { label: '全部', match: () => true },
+  member: { label: '会员专享', match: (p) => Boolean(p.memberOnly) },
+  deal: { label: '有优惠', match: (p) => Number(p.memberPrice) > 0 },
+  owned: { label: '已购', match: (p) => boughtProductIds().has(p.id) },
+};
+
+/** 按搜索词 + 当前筛选条件挑出要展示的商品 */
+function visibleGoods() {
+  const q = String(state.goodsQuery || '').trim().toLowerCase();
+  const f = GOODS_FILTERS[state.goodsFilter] || GOODS_FILTERS.all;
+  return (state.products || []).filter((p) => {
+    if (!f.match(p)) return false;
+    if (!q) return true;
+    return `${p.title || ''} ${p.desc || ''} ${p.tag || ''}`.toLowerCase().includes(q);
+  });
+}
+
+function goodsCardHTML(p, i) {
+  const owned = boughtProductIds().has(p.id);
+  return `
+        <button class="goods-card${p.memberOnly && !viewerIsMember() ? ' is-locked' : ''}" data-act="buy" data-id="${esc(p.id)}">
+          ${p.memberOnly ? '<span class="goods-badge">会员专享</span>' : ''}
+          ${owned ? '<span class="goods-owned">已购</span>' : ''}
+          ${
+            p.image
+              ? `<span class="goods-thumb"><img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy" /></span>`
+              : `<span class="goods-emoji">${GOODS_ICONS[i % GOODS_ICONS.length]}</span>`
+          }
+          <span class="goods-name">${esc(p.title)}</span>
+          ${p.desc ? `<span class="goods-desc">${esc(p.desc)}</span>` : ''}
+          <span class="goods-foot">
+            <b>${yuan(memberPriceOf(p))}</b>
+            ${Number(p.memberPrice) > 0 ? `<s>${yuan(p.amount)}</s>` : ''}
+            <em>${esc(p.memberOnly && !viewerIsMember() ? '开通会员' : p.tag || '购买')}</em>
+          </span>
+        </button>`;
+}
+
+/** 只重绘商品网格，不动搜索框（避免输入时丢焦点） */
+function refreshGoodsBox() {
+  const box = document.getElementById('goodsBox');
+  if (!box) return;
+  const list = visibleGoods();
+  const total = (state.products || []).length;
+  box.innerHTML = list.length
+    ? list.map(goodsCardHTML).join('')
+    : `<div class="goods-none">
+         <span>🔍</span>
+         <p>没有找到相关商品</p>
+         <button class="mini-btn" data-act="goods-reset">清空筛选</button>
+       </div>`;
+  if (list.length) {
+    // 有结果时把 index 重新对齐，保证 emoji 图标与商品一一对应
+    [...box.querySelectorAll('.goods-card')].forEach((el) => {
+      const idx = (state.products || []).findIndex((p) => p.id === el.dataset.id);
+      const emoji = el.querySelector('.goods-emoji');
+      if (emoji && idx >= 0) emoji.textContent = GOODS_ICONS[idx % GOODS_ICONS.length];
+    });
+  }
+  const meta = document.getElementById('goodsMeta');
+  if (meta) meta.textContent = list.length === total ? `${total} 件` : `${list.length} / ${total} 件`;
+  const clear = document.getElementById('goodsClear');
+  if (clear) clear.hidden = !state.goodsQuery;
+}
+
+function goodsSectionHTML() {
+  const goods = state.products || [];
+  if (!goods.length) {
+    return `
+      <div class="section-head"><h2>在售商品</h2><span>0 件</span></div>
+      <div class="card"><div class="empty" style="padding:22px 8px"><p>后台还没有上架商品</p></div></div>`;
+  }
+  const chips = Object.entries(GOODS_FILTERS)
+    .filter(([k]) => k === 'all' || goods.some((p) => GOODS_FILTERS[k].match(p)))
+    .map(
+      ([k, f]) =>
+        `<button class="gchip ${state.goodsFilter === k ? 'on' : ''}" data-act="goods-filter" data-f="${k}">${f.label}</button>`
+    )
+    .join('');
+  return `
+    <div class="section-head"><h2>在售商品</h2><span id="goodsMeta">${goods.length} 件</span></div>
+    <div class="search-bar">
+      <span class="search-icon" aria-hidden="true">🔍</span>
+      <input id="goodsSearch" type="search" placeholder="搜索商品名称或描述" value="${esc(state.goodsQuery)}" autocomplete="off" />
+      <button class="search-clear" id="goodsClear" data-act="goods-clear" aria-label="清空搜索" ${state.goodsQuery ? '' : 'hidden'}>✕</button>
+    </div>
+    <div class="gchips">${chips}</div>
+    <div class="goods-grid" id="goodsBox">${visibleGoods().map(goodsCardHTML).join('')}</div>`;
+}
+
 function renderHome() {
   const s = state.site || {};
   const v = state.viewer;
@@ -392,31 +496,13 @@ function renderHome() {
     </div>
     ${noticeHTML}
 
-    <div class="section-head"><h2>在售商品</h2><span>${goods.length} 件</span></div>
-    ${
-      goods.length
-        ? `<div class="goods-grid">${goods
-            .map(
-              (p, i) => `
-        <button class="goods-card${p.memberOnly && !viewerIsMember() ? ' is-locked' : ''}" data-act="buy" data-id="${esc(p.id)}">
-          ${p.memberOnly ? '<span class="goods-badge">会员专享</span>' : ''}
-          ${
-            p.image
-              ? `<span class="goods-thumb"><img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy" /></span>`
-              : `<span class="goods-emoji">${GOODS_ICONS[i % GOODS_ICONS.length]}</span>`
-          }
-          <span class="goods-name">${esc(p.title)}</span>
-          ${p.desc ? `<span class="goods-desc">${esc(p.desc)}</span>` : ''}
-          <span class="goods-foot">
-            <b>${yuan(memberPriceOf(p))}</b>
-            ${Number(p.memberPrice) > 0 ? `<s>${yuan(p.amount)}</s>` : ''}
-            <em>${esc(p.memberOnly && !viewerIsMember() ? '开通会员' : p.tag || '购买')}</em>
-          </span>
-        </button>`
-            )
-            .join('')}</div>`
-        : `<div class="card"><div class="empty" style="padding:22px 8px"><p>后台还没有上架商品</p></div></div>`
-    }
+    <div class="trust-row">
+      <div class="trust-item"><span class="trust-ico">🔒</span><b>安全支付</b><i>官方通道</i></div>
+      <div class="trust-item"><span class="trust-ico">⚡</span><b>即时到账</b><i>分钟级</i></div>
+      <div class="trust-item"><span class="trust-ico">💬</span><b>售后无忧</b><i>在线客服</i></div>
+    </div>
+
+    ${goodsSectionHTML()}
 
     <div class="section-head">
       <h2>精选内容</h2>
@@ -529,12 +615,28 @@ function isUnpaid(o) {
   return Boolean(o) && (o.status === 'created' || o.status === 'pending') && !orderExpired(o);
 }
 
+/** 待支付订单的自动关闭时间点 */
+function orderDeadline(o) {
+  return (Number(o && o.createdAt) || 0) + ORDER_TTL_MS;
+}
+
+/** 毫秒 → m:ss */
+function mmss(ms) {
+  const total = Math.max(0, Math.ceil(ms / 1000));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
+}
+
 function mineOrderRow(o) {
   const meta = [esc(o.id), timeText(o.createdAt)].join(' · ');
   const ch = mineChannelName(o);
   const chTag = ch && o.status !== 'created' ? `<span class="tag tag-blue" style="margin-left:6px">${esc(ch)}</span>` : '';
   // 没付完的订单给一个明确入口，点整行就直接进支付界面
   const cta = isUnpaid(o) ? `<span class="order-cta">继续支付 ›</span>` : '';
+  // 未支付订单带倒计时：到点服务端就删了，先让用户看见剩余时间
+  const left = orderDeadline(o) - Date.now();
+  const countdown = isUnpaid(o)
+    ? `<span class="order-count" data-until="${orderDeadline(o)}">剩余 ${mmss(left)}</span>`
+    : '';
   return `
     <button class="order-row" data-act="order" data-id="${esc(o.id)}">
       <span class="order-main">
@@ -544,10 +646,54 @@ function mineOrderRow(o) {
       <span class="order-right">
         <span class="order-amount">${yuan(o.amount)}</span>
         <span class="status ${esc(o.status)}">${STATUS_TEXT[o.status] || o.status}</span>
+        ${countdown}
         ${cta}
       </span>
     </button>`;
 }
+
+/** 每秒刷新倒计时；到点就把该订单从本地列表移除（服务端已删除） */
+let countdownTimer = null;
+function tickCountdowns() {
+  const nodes = document.querySelectorAll('.order-count[data-until]');
+  if (!nodes.length) {
+    // 页面上已经没有倒计时了，停掉定时器，别空转
+    stopCountdownTick();
+    return;
+  }
+  let expired = false;
+  nodes.forEach((n) => {
+    const left = Number(n.dataset.until) - Date.now();
+    if (left <= 0) {
+      expired = true;
+      n.textContent = '已关闭';
+      n.classList.add('is-over');
+      return;
+    }
+    const t = `剩余 ${mmss(left)}`;
+    if (n.textContent !== t) n.textContent = t;
+  });
+  if (!expired) return;
+  state.orders = dropExpiredOrders(state.orders);
+  if (state.viewer) state.viewer.orders = state.orders;
+  const box = document.getElementById('ordersBox');
+  if (box) box.innerHTML = mineOrderList(state.orders);
+  else if (!sheetEl.classList.contains('show') && state.tab === 'mine') render();
+  updateTabBadge();
+  toast('有订单超时未支付，已自动关闭');
+}
+
+function startCountdownTick() {
+  if (countdownTimer) return;
+  countdownTimer = setInterval(tickCountdowns, 1000);
+}
+
+function stopCountdownTick() {
+  if (!countdownTimer) return;
+  clearInterval(countdownTimer);
+  countdownTimer = null;
+}
+
 
 /** 订单筛选：待支付把 created / pending 合并成一类 */
 const ORDER_FILTERS = {
@@ -776,6 +922,7 @@ function ordersSheet() {
     <div class="card" style="margin-top:10px" id="ordersBox">${mineOrderList(orders)}</div>
     <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>
   `);
+  startCountdownTick();
 }
 
 /** 充值弹层：选金额 → 确认支付（走真实渠道） */
@@ -1198,6 +1345,43 @@ function settingsSheet() {
 
 const TITLES = { home: '首页', content: '内容', mine: '我的' };
 
+/** 底部「我的」上的待支付角标：有未付订单时提醒用户回来付 */
+function updateTabBadge() {
+  const tab = document.querySelector('.tab[data-tab="mine"]');
+  if (!tab) return;
+  const n = dropExpiredOrders(state.orders).filter(isUnpaid).length;
+  let badge = tab.querySelector('.tab-badge');
+  if (!n) {
+    if (badge) badge.remove();
+    return;
+  }
+  if (!badge) {
+    badge = document.createElement('i');
+    badge.className = 'tab-badge';
+    tab.appendChild(badge);
+  }
+  badge.textContent = n > 9 ? '9+' : String(n);
+}
+
+/** 首屏骨架屏：比转圈更接近最终版式，减少等待的突兀感 */
+function skeletonHTML() {
+  return `
+    <div class="sk sk-hero"></div>
+    <div class="sk-row">
+      ${'<div class="sk sk-stat"></div>'.repeat(3)}
+    </div>
+    <div class="section-head"><h2>在售商品</h2></div>
+    <div class="goods-grid">
+      ${'<div class="sk-card"><div class="sk sk-block"></div><div class="sk w80"></div><div class="sk w40"></div></div>'.repeat(4)}
+    </div>
+    <div class="section-head"><h2>精选内容</h2></div>
+    <div class="card">
+      <div class="sk w60"></div>
+      <div class="sk w80"></div>
+      <div class="sk w40" style="margin-bottom:0"></div>
+    </div>`;
+}
+
 function render() {
   // 「我的」页与首页共用同一份订单：付款成功、刷新后立刻同步，避免刚付完看不到新订单
   if (state.viewer) state.viewer.orders = state.orders;
@@ -1205,12 +1389,15 @@ function render() {
   document.querySelectorAll('.tab').forEach((t) => {
     t.classList.toggle('is-active', t.dataset.tab === state.tab);
   });
+  updateTabBadge();
   if (!state.loaded) {
-    view.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+    view.innerHTML = skeletonHTML();
     return;
   }
   view.innerHTML =
     state.tab === 'home' ? renderHome() : state.tab === 'content' ? renderContent() : renderMine();
+  if (state.tab === 'home') refreshGoodsBox(); // 统一走一遍：空结果空态、emoji 对齐、计数
+  if (view.querySelector('.order-count')) startCountdownTick(); // 有待支付倒计时才开始计时
   view.scrollTop = 0;
 }
 
@@ -1598,12 +1785,34 @@ document.querySelectorAll('.tab').forEach((t) => {
 
 maskEl.addEventListener('click', closeSheet);
 
+// 商品搜索：边输入边过滤，只重绘网格，输入框不会丢焦点
+view.addEventListener('input', (e) => {
+  if (!e.target || e.target.id !== 'goodsSearch') return;
+  state.goodsQuery = e.target.value || '';
+  refreshGoodsBox();
+});
+
+/* 回到顶部：往下翻超过一屏多一点才出现 */
+const toTopEl = document.getElementById('toTop');
+if (toTopEl) {
+  view.addEventListener(
+    'scroll',
+    () => toTopEl.classList.toggle('is-on', view.scrollTop > 320),
+    { passive: true }
+  );
+  toTopEl.addEventListener('click', () => {
+    if (typeof view.scrollTo === 'function') view.scrollTo({ top: 0, behavior: 'smooth' });
+    else view.scrollTop = 0;
+  });
+}
+
 view.addEventListener('click', async (e) => {
   const el = e.target.closest('[data-act]');
   if (!el) return;
   const act = el.dataset.act;
 
   /* 用户相关 */
+  if (act === 'reload') return location.reload();
   if (act === 'login') return doAuth(false);
   if (act === 'register') return doAuth(true);
   if (act === 'logout') return logout();
@@ -1639,6 +1848,29 @@ view.addEventListener('click', async (e) => {
   if (act === 'buy') {
     startBuy(el.dataset.id);
     return;
+  }
+
+  /* 首页商品：筛选 / 清空搜索 */
+  if (act === 'goods-filter') {
+    state.goodsFilter = el.dataset.f || 'all';
+    view.querySelectorAll('.gchip').forEach((c) => c.classList.toggle('on', c.dataset.f === state.goodsFilter));
+    refreshGoodsBox();
+    return;
+  }
+  if (act === 'goods-clear') {
+    state.goodsQuery = '';
+    const input = document.getElementById('goodsSearch');
+    if (input) {
+      input.value = '';
+      input.focus();
+    }
+    refreshGoodsBox();
+    return;
+  }
+  if (act === 'goods-reset') {
+    state.goodsQuery = '';
+    state.goodsFilter = 'all';
+    return render();
   }
 
   if (act === 'open-orders') return ordersSheet();
@@ -1993,8 +2225,18 @@ async function pollOrder(orderId, tries = 12, interval = 450) {
 
   try {
     await bootstrap();
+    startCountdownTick(); // 待支付订单倒计时（到点自动从列表移除）
   } catch (e) {
-    view.innerHTML = `<div class="card" style="margin-top:40px"><div class="empty"><h3>连不上服务</h3><p>${e.message}<br/>请确认 node server.js 已启动</p></div></div>`;
+    // 首屏加载失败：给普通用户看得懂的提示 + 一键重试（不暴露服务端细节）
+    view.innerHTML = `
+      <div class="card" style="margin-top:40px">
+        <div class="empty">
+          <div class="empty-icon">${ICON.box}</div>
+          <h3>网络开小差了</h3>
+          <p>内容没能加载出来，请检查网络后重试</p>
+          <button class="btn-primary" data-act="reload" style="margin-top:16px">重新加载</button>
+        </div>
+      </div>`;
     return;
   }
 

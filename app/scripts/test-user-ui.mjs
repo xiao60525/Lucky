@@ -30,7 +30,7 @@ const VIEWER = {
   memberExpire: Date.now() + 15 * 86400000,
   autoRenew: false,
   orders: [
-    { id: 'O1', title: '会员月卡', amount: 1200, status: 'paid', createdAt: Date.now() },
+    { id: 'O1', productId: 'demo_001', title: '会员月卡', amount: 1200, status: 'paid', createdAt: Date.now() },
     {
       id: 'O2',
       productId: 'demo_001',
@@ -203,6 +203,42 @@ check(
 check('首页内容标题正确', text('.content-title').includes('新人立减'), text('.content-title'));
 check('未登录时首页头像显示占位', text('.hero-avatar').includes('游'), text('.hero-avatar'));
 
+// 0.1 首页新增：服务保障条 / 商品搜索 / 筛选 chips
+check('首页有服务保障条', window.document.querySelectorAll('.trust-item').length === 3, String(window.document.querySelectorAll('.trust-item').length));
+check('首页有商品搜索框', Boolean($('#goodsSearch')));
+check(
+  '首页有商品筛选 chips',
+  window.document.querySelectorAll('.gchip').length >= 2,
+  [...window.document.querySelectorAll('.gchip')].map((c) => c.textContent.trim()).join(',')
+);
+
+const searchInput = $('#goodsSearch');
+searchInput.value = '会员';
+searchInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+await wait(30);
+check(
+  '搜索按关键词过滤',
+  window.document.querySelectorAll('.goods-card').length === 2 &&
+    [...window.document.querySelectorAll('.goods-card')].every((c) => c.textContent.includes('会员')),
+  String(window.document.querySelectorAll('.goods-card').length)
+);
+check('搜索结果计数更新', text('#goodsMeta').includes('/'), text('#goodsMeta'));
+
+searchInput.value = '不存在的商品';
+searchInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+await wait(30);
+check('搜索无结果给空态', Boolean($('.goods-none')), text('.goods-none'));
+$('[data-act="goods-clear"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(30);
+check('清空搜索恢复全部商品', window.document.querySelectorAll('.goods-card').length === 3, String(window.document.querySelectorAll('.goods-card').length));
+
+$('[data-act="goods-filter"][data-f="member"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(30);
+check('筛选「会员专享」只剩专享商品', window.document.querySelectorAll('.goods-card').length === 1 && $('.goods-card').dataset.id === 'vip_kit', String(window.document.querySelectorAll('.goods-card').length));
+$('[data-act="goods-filter"][data-f="all"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(30);
+check('筛选「全部」恢复', window.document.querySelectorAll('.goods-card').length === 3, String(window.document.querySelectorAll('.goods-card').length));
+
 // 1. 未登录：登录页
 await goMine();
 check('未登录显示登录页', !!$('#authPhone') && !!$('#authPwd'));
@@ -233,6 +269,14 @@ check(
   Boolean(vipCard2) && vipCard2.textContent.includes('9.90') && Boolean(vipCard2.querySelector('s')) && vipCard2.textContent.includes('19.00'),
   vipCard2 ? vipCard2.textContent.replace(/\s+/g, ' ').trim() : ''
 );
+check(
+  '已买过的商品显示「已购」',
+  (() => {
+    const c = [...window.document.querySelectorAll('.goods-card')].find((x) => x.dataset.id === 'demo_001');
+    return Boolean(c) && Boolean(c.querySelector('.goods-owned'));
+  })(),
+  (window.document.querySelector('.goods-card .goods-owned') || {}).textContent || '无'
+);
 check('会员点会员专享直接进收银台', (() => {
   vipCard2.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
   return true;
@@ -243,6 +287,14 @@ closeSheetForTest();
 await wait(40);
 await goMine();
 check('登录请求已发出', calls.some((c) => c.path === '/api/auth/login' && c.method === 'POST'));
+check(
+  '底部「我的」有待支付角标',
+  (() => {
+    const b = window.document.querySelector('.tab[data-tab="mine"] .tab-badge');
+    return Boolean(b) && b.textContent === '1';
+  })(),
+  (window.document.querySelector('.tab[data-tab="mine"] .tab-badge') || {}).textContent || '无'
+);
 
 // 4. 用户中心各区块
 check('显示昵称', text('.profile-name').includes('测试用户'), text('.profile-name'));
@@ -296,6 +348,11 @@ check(
   '超时未支付订单不展示',
   ![...window.document.querySelectorAll('.sheet .order-row')].some((r) => r.dataset.id === 'O3'),
   [...window.document.querySelectorAll('.sheet .order-row')].map((r) => r.dataset.id).join(',')
+);
+check(
+  '待支付订单显示剩余时间倒计时',
+  Boolean($('.sheet .order-count')) && /剩余 \d+:\d{2}/.test(text('.sheet .order-count')),
+  text('.sheet .order-count')
 );
 check('分享区存在', !!$('[data-act="share-copy"]') && !!$('[data-act="share-more"]') && !!$('[data-act="share-qr"]'));
 check('设置中心入口存在', Boolean($('[data-act="settings"]')) && window.document.querySelectorAll('.set-row').length === 1);
