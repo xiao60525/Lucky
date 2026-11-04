@@ -83,6 +83,7 @@ const BOOTSTRAP = {
     { id: 'n1', title: '新人立减 5 元', desc: '注册即送，首单可用', tag: '活动', image: null, link: '', sort: 1, active: true },
     { id: 'n2', title: '怎么用余额支付', desc: '先充值，下单时选余额', tag: '', image: null, link: '/faq', sort: 2, active: true },
     { id: 'n3', title: '会员专享攻略', desc: '', tag: '', image: null, link: '', sort: 3, active: true, membersOnly: true, locked: true },
+    { id: 'n4', title: '付费专栏：开店指南', desc: '', tag: '', image: null, link: '', sort: 4, active: true, membersOnly: false, price: 199, locked: true },
   ],
   orders: [],
 };
@@ -215,9 +216,22 @@ check('会员专享内容有锁标', Boolean(lockedCard) && lockedCard.textConte
 check('锁态内容不下发正文', Boolean(lockedCard) && lockedCard.textContent.includes('开通会员后查看全文'));
 check(
   '首页显示后台配置的内容',
-  window.document.querySelectorAll('.content-card').length === 3 && text('.section-head').length >= 0,
+  window.document.querySelectorAll('.content-card').length === 4 && text('.section-head').length >= 0,
   String(window.document.querySelectorAll('.content-card').length)
 );
+// 付费内容（方案三）：会员免费看，非会员可单篇解锁
+const paidCard = [...window.document.querySelectorAll('.content-card')].find((c) => c.textContent.includes('付费专栏'));
+check(
+  '付费内容有付费角标',
+  Boolean(paidCard) && paidCard.textContent.includes('付费内容'),
+  paidCard ? paidCard.textContent.replace(/\s+/g, ' ').trim() : ''
+);
+check(
+  '付费内容显示单篇解锁价',
+  Boolean(paidCard) && paidCard.textContent.includes('1.99') && paidCard.textContent.includes('单篇解锁'),
+  paidCard ? paidCard.textContent.replace(/\s+/g, ' ').trim() : ''
+);
+check('付费内容带内容 id（点开才知道是哪篇）', Boolean(paidCard) && paidCard.dataset.id === 'n4', paidCard ? paidCard.dataset.id : '');
 check('首页内容标题正确', text('.content-title').includes('新人立减'), text('.content-title'));
 check('未登录时首页头像显示占位', text('.hero-avatar').includes('游'), text('.hero-avatar'));
 
@@ -539,6 +553,32 @@ $('.sheet [data-act="about"]').dispatchEvent(new window.MouseEvent('click', { bu
 await wait(40);
 check('关于弹层显示应用名', text('.about-name').includes('手机App支付骨架'), text('.about-name'));
 $('.sheet [data-act="close"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
+
+// 10.5 付费内容：单篇解锁入口（登录态）
+const tabTo = (k) =>
+  [...window.document.querySelectorAll('.tab')]
+    .find((t) => t.dataset.tab === k)
+    .dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+tabTo('home');
+await wait(60);
+const payCard = [...window.document.querySelectorAll('.content-card')].find((c) => c.dataset.id === 'n4');
+if (payCard) {
+  payCard.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(60);
+  check('付费内容弹层有单篇解锁按钮', Boolean($('.sheet [data-act="unlock-content"]')), text('.sheet h3'));
+  check('付费内容弹层同时给会员入口', Boolean($('.sheet [data-act="open-member"]')));
+  $('.sheet [data-act="unlock-content"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(80);
+  check(
+    '点解锁进入确认订单',
+    text('.sheet').includes('确认订单') && text('.sheet').includes('1.99'),
+    text('.sheet').replace(/\s+/g, ' ').slice(0, 60)
+  );
+  closeSheetForTest();
+  await wait(40);
+}
+tabTo('mine');
 await wait(60);
 
 // 11. 退出登录（从设置中心进入）

@@ -488,6 +488,25 @@ button { font-family: inherit; border: 0; background: none; cursor: pointer; col
 .member-status.on i { color: rgba(247, 236, 210, 0.75); }
 
 .member-goods { display: flex; flex-direction: column; gap: 8px; }
+
+/* 付费内容：单篇解锁 / 开通会员二选一 */
+.paywall-box {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+  border-radius: 14px;
+  background: #fdf6e8;
+  border: 1px solid #f0e0c0;
+}
+.pw-lock { font-size: 22px; flex: 0 0 auto; }
+.pw-main { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+.pw-main b { font-size: 14.5px; font-weight: 600; color: #6b4f16; }
+.pw-main i { font-style: normal; font-size: 11.5px; color: #9a7b3c; }
+body.dark .paywall-box { background: #2c2618; border-color: #453a22; }
+body.dark .pw-main b { color: #f0d9a8; }
+body.dark .pw-main i { color: #b9a173; }
 .member-item {
   display: flex; align-items: center; gap: 10px;
   padding: 11px 12px;

@@ -591,13 +591,13 @@ function renderContents() {
     cs.forEach((c) => {
       if (c.active) counts.active++;
       else counts.hidden++;
-      if (c.membersOnly) counts.member++;
+      if (c.membersOnly || Number(c.price) > 0) counts.member++;
     });
     return [
       ['all', '全部'],
       ['active', '上线'],
       ['hidden', '隐藏'],
-      ['member', '会员专享'],
+      ['member', '会员/付费'],
     ]
       .map(([k, label]) => `<button class="ochip ${cfilter === k ? 'on' : ''}" data-cf="${k}">${label}${counts[k] ? ` <i>${counts[k]}</i>` : ''}</button>`)
       .join('');
@@ -607,6 +607,7 @@ function renderContents() {
       <h3 id="cFormTitle">新增首页内容</h3>
       <p class="muted" style="font-size:12.5px;margin:0 0 14px;line-height:1.65">
         这里加的内容会显示在手机首页「精选内容」，以及底部「内容」页；用户点开就能看到标题、描述和配图。
+        <br />会员看全部内容；填了「单篇解锁价」的内容，非会员也能花这个价钱单独买下这一篇（永久可看）。
       </p>
       <div class="form-grid">
         <div><label>标题 *（最多 40 字）</label><input id="c-title" maxlength="40" placeholder="如 新用户立减 5 元" /></div>
@@ -616,6 +617,7 @@ function renderContents() {
         <div><label>排序（小在前）</label><input id="c-sort" type="number" value="100" /></div>
         <div><label>状态</label><select id="c-active"><option value="1">上线</option><option value="0">隐藏</option></select></div>
         <div><label>可见范围</label><select id="c-membersonly"><option value="0">所有人可见</option><option value="1">仅会员可见</option></select></div>
+        <div><label>单篇解锁价（元，0 = 不单卖）</label><input id="c-price" type="number" min="0" step="0.01" value="0" placeholder="如 1.99" /></div>
         <div>
           <label>配图（可选）</label>
           <div class="brand-btns">
@@ -651,10 +653,10 @@ function renderContents() {
           (cfilter === 'all' ||
             (cfilter === 'active' ? c.active : false) ||
             (cfilter === 'hidden' ? !c.active : false) ||
-            (cfilter === 'member' && c.membersOnly))
+            (cfilter === 'member' && (c.membersOnly || Number(c.price) > 0)))
       );
       box.innerHTML = fl.length
-        ? `<table><thead><tr><th>配图</th><th>标题</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${fl
+        ? `<table><thead><tr><th>配图</th><th>标题</th><th>付费</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${fl
             .map(
               (c) => `<tr>
             <td>${
@@ -662,7 +664,18 @@ function renderContents() {
                 ? `<img src="${esc(c.image)}" alt="" style="width:44px;height:44px;border-radius:9px;object-fit:cover;display:block" />`
                 : '<span class="muted">无</span>'
             }</td>
-            <td>${esc(c.title)}${c.membersOnly ? ' <span class="tag tag-gold">会员专享</span>' : ''}${c.tag ? ` <span class="tag tag-blue">${esc(c.tag)}</span>` : ''}<div class="muted" style="font-size:11.5px;margin-top:2px">${esc(c.desc || '')}</div></td>
+            <td>${esc(c.title)}${
+              Number(c.price) > 0
+                ? ' <span class="tag tag-gold">付费内容</span>'
+                : c.membersOnly
+                  ? ' <span class="tag tag-gold">会员专享</span>'
+                  : ''
+            }${c.tag ? ` <span class="tag tag-blue">${esc(c.tag)}</span>` : ''}<div class="muted" style="font-size:11.5px;margin-top:2px">${esc(c.desc || '')}</div></td>
+            <td class="muted">${
+              Number(c.price) > 0
+                ? `¥${(Number(c.price) / 100).toFixed(2)}<div style="font-size:11.5px">已解锁 ${Number(c.unlockCount) || 0}</div>`
+                : '仅会员'
+            }</td>
             <td class="muted">${c.sort}</td>
             <td>${c.active ? '<span class="tag paid">上线</span>' : '<span class="tag off">隐藏</span>'}</td>
             <td style="white-space:nowrap">
@@ -732,6 +745,7 @@ function fillContentForm(c) {
   $('#c-sort').value = c ? c.sort : 100;
   $('#c-active').value = c && c.active === false ? '0' : '1';
   $('#c-membersonly').value = c && c.membersOnly ? '1' : '0';
+  $('#c-price').value = c && Number(c.price) > 0 ? (Number(c.price) / 100).toFixed(2) : '0';
   renderContentPreview();
 }
 
@@ -766,6 +780,10 @@ async function saveContent() {
   const btn = $('#c-save');
   const title = ($('#c-title').value || '').trim();
   if (!title) return toast('标题不能为空');
+  const priceYuan = Number($('#c-price').value || 0);
+  if (!Number.isFinite(priceYuan) || priceYuan < 0) return toast('单篇解锁价不能小于 0');
+  const price = Math.round(priceYuan * 100);
+  if (price > 0 && price < 1) return toast('单篇解锁价至少 0.01 元');
   btn.disabled = true;
   btn.textContent = '保存中…';
   try {
@@ -780,6 +798,7 @@ async function saveContent() {
         sort: parseInt($('#c-sort').value, 10) || 100,
         active: $('#c-active').value === '1',
         membersOnly: $('#c-membersonly').value === '1',
+        price,
         image: contentDraft.image || '',
       }),
     });

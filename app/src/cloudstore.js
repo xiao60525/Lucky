@@ -276,6 +276,7 @@ function contentRow(row) {
     sort: Number(row.sort) || 100,
     active: row.active !== false,
     membersOnly: row.members_only === true,
+    price: Math.max(0, Number(row.price) || 0),
     createdAt: toMs(row.created_at),
   };
 }
@@ -307,6 +308,7 @@ async function adminUpsertContent(c) {
         sort: Number(c.sort) || 100,
         active: c.active !== false,
         membersOnly: Boolean(c.membersOnly),
+        price: Math.max(0, Math.floor(Number(c.price) || 0)),
       },
     },
     '保存首页内容'
@@ -317,6 +319,42 @@ async function adminUpsertContent(c) {
 async function adminDeleteContent(id) {
   const row = await call('app_admin_delete_content', { p_secret: secret, p_id: id }, '删除首页内容');
   return contentRow(row);
+}
+
+/* ---------------- 内容单篇解锁 ---------------- */
+
+/** 某用户已解锁的内容 id 列表 */
+async function contentUnlocks(userId) {
+  if (!userId) return [];
+  const rows = await call('app_content_unlocks', { p_secret: secret, p_user: String(userId) }, '读取解锁记录');
+  return Array.isArray(rows) ? rows.map(String) : [];
+}
+
+/** 写入解锁（幂等）：支付成功后调用 */
+async function unlockContent(userId, contentId, orderId) {
+  const row = await call(
+    'app_content_unlock_add',
+    {
+      p_secret: secret,
+      p_user: String(userId),
+      p_content: String(contentId),
+      p_order: String(orderId || ''),
+    },
+    '解锁内容'
+  );
+  return row || null;
+}
+
+/** 后台：{contentId: 解锁人数} */
+async function adminContentUnlockCounts() {
+  const map = await call('app_admin_content_unlock_counts', { p_secret: secret }, '读取解锁统计');
+  return map && typeof map === 'object' ? map : {};
+}
+
+/** 退款后收回解锁（按订单号，幂等） */
+async function revokeContentUnlock(orderId) {
+  const r = await call('app_content_unlock_remove', { p_secret: secret, p_order: String(orderId || '') }, '收回解锁');
+  return Number(r && r.removed) || 0;
 }
 
 /** 删除超时未支付订单（分钟数），返回实际删除条数 */
@@ -379,6 +417,10 @@ module.exports = {
   adminListContents,
   adminUpsertContent,
   adminDeleteContent,
+  contentUnlocks,
+  unlockContent,
+  revokeContentUnlock,
+  adminContentUnlockCounts,
   getAdminCredentials,
   setAdminCredentials,
   purgeStaleOrders,

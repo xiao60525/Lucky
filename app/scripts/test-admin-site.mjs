@@ -53,6 +53,7 @@ const orders = [
 ];
 
 let savedBody = null;
+let savedContent = null;
 w.fetch = async (url, opts = {}) => {
   const u = String(url);
   const json = (obj, status = 200) => ({ ok: status < 400, status, json: async () => obj });
@@ -74,6 +75,10 @@ w.fetch = async (url, opts = {}) => {
   if (u.includes('/api/admin/site/save')) {
     savedBody = JSON.parse(opts.body || '{}');
     return json({ site: { ...site, home: savedBody.home || site.home }, mp: { synced: false, message: '未接入' } });
+  }
+  if (u.includes('/api/admin/content/save')) {
+    savedContent = JSON.parse(opts.body || '{}');
+    return json({ content: { ...savedContent, id: 'c-new', locked: false } });
   }
   return json({}, 200);
 };
@@ -129,6 +134,18 @@ check(
   all('#panel tbody tr')[0].textContent.includes('已售 2'),
   all('#panel tbody tr')[0].textContent.replace(/\s+/g, ' ').slice(0, 60)
 );
+
+// 内容页：单篇解锁价
+nav('contents');
+await new Promise((r) => setTimeout(r, 60));
+check('内容表单有单篇解锁价', Boolean($('#c-price')), $('#c-price') ? $('#c-price').type : '无');
+$('#c-title').value = '付费专栏';
+$('#c-price').value = '1.99';
+$('#c-membersonly').value = '0';
+$('#c-save').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+await new Promise((r) => setTimeout(r, 150));
+check('保存内容时带上价格（元转分）', Boolean(savedContent) && savedContent.price === 199, savedContent ? String(savedContent.price) : '无');
+check('价格不影响可见范围字段', Boolean(savedContent) && savedContent.membersOnly === false, savedContent ? String(savedContent.membersOnly) : '无');
 
 // 订单页：未支付订单显示剩余时间
 nav('orders');

@@ -328,26 +328,34 @@ const GOODS_ICONS = ['🧩', '💎', '🪙', '🎟️', '🎁', '⭐'];
 
 function contentCardHTML(c, big = false) {
   const locked = Boolean(c.locked);
+  const price = Math.max(0, Number(c.price) || 0);
   const thumb = c.image
     ? `<span class="content-thumb ${locked ? 'is-locked' : ''}"><img src="${esc(c.image)}" alt="${esc(c.title)}" /></span>`
     : `<span class="content-thumb is-blank"><span>${locked ? '🔒' : esc((c.title || '内').trim().slice(0, 1))}</span></span>`;
-  // 会员专享：非会员只给标题和配图，正文不下发（服务端已抹掉 desc）
+  // 付费内容：会员免费看全部；非会员可以单篇解锁（price>0 才卖），正文由服务端抹掉
   const descHTML = locked
-    ? `<span class="content-desc is-locked">会员专享内容，开通会员后查看全文</span>`
+    ? `<span class="content-desc is-locked">${
+        price > 0 ? `会员免费看 · 或 ${yuan(price)} 单篇解锁` : '会员专享内容，开通会员后查看全文'
+      }</span>`
     : c.desc
       ? `<span class="content-desc">${esc(c.desc)}</span>`
       : '';
+  const badge = locked
+    ? `<span class="tag tag-gold">${price > 0 ? '付费内容' : '会员专享'}</span>`
+    : c.unlocked
+      ? '<span class="tag tag-blue">已解锁</span>'
+      : c.tag
+        ? `<span class="tag tag-blue">${esc(c.tag)}</span>`
+        : '';
   const body = `
     ${thumb}
     <span class="content-main">
-      <span class="content-title">${esc(c.title)}${
-        locked ? '<span class="tag tag-gold">会员专享</span>' : c.tag ? `<span class="tag tag-blue">${esc(c.tag)}</span>` : ''
-      }</span>
+      <span class="content-title">${esc(c.title)}${badge}</span>
       ${descHTML}
     </span>`;
   const cls = 'content-card' + (big ? ' is-big' : '') + (locked ? ' is-locked' : '');
   if (locked) {
-    return `<button class="${cls}" data-act="locked-content">${body}</button>`;
+    return `<button class="${cls}" data-act="locked-content" data-id="${esc(c.id)}">${body}</button>`;
   }
   if (c.link) {
     return `<a class="${cls}" href="${esc(c.link)}" target="_blank" rel="noopener noreferrer">${body}</a>`;
@@ -1024,6 +1032,55 @@ function memberSheet() {
   `);
 }
 
+/** 付费内容弹层：两条路都给——单篇解锁（永久）或开通会员（全部免费） */
+function contentSheet(contentId) {
+  const c = (state.contents || []).find((x) => x.id === contentId);
+  if (!c) return toast('内容不存在或已下线');
+  sheetState.type = 'content';
+  sheetState.content = c;
+  const price = Math.max(0, Number(c.price) || 0);
+  const memberGoods = state.products.filter((p) => Number(p.memberDays) > 0).sort((a, b) => a.amount - b.amount);
+  const cheapest = memberGoods[0];
+  openSheet(`
+    <h3>${esc(c.title)}</h3>
+    <p class="sheet-sub">${price > 0 ? '这是付费内容，两种方式都能看全文' : '这是会员专享内容，开通会员后可看全文'}</p>
+    <div class="paywall-box">
+      <span class="pw-lock">🔒</span>
+      <span class="pw-main">
+        <b>${price > 0 ? `${yuan(price)} 单篇解锁` : '开通会员查看'}</b>
+        <i>${price > 0 ? '一次购买，永久可看，不会再收费' : '会员期内所有内容免费看'}</i>
+      </span>
+    </div>
+    ${
+      price > 0
+        ? `<button class="btn-primary" data-act="unlock-content" data-id="${esc(c.id)}">${yuan(price)} 解锁这篇</button>`
+        : ''
+    }
+    <button class="${price > 0 ? 'btn-ghost' : 'btn-primary'}" data-act="open-member" style="margin-top:10px">
+      ${cheapest ? `开通会员全部免费看（${yuan(cheapest.amount)} 起）` : '查看会员中心'}
+    </button>
+    <p class="cashier-note">已经是会员？会员期内这篇不用再买，直接点开就能看</p>
+  `);
+}
+
+/** 进入单篇解锁收银台（内容页与弹层共用） */
+function startUnlockContent(contentId) {
+  const c = (state.contents || []).find((x) => x.id === contentId);
+  if (!c) return toast('内容不存在或已下线');
+  const price = Math.max(0, Number(c.price) || 0);
+  if (!price) return memberSheet();
+  sheetState.type = 'confirm';
+  sheetState.product = {
+    contentId: c.id,
+    id: 'c:' + c.id,
+    title: `解锁《${c.title}》`,
+    desc: '单篇解锁 · 永久可看',
+    amount: price,
+  };
+  sheetState.channel = preferredChannel(channelList());
+  return confirmSheet();
+}
+
 /** 开/关会员自动续费 */
 async function toggleAutoRenew() {
   const next = !state.viewer.autoRenew;
@@ -1272,6 +1329,20 @@ async function refreshMe() {
   state.viewer.orders = state.orders;
   render();
   return state.viewer;
+}
+
+/** 内容解锁后重新拉首页内容（正文只有服务端解锁后才下发） */
+async function refreshContents() {
+  try {
+    const data = await api('/api/bootstrap');
+    state.contents = Array.isArray(data.contents) ? data.contents : [];
+    state.balance = data.balance;
+    state.orders = dropExpiredOrders(data.orders || []);
+    if (state.viewer) state.viewer.orders = state.orders;
+    render();
+  } catch (e) {
+    /* 失败就保持原样，用户可下拉刷新 */
+  }
 }
 
 function copyText(text) {
@@ -1844,7 +1915,13 @@ async function doPay() {
   try {
     const created = await api('/api/orders', {
       method: 'POST',
-      body: JSON.stringify(sheetState.product.recharge ? { recharge: sheetState.product.amount } : { productId: sheetState.product.id }),
+      body: JSON.stringify(
+        sheetState.product.contentId
+          ? { contentId: sheetState.product.contentId }
+          : sheetState.product.recharge
+            ? { recharge: sheetState.product.amount }
+            : { productId: sheetState.product.id }
+      ),
     });
     const res = await api(`/api/orders/${created.order.id}/pay`, {
       method: 'POST',
@@ -1864,6 +1941,10 @@ function showSuccess(order) {
   // 会员商品支付成功后，静默刷新一次用户信息，让会员状态立即生效
   const p = state.products.find((x) => x.id === order.productId);
   if ((p && Number(p.memberDays) > 0) || order.recharge) refreshMe().catch(() => {});
+  // 内容解锁：重新拉一次内容，正文才会由服务端下发
+  if (order.kind === 'content' || String(order.productId || '').startsWith('c:')) {
+    refreshContents().catch(() => {});
+  }
   sheetState.type = 'success';
   openSheet(`
     <div class="success-wrap">
@@ -2120,10 +2201,16 @@ view.addEventListener('click', async (e) => {
     if (!state.viewer) {
       state.tab = 'mine';
       render();
-      return toast('登录并开通会员后可查看全文');
+      return toast('登录后可单篇解锁或开通会员');
     }
+    const cid = el.dataset.id;
+    const c = (state.contents || []).find((x) => x.id === cid);
+    if (c && Number(c.price) > 0) return contentSheet(cid);
     toast('会员专享内容，开通会员后查看全文');
     return memberSheet();
+  }
+  if (act === 'unlock-content') {
+    return startUnlockContent(el.dataset.id || (sheetState.content && sheetState.content.id));
   }
   if (act === 'toggle-autorenew') return toggleAutoRenew();
   if (act === 'open-balance') return balanceSheet();
@@ -2187,6 +2274,11 @@ sheetEl.addEventListener('click', async (e) => {
     await shareGoods(el.dataset.id);
     return;
   }
+  // 付费内容弹层里的两个入口（弹层内点击走这里，不是页面监听器）
+  if (act === 'unlock-content') {
+    return startUnlockContent(el.dataset.id || (sheetState.content && sheetState.content.id));
+  }
+  if (act === 'open-member') return memberSheet();
   if (act === 'copy-order') {
     const ok = await copyText(el.dataset.id || '');
     toast(ok ? '订单号已复制' : '复制失败，请长按手动复制');

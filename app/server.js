@@ -622,9 +622,19 @@ function clientIp(req) {
 }
 
 /** 对外输出订单时，补上展示用的字段 */
+/** 内容解锁订单用 `c:` 前缀的 productId，和商品订单区分开 */
+const CONTENT_ORDER_PREFIX = 'c:';
+function contentIdOfOrder(order) {
+  const pid = String((order && order.productId) || '');
+  return pid.startsWith(CONTENT_ORDER_PREFIX) ? pid.slice(CONTENT_ORDER_PREFIX.length) : null;
+}
+
 function publicOrder(order) {
+  const contentId = contentIdOfOrder(order);
   return {
     id: order.id,
+    kind: order.recharge ? 'recharge' : contentId ? 'content' : 'product',
+    contentId,
     productId: order.productId,
     title: order.title,
     amount: order.amount,
@@ -726,6 +736,31 @@ async function grantMembershipForOrder(order) {
   }
 }
 
+/** 内容解锁权益：内容订单（productId 为 `c:` 开头）支付成功后写入永久解锁记录 */
+async function grantContentUnlockForOrder(order) {
+  if (order._dup) return null;
+  if (!users.enabled || !order.userId || order.status !== 'paid') return null;
+  const contentId = contentIdOfOrder(order);
+  if (!contentId) return null;
+  try {
+    await store.unlockContent(order.userId, contentId, order.id);
+    console.log(`[content] 订单 ${order.id} 已解锁内容 ${contentId}`);
+    return contentId;
+  } catch (e) {
+    // 钱已经收了，解锁失败只记日志，用户可以点「恢复已购内容」重试
+    console.error('[content] 解锁失败（订单已入账）:', order.id, e.message);
+    return null;
+  }
+}
+
+/** 支付成功后的所有权益发放：会员天数 + 内容解锁（充值入账在内部分支处理） */
+async function afterOrderPaid(order) {
+  if (order._dup) return null;
+  const memberResult = await grantMembershipForOrder(order);
+  await grantContentUnlockForOrder(order).catch(() => {});
+  return memberResult;
+}
+
 /**
  * 会员自动续费：到期前 24 小时内，对开启自动续费的用户
  * 从余额扣除续费商品的金额，自动续一个周期。
@@ -788,7 +823,7 @@ async function autoRenewMemberTick() {
           };
           await store.insertOrder(order);
           db.orders.push(order);
-          const expire = await grantMembershipForOrder(order);
+          const expire = await afterOrderPaid(order);
           renewed += 1;
           console.log(
             `[autorenew] 用户 ${u.id} 支付宝代扣续费 ${product.title} ¥${(product.amount / 100).toFixed(2)} -> 到期 ${expire ? new Date(expire).toLocaleString() : '-'}`
@@ -837,7 +872,7 @@ async function autoRenewMemberTick() {
       };
       await store.insertOrder(order);
       db.orders.push(order);
-      const expire = await grantMembershipForOrder(order);
+      const expire = await afterOrderPaid(order);
       renewed += 1;
       console.log(`[autorenew] 用户 ${u.id} 自动续费 ${product.title} ¥${(product.amount / 100).toFixed(2)} -> 到期 ${expire ? new Date(expire).toLocaleString() : '-'}`);
     } catch (e) {
@@ -885,7 +920,7 @@ async function syncOrderFromChannel(order, { force = false } = {}) {
     order.transactionId = q.trade_no || q.tradeNo || order.transactionId || null;
     settleOrder(order, 'query');
     await persistOrder(order);
-    await grantMembershipForOrder(order);
+    await afterOrderPaid(order);
     console.log(`[sync] 订单 ${order.id} 主动查单确认已支付，交易号 ${order.transactionId || '-'}`);
     return { order, checked: true, paid: true, tradeStatus };
   } catch (e) {
@@ -958,6 +993,10 @@ async function refundOrder(order) {
     }
   }
   await persistOrder(order);
+  // 内容订单退款：顺手收回阅读权限，避免「退了钱还能看」
+  if (contentIdOfOrder(order)) {
+    await store.revokeContentUnlock(order.id).catch((e) => console.warn('[content] 收回解锁失败:', e.message));
+  }
   return { ok: true, balance: refundedBalance };
 }
 
@@ -1068,10 +1107,22 @@ async function handleApi(req, res, url) {
     } catch (e) {
       console.warn('[bootstrap] 读取首页内容失败:', e.message);
     }
-    // 会员专享内容：非会员只给标题/配图/标签，正文不下发（服务端拦截，改前端代码也绕不过）
-    contents = contents.map((c) =>
-      c.membersOnly && !bootstrapIsMember ? { ...c, desc: '', locked: true } : { ...c, locked: false }
-    );
+    // 内容可见性（方案三）：会员免费看全部；非会员可以单篇解锁（price>0 才卖），
+    // 没解锁时正文不下发，改前端代码也绕不过。
+    let unlockedIds = new Set();
+    if (uid && !bootstrapIsMember) {
+      try {
+        unlockedIds = new Set(await store.contentUnlocks(uid));
+      } catch (e) {
+        console.warn('[bootstrap] 读取内容解锁失败:', e.message);
+      }
+    }
+    contents = contents.map((c) => {
+      const price = Math.max(0, Number(c.price) || 0);
+      const owned = unlockedIds.has(c.id);
+      const locked = (Boolean(c.membersOnly) || price > 0) && !bootstrapIsMember && !owned;
+      return { ...c, desc: locked ? '' : c.desc, locked, unlocked: owned, price };
+    });
     return sendJSON(res, 200, {
       user: { id: db.user.id, nickname: db.user.nickname },
       loggedIn: Boolean(uid),
@@ -1470,6 +1521,58 @@ async function handleApi(req, res, url) {
       return sendJSON(res, 201, { order: publicOrder(order) });
     }
 
+    // 内容单篇解锁订单：金额一律取内容表里的 price，绝不信前端传的金额
+    const wantContentId = String(body.contentId || '').replace(/^c:/, '').trim();
+    if (wantContentId) {
+      let content = null;
+      try {
+        const list = await store.listContents();
+        content = list.find((c) => c.id === wantContentId) || null;
+      } catch (e) {
+        return sendJSON(res, 502, { message: '读取内容失败：' + e.message });
+      }
+      if (!content) return sendJSON(res, 404, { message: '内容不存在或已下线' });
+      const price = Math.max(0, Number(content.price) || 0);
+      if (!price) {
+        return sendJSON(res, 400, { message: '该内容不单卖，开通会员后即可查看', needMember: true });
+      }
+      // 已经是会员 / 已经买过：不用再付钱
+      let buyerMember = false;
+      try {
+        const buyer = await users.getUser(uid);
+        buyerMember = Boolean(buyer && users.isMember(buyer));
+      } catch (e) {
+        console.warn('[order:content] 读取会员状态失败:', e.message);
+      }
+      if (buyerMember) return sendJSON(res, 409, { code: 'already_member', message: '你已是会员，可直接查看' });
+      try {
+        const owned = await store.contentUnlocks(uid);
+        if (owned.includes(wantContentId)) {
+          return sendJSON(res, 409, { code: 'already_owned', message: '这篇你已经解锁过了' });
+        }
+      } catch (e) {
+        console.warn('[order:content] 读取解锁记录失败:', e.message);
+      }
+      const cOrder = {
+        id: newOrderId(),
+        userId: uid,
+        productId: CONTENT_ORDER_PREFIX + wantContentId,
+        title: `解锁《${content.title}》`,
+        amount: price,
+        channel: null,
+        status: 'created',
+        createdAt: Date.now(),
+      };
+      db.orders.push(cOrder);
+      try {
+        await store.insertOrder(cOrder);
+      } catch (e) {
+        db.orders.pop();
+        return sendJSON(res, 502, { message: '订单创建失败：' + e.message });
+      }
+      return sendJSON(res, 201, { order: publicOrder(cOrder) });
+    }
+
     const product = db.products.find((p) => p.id === body.productId);
     if (!product) return sendJSON(res, 400, { message: '商品不存在或已下架' });
 
@@ -1618,7 +1721,7 @@ async function handleApi(req, res, url) {
         await users.adjustUserBalance(uid, order.amount, 'refund', order.id).catch(() => {});
         return sendJSON(res, 502, { message: '云端写入失败：' + e.message });
       }
-      await grantMembershipForOrder(order);
+      await afterOrderPaid(order);
       return sendJSON(res, 200, { mode: 'balance', order: publicOrder(order), balance: newBalance });
     }
 
@@ -1737,7 +1840,7 @@ async function handleApi(req, res, url) {
     order.transactionId = params.trade_no || null;
     const result = settleOrder(order, 'notify');
     await persistOrder(order);
-    await grantMembershipForOrder(order);
+    await afterOrderPaid(order);
     console.log(
       `[notify/alipay] 订单 ${order.id} -> ${order.status}${result.duplicate ? '（重复通知，已幂等处理）' : ''} 支付宝交易号 ${params.trade_no || '-'}`
     );
@@ -1811,7 +1914,7 @@ async function handleApi(req, res, url) {
           order.transactionId = q.trade_no || null;
           settleOrder(order, 'query');
           await persistOrder(order);
-          await grantMembershipForOrder(order);
+          await afterOrderPaid(order);
           paid = true;
           console.log(`[alipay/return] 订单 ${order.id} 查询确认已支付`);
         } else if (!order) {
@@ -1862,7 +1965,7 @@ async function handleApi(req, res, url) {
       order.transactionId = data.transaction_id;
       const result = settleOrder(order, 'notify');
       await persistOrder(order);
-      await grantMembershipForOrder(order);
+      await afterOrderPaid(order);
       console.log(
         `[notify/wechat] 订单 ${order.id} -> ${order.status}${
           result.duplicate ? '（重复通知，已幂等处理）' : ''
@@ -1892,7 +1995,7 @@ async function handleApi(req, res, url) {
 
     const result = settleOrder(order, 'notify');
     await persistOrder(order);
-    await grantMembershipForOrder(order);
+    await afterOrderPaid(order);
     console.log(`[notify] 订单 ${order.id} -> ${order.status}${result.duplicate ? '（重复回调，已幂等处理）' : ''}`);
     return sendJSON(res, 200, { code: 'SUCCESS', message: 'OK' });
   }
@@ -2083,6 +2186,14 @@ async function handleApi(req, res, url) {
         contents = await store.adminListContents();
       } catch (e) {
         console.warn('[admin] 读取首页内容失败:', e.message);
+      }
+      // 每篇内容的单篇解锁人数（付费内容才显示）
+      try {
+        const unlockCounts = await store.adminContentUnlockCounts();
+        contents = contents.map((c) => ({ ...c, unlockCount: Number(unlockCounts[c.id]) || 0 }));
+      } catch (e) {
+        console.warn('[admin] 读取内容解锁统计失败:', e.message);
+        contents = contents.map((c) => ({ ...c, unlockCount: 0 }));
       }
       const umap = await userMap();
       return sendJSON(res, 200, {
@@ -2381,6 +2492,8 @@ async function handleApi(req, res, url) {
           sort: Number.isInteger(body.sort) ? body.sort : 100,
           active: body.active !== false,
           membersOnly: Boolean(body.membersOnly),
+          // 单篇解锁价（分）：0 = 不单卖，只能靠会员看
+          price: Math.min(10000000, Math.max(0, Math.floor(Number(body.price) || 0))),
         });
         return sendJSON(res, 200, { content: saved });
       } catch (e) {
