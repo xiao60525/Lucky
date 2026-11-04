@@ -387,7 +387,7 @@ function visibleGoods() {
 function goodsCardHTML(p, i) {
   const owned = boughtProductIds().has(p.id);
   return `
-        <button class="goods-card${p.memberOnly && !viewerIsMember() ? ' is-locked' : ''}" data-act="buy" data-id="${esc(p.id)}">
+        <button class="goods-card${p.memberOnly && !viewerIsMember() ? ' is-locked' : ''}" data-act="goods" data-id="${esc(p.id)}">
           ${p.memberOnly ? '<span class="goods-badge">会员专享</span>' : ''}
           ${owned ? '<span class="goods-owned">已购</span>' : ''}
           ${
@@ -457,6 +457,26 @@ function goodsSectionHTML() {
     <div class="goods-grid" id="goodsBox">${visibleGoods().map(goodsCardHTML).join('')}</div>`;
 }
 
+/** 首页顶部的待支付提醒：有没付完的订单就顶在最上面，点一下直接回去付 */
+function unpaidBannerHTML() {
+  if (!state.viewer) return ''; // 游客的旧订单不在这里打扰，登录后再说
+  const list = dropExpiredOrders(state.orders).filter(isUnpaid);
+  if (!list.length) return '';
+  const first = list[0];
+  const deadline = orderDeadline(first);
+  const title = list.length > 1 ? `${list.length} 笔订单待支付` : '还有 1 笔订单待支付';
+  return `
+    <button class="unpaid-bar" data-act="order" data-id="${esc(first.id)}">
+      <span class="unpaid-ico">⏳</span>
+      <span class="unpaid-main">
+        <b>${title}</b>
+        <i>${esc(first.title)} · ${yuan(first.amount)}</i>
+      </span>
+      <span class="order-count" data-until="${deadline}">剩余 ${mmss(deadline - Date.now())}</span>
+      <span class="unpaid-go">去支付 ›</span>
+    </button>`;
+}
+
 function renderHome() {
   const s = state.site || {};
   const v = state.viewer;
@@ -495,6 +515,7 @@ function renderHome() {
       </div>
     </div>
     ${noticeHTML}
+    ${unpaidBannerHTML()}
 
     <div class="trust-row">
       <div class="trust-item"><span class="trust-ico">🔒</span><b>安全支付</b><i>官方通道</i></div>
@@ -678,7 +699,7 @@ function tickCountdowns() {
   if (state.viewer) state.viewer.orders = state.orders;
   const box = document.getElementById('ordersBox');
   if (box) box.innerHTML = mineOrderList(state.orders);
-  else if (!sheetEl.classList.contains('show') && state.tab === 'mine') render();
+  else if (!sheetEl.classList.contains('show')) render(); // 首页提醒条 / 我的页都要跟着变
   updateTabBadge();
   toast('有订单超时未支付，已自动关闭');
 }
@@ -763,8 +784,88 @@ function startBuy(productId) {
   }
   sheetState.type = 'confirm';
   sheetState.product = { ...p, amount: memberPriceOf(p) };
-  sheetState.channel = channelList()[0].id;
+  sheetState.channel = preferredChannel(channelList());
   confirmSheet();
+}
+
+/* ---------------- 商品详情：看得清楚再买 ---------------- */
+
+/** 商品详情弹层：大图 + 会员价对比 + 描述 + 购买/分享 */
+function goodsSheet(productId) {
+  const p = (state.products || []).find((x) => x.id === productId);
+  if (!p) return toast('商品不存在或已下架');
+  sheetState.type = 'goods';
+  sheetState.product = p;
+  const mp = Number(p.memberPrice) || 0;
+  const isMember = viewerIsMember();
+  const hasMemberPrice = mp > 0 && mp < p.amount;
+  const showPrice = isMember && hasMemberPrice ? mp : p.amount;
+  const bought = boughtProductIds().has(p.id);
+  const sold = (state.orders || []).filter((o) => o.productId === p.id && o.status === 'paid').length;
+  const idx = Math.max(0, state.products.findIndex((x) => x.id === p.id));
+  const save = hasMemberPrice ? p.amount - mp : 0;
+
+  const hero = p.image
+    ? `<div class="gs-hero"><img src="${esc(p.image)}" alt="${esc(p.title)}" />${
+        p.memberOnly ? '<span class="gs-tag">会员专享</span>' : ''
+      }</div>`
+    : `<div class="gs-hero is-plain"><span class="gs-emoji">${GOODS_ICONS[idx % GOODS_ICONS.length]}</span>${
+        p.memberOnly ? '<span class="gs-tag">会员专享</span>' : ''
+      }</div>`;
+
+  const metaChips = [
+    p.tag ? `<span class="gs-chip">${esc(p.tag)}</span>` : '',
+    Number(p.memberDays) > 0 ? `<span class="gs-chip">送 ${p.memberDays} 天会员</span>` : '',
+    bought ? '<span class="gs-chip is-on">你已购买过</span>' : '',
+    sold ? `<span class="gs-chip">已售 ${sold}</span>` : '',
+  ]
+    .filter(Boolean)
+    .join('');
+
+  const priceHTML = hasMemberPrice
+    ? `<div class="gs-price">
+         <b>${yuan(showPrice)}</b>
+         ${isMember ? `<s>${yuan(p.amount)}</s><span class="gs-save">会员已省 ${yuan(save)}</span>` : `<span class="gs-save">会员价 ${yuan(mp)}</span>`}
+       </div>`
+    : `<div class="gs-price"><b>${yuan(p.amount)}</b></div>`;
+
+  openSheet(`
+    ${hero}
+    <h3 class="gs-title">${esc(p.title)}</h3>
+    ${priceHTML}
+    <p class="gs-desc">${esc(p.desc || '商家还没有填写商品描述')}</p>
+    ${metaChips ? `<div class="gs-chips">${metaChips}</div>` : ''}
+    <button class="btn-primary" data-act="buy" data-id="${esc(p.id)}">
+      ${p.memberOnly && !isMember ? '开通会员后购买' : '立即购买'}
+    </button>
+    <button class="btn-ghost" data-act="share-goods" data-id="${esc(p.id)}" style="margin-top:10px">分享商品给朋友</button>
+  `);
+}
+
+/** 单个商品的分享链接：带上 ?p= 商品 id，对方打开直达详情 */
+function goodsShareUrl(p) {
+  const base = location.origin + '/';
+  const qs = [];
+  if (SHARECODE) qs.push('sharecode=' + encodeURIComponent(SHARECODE));
+  qs.push('p=' + encodeURIComponent(p.id));
+  return base + '?' + qs.join('&');
+}
+
+async function shareGoods(productId) {
+  const p = (state.products || []).find((x) => x.id === productId);
+  if (!p) return;
+  const url = goodsShareUrl(p);
+  // 优先调系统分享（手机端体验更好），不支持就退回复制链接
+  if (navigator.share) {
+    try {
+      await navigator.share({ title: p.title, text: p.desc || p.title, url });
+      return;
+    } catch (e) {
+      if (e && e.name === 'AbortError') return; // 用户自己取消了，不打扰
+    }
+  }
+  const ok = await copyText(url);
+  toast(ok ? '商品链接已复制，发给朋友即可打开' : '复制失败，请手动复制地址栏链接');
 }
 
 /** 「我的」页会员卡：生效中显示到期时间，否则引导开通 */
@@ -1089,19 +1190,26 @@ async function refreshMe() {
 }
 
 function copyText(text) {
-  if (navigator.clipboard && window.isSecureContext) return navigator.clipboard.writeText(text);
+  // 返回 true / false，调用方好给出准确反馈
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text).then(
+      () => true,
+      () => false
+    );
+  }
   const ta = document.createElement('textarea');
   ta.value = text;
   ta.style.position = 'fixed';
   ta.style.opacity = '0';
   document.body.appendChild(ta);
   ta.select();
+  let ok = false;
   try {
-    document.execCommand('copy');
+    ok = document.execCommand('copy');
   } finally {
     ta.remove();
   }
-  return Promise.resolve();
+  return Promise.resolve(ok);
 }
 
 async function doShareCopy() {
@@ -1412,7 +1520,8 @@ const SCENE_TEXT = {
 
 /** 当前可用的支付方式：真实微信支付就绪时展示微信支付，否则展示模拟收银台 */
 function channelList() {
-  const list = [];
+  let list = [];
+  list = [];
   const ch = state.channels || {};
   // 微信内置浏览器打不开支付宝手机网站支付，这种情况把扫码放前面
   const inWechat = /MicroMessenger/i.test(navigator.userAgent);
@@ -1448,6 +1557,29 @@ function channelList() {
     list = list.filter((c) => c.id !== 'mock');
   }
   return list;
+}
+
+/* ---------------- 支付方式记忆（只记真实三方渠道，不记余额） ---------------- */
+const CHANNEL_KEY = 'last_channel_v1';
+
+function preferredChannel(list) {
+  let saved = '';
+  try {
+    saved = localStorage.getItem(CHANNEL_KEY) || '';
+  } catch (e) {
+    /* 隐私模式下不可用，忽略 */
+  }
+  if (saved && list.some((c) => c.id === saved)) return saved;
+  return list[0].id;
+}
+
+function rememberChannel(id) {
+  if (!id || id === 'balance') return; // 余额不足时会被禁用，不记忆
+  try {
+    localStorage.setItem(CHANNEL_KEY, id);
+  } catch (e) {
+    /* ignore */
+  }
 }
 
 function channelItemsHTML(selected) {
@@ -1693,7 +1825,12 @@ function orderSheet(order) {
       <div class="detail-row"><span class="k">商品</span><span class="v">${order.title}</span></div>
       <div class="detail-row"><span class="k">金额</span><span class="v">${yuan(order.amount)}</span></div>
       <div class="detail-row"><span class="k">支付方式</span><span class="v">${order.channelName}</span></div>
-      <div class="detail-row"><span class="k">订单号</span><span class="v">${order.id}</span></div>
+      <div class="detail-row">
+        <span class="k">订单号</span>
+        <span class="v">${esc(order.id)}
+          <button class="copy-mini" data-act="copy-order" data-id="${esc(order.id)}">复制</button>
+        </span>
+      </div>
       <div class="detail-row"><span class="k">创建时间</span><span class="v">${timeText(order.createdAt)}</span></div>
       ${
         order.paidAt
@@ -1792,6 +1929,65 @@ view.addEventListener('input', (e) => {
   refreshGoodsBox();
 });
 
+/* 下拉刷新：内容在顶部时继续往下拉，松手重新拉一遍数据 */
+let pullStartY = null;
+let pullDist = 0;
+const pullEl = document.createElement('div');
+pullEl.className = 'pull-tip';
+pullEl.innerHTML = '<span class="pull-spin"></span><span class="pull-text">下拉刷新</span>';
+(function mountPullTip() {
+  const phone = document.querySelector('.phone');
+  if (phone) phone.appendChild(pullEl);
+})();
+
+function setPull(d) {
+  pullDist = d;
+  const text = pullEl.querySelector('.pull-text');
+  pullEl.style.opacity = d > 6 ? '1' : '0';
+  pullEl.style.transform = `translate(-50%, ${Math.min(d, 70) - 46}px)`;
+  if (text) text.textContent = d >= 56 ? '松开刷新' : '下拉刷新';
+  pullEl.classList.toggle('is-ready', d >= 56);
+}
+
+view.addEventListener(
+  'touchstart',
+  (e) => {
+    if (sheetEl.classList.contains('show') || view.scrollTop > 0 || e.touches.length !== 1) {
+      pullStartY = null;
+      return;
+    }
+    pullStartY = e.touches[0].clientY;
+  },
+  { passive: true }
+);
+view.addEventListener(
+  'touchmove',
+  (e) => {
+    if (pullStartY == null) return;
+    const dy = e.touches[0].clientY - pullStartY;
+    setPull(dy <= 0 ? 0 : Math.min(96, dy * 0.55));
+  },
+  { passive: true }
+);
+view.addEventListener('touchend', async () => {
+  if (pullStartY == null) return;
+  pullStartY = null;
+  const shouldRefresh = pullDist >= 56;
+  setPull(0);
+  if (!shouldRefresh) return;
+  pullEl.classList.add('is-loading');
+  const text = pullEl.querySelector('.pull-text');
+  if (text) text.textContent = '正在刷新…';
+  try {
+    await bootstrap();
+    toast('已是最新内容');
+  } catch (e) {
+    toast('刷新失败，请检查网络');
+  }
+  pullEl.classList.remove('is-loading');
+  setPull(0);
+});
+
 /* 回到顶部：往下翻超过一屏多一点才出现 */
 const toTopEl = document.getElementById('toTop');
 if (toTopEl) {
@@ -1849,6 +2045,10 @@ view.addEventListener('click', async (e) => {
     startBuy(el.dataset.id);
     return;
   }
+  if (act === 'goods') {
+    goodsSheet(el.dataset.id);
+    return;
+  }
 
   /* 首页商品：筛选 / 清空搜索 */
   if (act === 'goods-filter') {
@@ -1892,6 +2092,15 @@ sheetEl.addEventListener('click', async (e) => {
     startBuy(el.dataset.id);
     return;
   }
+  if (act === 'share-goods') {
+    await shareGoods(el.dataset.id);
+    return;
+  }
+  if (act === 'copy-order') {
+    const ok = await copyText(el.dataset.id || '');
+    toast(ok ? '订单号已复制' : '复制失败，请长按手动复制');
+    return;
+  }
 
   /* 设置中心 */
   if (act === 'toggle-dark') {
@@ -1930,6 +2139,7 @@ sheetEl.addEventListener('click', async (e) => {
 
   if (act === 'channel') {
     sheetState.channel = el.dataset.id;
+    rememberChannel(el.dataset.id);
     if (sheetState.type === 'continue' && sheetState.order) continuePaySheet(sheetState.order);
     else confirmSheet();
   }
@@ -2253,6 +2463,14 @@ async function pollOrder(orderId, tries = 12, interval = 450) {
         }, 3000);
       }
     }
+  }
+
+  // 商品分享链接：?p=商品id 直接打开详情
+  const sharedGoods = q.get('p');
+  if (sharedGoods) {
+    const p = (state.products || []).find((x) => x.id === sharedGoods);
+    if (p) setTimeout(() => goodsSheet(p.id), 260);
+    else toast('分享的商品已下架');
   }
 
   if (returnOrderId && result) {

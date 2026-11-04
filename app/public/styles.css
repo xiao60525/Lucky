@@ -1451,3 +1451,131 @@ body.dark .order-count.is-over { color: #99a0b3; background: #2b2f3d; }
 body.dark .goods-owned { background: rgba(7, 193, 96, 0.18); color: #5ee39b; }
 body.dark .to-top { color: #cfd4e0; box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5); }
 body.dark .sk { background: linear-gradient(90deg, #22262f 25%, #2b2f3a 37%, #22262f 63%); background-size: 400% 100%; }
+
+/* ==================================================================
+   第二轮优化：商品详情 / 待支付提醒 / 下拉刷新 / 订单号复制
+================================================================== */
+
+/* ---------------- 商品详情弹层 ---------------- */
+.gs-hero {
+  position: relative;
+  width: 100%;
+  height: 178px;
+  border-radius: 16px;
+  overflow: hidden;
+  background: #f4f5f9;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.gs-hero img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.gs-hero.is-plain { background: linear-gradient(135deg, #eef0ff, #f8f0ff); }
+.gs-emoji { font-size: 52px; line-height: 1; }
+.gs-tag {
+  position: absolute; top: 10px; left: 10px;
+  padding: 3px 9px; border-radius: 999px;
+  background: linear-gradient(135deg, #f6c453, #e8a73c);
+  color: #4a3406; font-size: 11px; font-weight: 700;
+}
+.gs-title { margin: 14px 0 6px; font-size: 18px; line-height: 1.4; }
+.gs-price { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.gs-price b { font-size: 26px; color: var(--accent); letter-spacing: -0.4px; }
+.gs-price s { font-size: 12.5px; color: var(--muted); }
+.gs-save {
+  font-size: 11px; color: #07964c;
+  background: rgba(7, 193, 96, 0.12);
+  border-radius: 999px; padding: 2px 8px;
+}
+.gs-desc {
+  margin: 12px 0 0;
+  font-size: 13px;
+  line-height: 1.75;
+  color: #555d70;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.gs-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; }
+.gs-chip {
+  font-size: 11.5px; color: #5b6377;
+  background: #f3f4f9; border-radius: 999px; padding: 3px 9px;
+}
+.gs-chip.is-on { color: #07964c; background: rgba(7, 193, 96, 0.1); }
+.sheet .gs-hero + .gs-title { margin-top: 14px; }
+.sheet .gs-chips + .btn-primary { margin-top: 18px; }
+
+/* ---------------- 首页待支付提醒 ---------------- */
+.unpaid-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  margin-top: 10px;
+  padding: 11px 13px;
+  text-align: left;
+  background: #fff8ea;
+  border: 1px solid #f4dcb2;
+  border-radius: 16px;
+}
+.unpaid-ico { font-size: 17px; line-height: 1; }
+.unpaid-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1 1 auto; }
+.unpaid-main b { font-size: 13px; font-weight: 600; }
+.unpaid-main i {
+  font-style: normal; font-size: 11.5px; color: #a3781f;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.unpaid-go { font-size: 12.5px; color: #c98016; font-weight: 600; white-space: nowrap; }
+
+/* ---------------- 订单号复制 ---------------- */
+.copy-mini {
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: #f7f8fb;
+  color: #5b6377;
+  font-size: 11px;
+}
+
+/* ---------------- 下拉刷新 ---------------- */
+.pull-tip {
+  position: absolute;
+  top: 6px;
+  left: 50%;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--card);
+  box-shadow: 0 6px 18px rgba(19, 24, 45, 0.16);
+  font-size: 12px;
+  color: var(--muted);
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -44px);
+  transition: transform 0.16s ease, opacity 0.16s ease;
+  white-space: nowrap;
+}
+.pull-tip.is-ready { color: var(--accent); }
+.pull-spin {
+  width: 12px; height: 12px;
+  border: 2px solid rgba(90, 92, 240, 0.2);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  opacity: 0;
+}
+.pull-tip.is-loading .pull-spin { opacity: 1; animation: spin 0.7s linear infinite; }
+
+/* ---------------- 深色适配 ---------------- */
+body.dark .gs-hero { background: #232734; }
+body.dark .gs-hero.is-plain { background: linear-gradient(135deg, #23273a, #2b2340); }
+body.dark .gs-desc { color: #b7bdcb; }
+body.dark .gs-chip { background: #2b2f3d; color: #b7bdcb; }
+body.dark .gs-chip.is-on { background: rgba(7, 193, 96, 0.16); color: #5ee39b; }
+body.dark .gs-save { background: rgba(7, 193, 96, 0.16); color: #5ee39b; }
+body.dark .unpaid-bar { background: #2e2718; border-color: #584722; }
+body.dark .unpaid-main i { color: #d8b062; }
+body.dark .unpaid-go { color: #f0b95a; }
+body.dark .copy-mini { background: #262a36; color: #b7bdcb; }
+body.dark .pull-tip { box-shadow: 0 6px 18px rgba(0, 0, 0, 0.5); }

@@ -40,6 +40,14 @@ const check = (name, ok, extra = '') => {
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/** 点商品卡 → 详情 → 立即购买，进到收银台 */
+async function openPaySheet(w) {
+  $(w, '[data-act="goods"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  await wait(50);
+  $(w, '[data-act="buy"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  await wait(60);
+}
+
 /** 跑一次场景：channels 决定渠道列表 */
 async function run(channels) {
   const BOOTSTRAP = {
@@ -110,8 +118,13 @@ const txt = (w, s) => {
 /* ---------- 场景 1：只配了支付宝 ---------- */
 {
   const w = await run({ wechat: false, alipay: true, mock: true });
+  const card = $(w, '[data-act="goods"]');
+  check('首页有商品卡片', !!card);
+  card.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+  await wait(60);
+  check('商品详情已打开', !!$(w, '.gs-title'), txt(w, '.gs-title'));
   const buy = $(w, '[data-act="buy"]');
-  check('首页有购买按钮', !!buy);
+  check('商品详情有购买按钮', !!buy);
   buy.dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
   await wait(60);
 
@@ -132,8 +145,7 @@ const txt = (w, s) => {
 /* ---------- 场景 2：两个渠道都配了 ---------- */
 {
   const w = await run({ wechat: true, alipay: true, mock: true });
-  $(w, '[data-act="buy"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
-  await wait(60);
+  await openPaySheet(w);
   const names = all(w, '.pay-item .pay-name').map((e) => e.textContent.trim());
   check('两个真实渠道同时显示', names.includes('微信支付') && names.includes('支付宝'), names.join(' / '));
   check('仍有余额支付', names.includes('余额支付'));
@@ -142,8 +154,7 @@ const txt = (w, s) => {
 /* ---------- 场景 3：都没配 ---------- */
 {
   const w = await run({ wechat: false, alipay: false, mock: true });
-  $(w, '[data-act="buy"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
-  await wait(60);
+  await openPaySheet(w);
   const names = all(w, '.pay-item .pay-name').map((e) => e.textContent.trim());
   check('未配置时回落到模拟收银台', names.includes('模拟收银台'), names.join(' / '));
   check('不显示支付宝', !names.includes('支付宝'));

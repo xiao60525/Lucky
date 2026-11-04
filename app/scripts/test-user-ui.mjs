@@ -270,6 +270,11 @@ check(
   vipCard2 ? vipCard2.textContent.replace(/\s+/g, ' ').trim() : ''
 );
 check(
+  '首页顶部有未支付订单提醒',
+  Boolean($('.unpaid-bar')) && text('.unpaid-bar').includes('待支付') && /剩余 \d+:\d{2}/.test(text('.unpaid-bar .order-count')),
+  text('.unpaid-bar')
+);
+check(
   '已买过的商品显示「已购」',
   (() => {
     const c = [...window.document.querySelectorAll('.goods-card')].find((x) => x.dataset.id === 'demo_001');
@@ -277,12 +282,27 @@ check(
   })(),
   (window.document.querySelector('.goods-card .goods-owned') || {}).textContent || '无'
 );
-check('会员点会员专享直接进收银台', (() => {
+check('会员点商品先看详情', (() => {
   vipCard2.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
   return true;
 })());
 await wait(60);
-check('会员专享商品可正常下单', Boolean($('.sheet [data-act="pay"]')) && text('.sheet .amount-big').includes('9.90'), text('.sheet .amount-big'));
+check(
+  '商品详情展示标题与会员价',
+  text('.sheet .gs-title').includes('会员专属礼包') && text('.sheet .gs-price').includes('9.90') && text('.sheet .gs-price').includes('19.00'),
+  text('.sheet .gs-price')
+);
+check('商品详情显示会员立省', text('.sheet').includes('会员已省'), text('.sheet .gs-save'));
+check('商品详情有分享入口', Boolean($('.sheet [data-act="share-goods"]')));
+check('商品详情显示会员专享角标', Boolean($('.sheet .gs-tag')) && text('.sheet .gs-tag').includes('会员专享'));
+$('.sheet [data-act="buy"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
+check('详情里点立即购买进收银台', Boolean($('.sheet [data-act="pay"]')) && text('.sheet .amount-big').includes('9.90'), text('.sheet .amount-big'));
+
+// 支付方式记忆：选了渠道后记到本地，下次进来默认选中
+$('.sheet [data-act="channel"][data-id="mock"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(30);
+check('记住上次选择的支付方式', window.localStorage.getItem('last_channel_v1') === 'mock', String(window.localStorage.getItem('last_channel_v1')));
 closeSheetForTest();
 await wait(40);
 await goMine();
@@ -455,6 +475,26 @@ $('[data-act="save-password"]').dispatchEvent(new window.MouseEvent('click', { b
 await wait(60);
 check('改密码成功请求', calls.some((c) => c.path === '/api/auth/password'));
 
+// 9b. 订单详情：订单号可一键复制
+await goMine();
+await wait(40);
+$('[data-act="open-orders"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+const paidRow = [...window.document.querySelectorAll('.sheet .order-row')].find((r) => r.dataset.id === 'O1');
+if (paidRow) {
+  paidRow.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(40);
+  check('已支付订单可看详情', text('.sheet h3') === '订单详情', text('.sheet h3'));
+  check('订单详情有订单号复制按钮', Boolean($('.sheet [data-act="copy-order"]')));
+  $('.sheet [data-act="copy-order"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(40);
+  check('复制订单号有反馈', text('#toast').includes('订单号已复制'), text('#toast'));
+  closeSheetForTest();
+  await wait(40);
+} else {
+  check('订单列表里有已支付订单', false, '未找到 O1');
+}
+
 // 10. 关于（从设置中心进入）
 $('[data-act="settings"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(40);
@@ -476,13 +516,16 @@ check('退出后回到登录页', !!$('#authPhone') && !$('.stat-row'));
 const homeTab = [...window.document.querySelectorAll('.tab')].find((t) => t.dataset.tab === 'home');
 homeTab.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(40);
-const buyBtn = $('[data-act="buy"]');
-if (buyBtn) {
-  buyBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+const goodsCard = $('[data-act="goods"]');
+if (goodsCard) {
+  goodsCard.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
   await wait(60);
+  check('未登录也能看商品详情', Boolean($('.sheet .gs-title')), text('.sheet .gs-title'));
+  $('.sheet [data-act="buy"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(80);
   check('未登录购买被引导到登录', !!$('#authPhone'), text('#toast'));
 } else {
-  check('首页有购买按钮', false, '未找到 buy 按钮');
+  check('首页有商品卡片', false, '未找到 goods 卡片');
 }
 
 const failed = results.filter((r) => !r.ok);
