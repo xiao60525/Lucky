@@ -1322,6 +1322,14 @@ async function handleApi(req, res, url) {
         console.warn('[bootstrap] 读取退款申请失败:', e.message);
       }
     }
+    // 商品销量（全站已支付/已退款订单数）：前端用来做「销量」排序和「已售 N」
+    const salesMap = {};
+    (db.orders || []).forEach((o) => {
+      if (!o || !o.productId) return;
+      if (o.status !== 'paid' && o.status !== 'refunded') return;
+      salesMap[o.productId] = (salesMap[o.productId] || 0) + 1;
+    });
+    const productsWithSales = db.products.map((p) => ({ ...p, sales: salesMap[p.id] || 0 }));
     return sendJSON(res, 200, {
       user: { id: db.user.id, nickname: db.user.nickname },
       loggedIn: Boolean(uid),
@@ -1334,7 +1342,7 @@ async function handleApi(req, res, url) {
       wxMchId: process.env.WX_MCHID || null,
       cloud: { ready: cloudReady, endpoint: store.endpoint || null },
       site: publicSite(),
-      products: db.products,
+      products: productsWithSales,
       contents,
       favorites,
       refunds,

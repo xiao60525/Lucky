@@ -33,6 +33,8 @@ const state = {
   loaded: false,
   goodsQuery: '', // 首页商品搜索词（纯前端过滤，不落库）
   goodsFilter: 'all', // all / member / deal / owned
+  goodsSort: 'default', // default / hot / priceAsc / priceDesc
+  orderQuery: '', // 我的订单搜索词（商品名 / 订单号）
   contentQuery: '', // 内容页搜索词
   contentCat: 'all', // 内容页分类筛选：all / 分类名 / __fav
 };
@@ -82,6 +84,168 @@ function greeting() {
   if (h < 18) return '下午好';
   return '晚上好';
 }
+
+/** 聊天式时间：刚刚 / 5 分钟前 / 3 小时前 / 昨天 / 具体日期 */
+function agoText(ts) {
+  const t = Number(ts) || 0;
+  if (!t) return '';
+  const diff = Date.now() - t;
+  if (diff < 60000) return '刚刚';
+  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
+  if (diff < 172800000) return '昨天';
+  const d = new Date(t);
+  return `${d.getMonth() + 1} 月 ${d.getDate()} 日`;
+}
+
+/* ---------------- 本地小仓库：心愿单 / 足迹 / 搜索历史 / 消息已读 ---------------- */
+/* 这些是「只在这台手机上」的轻数据，不进云库，清缓存即消失 */
+
+const LS_GOODS_FAV = 'goods_fav_v1';
+const LS_FOOTPRINT = 'footprint_v1';
+const LS_SEARCH_HISTORY = 'search_history_v1';
+const LS_MSG_READ = 'msg_read_v1';
+
+function lsGet(key, fallback) {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (e) {
+    return fallback;
+  }
+}
+
+function lsSet(key, val) {
+  try {
+    localStorage.setItem(key, JSON.stringify(val));
+  } catch (e) {
+    /* 无痕模式 / 超额：ignore */
+  }
+}
+
+/** 心愿单：商品 id 数组，最近收藏的排前面 */
+function goodsFavList() {
+  const v = lsGet(LS_GOODS_FAV, []);
+  return Array.isArray(v) ? v.map(String) : [];
+}
+
+function goodsFavOn(id) {
+  return goodsFavList().includes(String(id));
+}
+
+/** 收藏/取消，返回 true 表示现在是「已收藏」 */
+function toggleGoodsFav(id) {
+  const key = String(id);
+  const list = goodsFavList();
+  const i = list.indexOf(key);
+  if (i > -1) list.splice(i, 1);
+  else list.unshift(key);
+  lsSet(LS_GOODS_FAV, list.slice(0, 100));
+  return i === -1;
+}
+
+/** 浏览足迹：[{ id, at }]，最多 20 条 */
+function footprintList() {
+  const v = lsGet(LS_FOOTPRINT, []);
+  return Array.isArray(v) ? v.filter((x) => x && x.id) : [];
+}
+
+function pushFootprint(id) {
+  const key = String(id || '');
+  if (!key) return;
+  const list = footprintList().filter((x) => String(x.id) !== key);
+  list.unshift({ id: key, at: Date.now() });
+  lsSet(LS_FOOTPRINT, list.slice(0, 20));
+}
+
+function clearFootprint() {
+  lsSet(LS_FOOTPRINT, []);
+}
+
+/** 搜索历史：最近的放前面，去重，最多 8 条 */
+function searchHistoryList() {
+  const v = lsGet(LS_SEARCH_HISTORY, []);
+  return Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.trim()) : [];
+}
+
+function pushSearchHistory(q) {
+  const key = String(q || '').trim();
+  if (key.length < 1) return;
+  const list = searchHistoryList().filter((x) => x !== key);
+  list.unshift(key);
+  lsSet(LS_SEARCH_HISTORY, list.slice(0, 8));
+}
+
+function clearSearchHistory() {
+  lsSet(LS_SEARCH_HISTORY, []);
+}
+
+/** 消息中心：由订单 / 售后记录派生，不额外存库 */
+function messageList() {
+  const out = [];
+  const push = (m) => {
+    if (m && m.at) out.push(m);
+  };
+  (state.orders || []).forEach((o) => {
+    const at = Number(o.paidAt) || Number(o.createdAt) || 0;
+    if (o.status === 'paid' || o.status === 'refunded') {
+      push({
+        at: Number(o.paidAt) || at,
+        kind: 'pay',
+        title: '支付成功',
+        text: `${o.title} · ${yuan(o.amount)}`,
+        orderId: o.id,
+      });
+    }
+    if (o.status === 'refunded') {
+      push({
+        at: Number(o.refundedAt) || at,
+        kind: 'refund',
+        title: '退款已完成',
+        text: `${o.title} · ${yuan(o.amount)} 原路退回`,
+        orderId: o.id,
+      });
+    }
+    if (isUnpaid(o)) {
+      push({
+        at: Number(o.createdAt) || 0,
+        kind: 'unpaid',
+        title: '订单待支付',
+        text: `${o.title} · ${yuan(o.amount)}，超时会自动关闭`,
+        orderId: o.id,
+      });
+    }
+  });
+  (state.refunds || []).forEach((r) => {
+    if (!r || r.status === 'pending') return;
+    const title =
+      r.status === 'approved' ? '退款申请已通过' : r.status === 'rejected' ? '退款申请未通过' : '退款申请已撤销';
+    push({
+      at: Number(r.handledAt) || Number(r.createdAt) || 0,
+      kind: 'refund',
+      title,
+      text: `${r.orderTitle || r.orderId}${r.adminNote ? ' · ' + r.adminNote : ''}`,
+      orderId: r.orderId,
+    });
+  });
+  return out.sort((a, b) => (b.at || 0) - (a.at || 0)).slice(0, 50);
+}
+
+function msgLastRead() {
+  return Number(lsGet(LS_MSG_READ, 0)) || 0;
+}
+
+function msgUnreadCount() {
+  const last = msgLastRead();
+  return messageList().filter((m) => (m.at || 0) > last).length;
+}
+
+function markMsgRead() {
+  const list = messageList();
+  const top = list.length ? Number(list[0].at) || Date.now() : Date.now();
+  lsSet(LS_MSG_READ, top);
+}
+
 
 /* ---------------- 登录态 ---------------- */
 
@@ -443,23 +607,37 @@ const GOODS_FILTERS = {
 function visibleGoods() {
   const q = String(state.goodsQuery || '').trim().toLowerCase();
   const f = GOODS_FILTERS[state.goodsFilter] || GOODS_FILTERS.all;
-  return (state.products || []).filter((p) => {
+  const list = (state.products || []).filter((p) => {
     if (!f.match(p)) return false;
     if (!q) return true;
     return `${p.title || ''} ${p.desc || ''} ${p.tag || ''}`.toLowerCase().includes(q);
   });
+  const sort = state.goodsSort;
+  if (sort === 'hot') {
+    // 真实销量优先，销量相同保持后台排序
+    return list.slice().sort((a, b) => (Number(b.sales) || 0) - (Number(a.sales) || 0));
+  }
+  if (sort === 'priceAsc') return list.slice().sort((a, b) => memberPriceOf(a) - memberPriceOf(b));
+  if (sort === 'priceDesc') return list.slice().sort((a, b) => memberPriceOf(b) - memberPriceOf(a));
+  return list;
 }
 
-function goodsCardHTML(p, i) {
+function goodsCardHTML(p) {
   const owned = boughtProductIds().has(p.id);
+  const idx = Math.max(0, (state.products || []).findIndex((x) => x.id === p.id));
+  const fav = goodsFavOn(p.id);
+  const sold = Number(p.sales) || 0;
   return `
         <button class="goods-card${p.memberOnly && !viewerIsMember() ? ' is-locked' : ''}" data-act="goods" data-id="${esc(p.id)}">
           ${p.memberOnly ? '<span class="goods-badge">会员专享</span>' : ''}
           ${owned ? '<span class="goods-owned">已购</span>' : ''}
+          <span class="goods-fav${fav ? ' on' : ''}" data-act="goods-fav" data-id="${esc(p.id)}" role="button" aria-label="${
+            fav ? '取消收藏' : '收藏商品'
+          }">${fav ? '♥' : '♡'}</span>
           ${
             p.image
               ? `<span class="goods-thumb"><img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy" /></span>`
-              : `<span class="goods-emoji">${GOODS_ICONS[i % GOODS_ICONS.length]}</span>`
+              : `<span class="goods-emoji">${GOODS_ICONS[idx % GOODS_ICONS.length]}</span>`
           }
           <span class="goods-name">${esc(p.title)}</span>
           ${p.desc ? `<span class="goods-desc">${esc(p.desc)}</span>` : ''}
@@ -468,6 +646,7 @@ function goodsCardHTML(p, i) {
             ${Number(p.memberPrice) > 0 ? `<s>${yuan(p.amount)}</s>` : ''}
             <em>${esc(p.memberOnly && !viewerIsMember() ? '开通会员' : p.tag || '购买')}</em>
           </span>
+          ${sold ? `<span class="goods-sold">已售 ${sold}</span>` : ''}
         </button>`;
 }
 
@@ -513,6 +692,20 @@ function goodsSectionHTML() {
     )
     .join('');
   const searchOn = homeCfg().modules.search;
+  const sort = state.goodsSort;
+  const sorts = [
+    ['default', '综合'],
+    ['hot', '销量'],
+    ['price', sort === 'priceDesc' ? '价格 ↓' : '价格 ↑'],
+  ]
+    .map(
+      ([k, label]) =>
+        `<button class="gsort ${
+          (k === 'price' ? sort === 'priceAsc' || sort === 'priceDesc' : sort === k) ? 'on' : ''
+        }" data-act="goods-sort" data-s="${k}">${label}</button>`
+    )
+    .join('');
+  const history = searchOn && !state.goodsQuery ? searchHistoryList() : [];
   return `
     <div class="section-head"><h2>${esc(homeCfg().goodsTitle)}</h2><span id="goodsMeta">${goods.length} 件</span></div>
     ${
@@ -522,7 +715,18 @@ function goodsSectionHTML() {
       <input id="goodsSearch" type="search" placeholder="搜索商品名称或描述" value="${esc(state.goodsQuery)}" autocomplete="off" />
       <button class="search-clear" id="goodsClear" data-act="goods-clear" aria-label="清空搜索" ${state.goodsQuery ? '' : 'hidden'}>✕</button>
     </div>
-    <div class="gchips">${chips}</div>`
+    ${
+      history.length
+        ? `<div class="sh-row"><span class="sh-label">最近</span>${history
+            .map(
+              (q) =>
+                `<button class="sh-chip" data-act="goods-search-q" data-q="${esc(q)}">${esc(q)}</button>`
+            )
+            .join('')}<button class="sh-clear" data-act="goods-search-clear" aria-label="清空搜索历史">清空</button></div>`
+        : ''
+    }
+    <div class="gchips">${chips}</div>
+    <div class="gsorts">${sorts}</div>`
         : ''
     }
     <div class="goods-grid" id="goodsBox">${visibleGoods().map(goodsCardHTML).join('')}</div>`;
@@ -684,6 +888,39 @@ function supportSheet() {
   `);
 }
 
+/** 首页「最近看过」：读本地足迹，只展示还在架的商品；不足 2 条不打扰 */
+function footprintStripHTML() {
+  const seen = footprintList().map((x) => String(x.id));
+  const items = [];
+  seen.forEach((id) => {
+    const p = (state.products || []).find((x) => String(x.id) === id);
+    if (p && !items.some((y) => y.id === p.id)) items.push(p);
+  });
+  if (items.length < 2) return '';
+  return `
+    <div class="section-head">
+      <h2>最近看过</h2>
+      <button class="mini-btn" data-act="open-footprint">全部 ${items.length} 件 ›</button>
+    </div>
+    <div class="fp-row">
+      ${items
+        .slice(0, 8)
+        .map((p) => {
+          const idx = Math.max(0, (state.products || []).findIndex((x) => x.id === p.id));
+          return `<button class="fp-card" data-act="goods" data-id="${esc(p.id)}">
+            ${
+              p.image
+                ? `<span class="fp-thumb"><img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy" /></span>`
+                : `<span class="fp-emoji">${GOODS_ICONS[idx % GOODS_ICONS.length]}</span>`
+            }
+            <span class="fp-name">${esc(p.title)}</span>
+            <span class="fp-price">${yuan(memberPriceOf(p))}</span>
+          </button>`;
+        })
+        .join('')}
+    </div>`;
+}
+
 function renderHome() {
   const s = state.site || {};
   const v = state.viewer;
@@ -732,6 +969,8 @@ function renderHome() {
     ${entriesHTML()}
 
     ${homeCfg().modules.goods ? goodsSectionHTML() : ''}
+
+    ${homeCfg().modules.goods ? footprintStripHTML() : ''}
 
     ${
       homeCfg().modules.contents
@@ -1031,6 +1270,13 @@ function mineOrderRow(o) {
     o.status === 'paid' && !(rf && rf.status === 'pending')
       ? `<span class="order-cta is-refund" data-act="refund" data-id="${esc(o.id)}">申请退款 ›</span>`
       : '';
+  // 买过的还能再买一次：直接进收银台，不用回首页找商品
+  const canReorder =
+    (o.status === 'paid' || o.status === 'refunded' || o.status === 'closed') &&
+    (state.products || []).some((p) => String(p.id) === String(o.productId));
+  const reorderCta = canReorder
+    ? `<span class="order-cta is-reorder" data-act="reorder" data-id="${esc(o.id)}">再来一单</span>`
+    : '';
   // 未支付订单带倒计时：到点服务端就删了，先让用户看见剩余时间
   const left = orderDeadline(o) - Date.now();
   const countdown = isUnpaid(o)
@@ -1048,6 +1294,7 @@ function mineOrderRow(o) {
         ${countdown}
         ${cta}
         ${refundCta}
+        ${reorderCta}
       </span>
     </button>`;
 }
@@ -1099,9 +1346,27 @@ function stopCountdownTick() {
 const ORDER_FILTERS = {
   all: { label: '全部', match: () => true },
   unpaid: { label: '待支付', match: (o) => isUnpaid(o) },
-  paid: { label: '已支付', match: (o) => o.status === 'paid' },
+  paid: { label: '已支付', match: (o) => o.status === 'paid' && (refundOfOrder(o.id) || {}).status !== 'pending' },
+  refunding: { label: '售后中', match: (o) => (refundOfOrder(o.id) || {}).status === 'pending' },
   refunded: { label: '已退款', match: (o) => o.status === 'refunded' },
 };
+
+/** 订单搜索：商品名 / 订单号 / 渠道，忽略大小写 */
+function orderMatchesQuery(o, q) {
+  const key = String(q || '').trim().toLowerCase();
+  if (!key) return true;
+  return `${o.title || ''} ${o.id || ''} ${o.channelName || ''}`.toLowerCase().includes(key);
+}
+
+/** 订单行（筛选 + 搜索之后的结果），单独一块便于输入时只重绘列表 */
+function mineOrderRowsHTML(orders, q) {
+  const filter = ORDER_FILTERS[mineOrderFilter] || ORDER_FILTERS.all;
+  const key = String(q == null ? state.orderQuery : q);
+  const list = (orders || []).filter(filter.match).filter((o) => orderMatchesQuery(o, key));
+  return list.length
+    ? list.map(mineOrderRow).join('')
+    : `<div class="empty" style="padding:20px 8px"><p>${key.trim() ? '没有匹配的订单' : '该状态下暂无订单'}</p></div>`;
+}
 
 function mineOrderList(orders) {
   if (!orders.length) {
@@ -1118,11 +1383,15 @@ function mineOrderList(orders) {
         `<button class="mchip ${mineOrderFilter === x.k ? 'on' : ''}" data-act="mine-filter" data-f="${x.k}">${x.label} ${x.n}</button>`
     )
     .join('');
-  const filter = ORDER_FILTERS[mineOrderFilter] || ORDER_FILTERS.all;
-  const list = orders.filter(filter.match);
+  const q = String(state.orderQuery || '').trim();
   return `
+    <div class="msearch">
+      <span class="search-icon" aria-hidden="true">🔍</span>
+      <input id="orderSearch" type="search" placeholder="搜商品名 / 订单号" value="${esc(state.orderQuery)}" autocomplete="off" />
+      <button class="search-clear" data-act="order-search-clear" aria-label="清空搜索" ${q ? '' : 'hidden'}>✕</button>
+    </div>
     <div class="mchips">${chips}</div>
-    ${list.length ? list.map(mineOrderRow).join('') : '<div class="empty" style="padding:20px 8px"><p>该状态下暂无订单</p></div>'}`;
+    <div id="orderRows">${mineOrderRowsHTML(orders, q)}</div>`;
 }
 
 /** 已登录：头像 / 昵称 / 手机号 / 余额 / 积分 / 地址 / 会员 / 订单 / 分享 / 设置 */
@@ -1175,12 +1444,14 @@ function goodsSheet(productId) {
   if (!p) return toast('商品不存在或已下架');
   sheetState.type = 'goods';
   sheetState.product = p;
+  pushFootprint(p.id); // 记一笔浏览足迹（本机）
   const mp = Number(p.memberPrice) || 0;
   const isMember = viewerIsMember();
   const hasMemberPrice = mp > 0 && mp < p.amount;
   const showPrice = isMember && hasMemberPrice ? mp : p.amount;
   const bought = boughtProductIds().has(p.id);
-  const sold = (state.orders || []).filter((o) => o.productId === p.id && o.status === 'paid').length;
+  const sold = Number(p.sales) || (state.orders || []).filter((o) => o.productId === p.id && o.status === 'paid').length;
+  const fav = goodsFavOn(p.id);
   const idx = Math.max(0, state.products.findIndex((x) => x.id === p.id));
   const save = hasMemberPrice ? p.amount - mp : 0;
 
@@ -1208,6 +1479,25 @@ function goodsSheet(productId) {
        </div>`
     : `<div class="gs-price"><b>${yuan(p.amount)}</b></div>`;
 
+  const recs = (state.products || []).filter((x) => String(x.id) !== String(p.id)).slice(0, 6);
+  const recHTML = recs.length
+    ? `<div class="gs-rec-head">大家还在看</div>
+       <div class="fp-row">${recs
+         .map((x) => {
+           const xi = Math.max(0, (state.products || []).findIndex((y) => y.id === x.id));
+           return `<button class="fp-card" data-act="goods" data-id="${esc(x.id)}">
+             ${
+               x.image
+                 ? `<span class="fp-thumb"><img src="${esc(x.image)}" alt="${esc(x.title)}" loading="lazy" /></span>`
+                 : `<span class="fp-emoji">${GOODS_ICONS[xi % GOODS_ICONS.length]}</span>`
+             }
+             <span class="fp-name">${esc(x.title)}</span>
+             <span class="fp-price">${yuan(memberPriceOf(x))}</span>
+           </button>`;
+         })
+         .join('')}</div>`
+    : '';
+
   openSheet(`
     ${hero}
     <h3 class="gs-title">${esc(p.title)}</h3>
@@ -1217,8 +1507,50 @@ function goodsSheet(productId) {
     <button class="btn-primary" data-act="buy" data-id="${esc(p.id)}">
       ${p.memberOnly && !isMember ? '开通会员后购买' : '立即购买'}
     </button>
-    <button class="btn-ghost" data-act="share-goods" data-id="${esc(p.id)}" style="margin-top:10px">分享商品给朋友</button>
+    <div class="gs-actions">
+      <button class="btn-ghost ${fav ? 'is-on' : ''}" data-act="goods-fav" data-id="${esc(p.id)}">${
+        fav ? '♥ 已收藏' : '♡ 收藏'
+      }</button>
+      <button class="btn-ghost" data-act="share-goods" data-id="${esc(p.id)}">分享给朋友</button>
+    </div>
+    ${
+      fav
+        ? '<button class="link-btn" data-act="open-wishlist">去心愿单看看 ›</button>'
+        : '<p class="gs-tip">收藏后可在「我的 → 心愿单」随时找到</p>'
+    }
+    ${recHTML}
   `);
+}
+
+/** 收藏 / 取消收藏商品：就地刷新按钮，不整页重绘 */
+function paintGoodsFav(id) {
+  const on = goodsFavOn(id);
+  document.querySelectorAll('[data-act="goods-fav"]').forEach((el) => {
+    if (String(el.dataset.id) !== String(id)) return;
+    el.classList.toggle('on', on);
+    el.textContent = el.closest('.goods-card') ? (on ? '♥' : '♡') : on ? '♥ 已收藏' : '♡ 收藏';
+  });
+}
+
+function handleGoodsFav(id) {
+  const key = String(id || '');
+  if (!key) return;
+  const on = toggleGoodsFav(key);
+  toast(on ? '已加入心愿单' : '已取消收藏');
+  // 心愿单里取消收藏要整块重绘；商品详情里重绘保持按钮文案正确
+  if (sheetState.type === 'wishlist') return wishlistSheet();
+  if (sheetState.type === 'goods') return goodsSheet(key);
+  paintGoodsFav(key);
+}
+
+/** 再来一单：复用正常下单流程，直接进收银台 */
+function reorder(orderId) {
+  const o = findOrder(orderId);
+  if (!o || !o.productId) return toast('这笔订单没有可复购的商品');
+  if (!(state.products || []).some((p) => String(p.id) === String(o.productId))) {
+    return toast('商品已下架，去首页看看别的吧');
+  }
+  return startBuy(o.productId);
 }
 
 /** 单个商品的分享链接：带上 ?p= 商品 id，对方打开直达详情 */
@@ -1596,10 +1928,16 @@ function rechargeGo() {
   confirmSheet();
 }
 
-function renderUserCenter() {  const v = state.viewer;
+function renderUserCenter() {
+  const v = state.viewer;
   const addr = v.address || {};
   const orders = v.orders || [];
   const hasAddr = Boolean(addr.detail || addr.name);
+  const msgs = messageList();
+  const unreadN = msgs.filter((m) => (m.at || 0) > msgLastRead()).length;
+  const msgTotal = msgs.length;
+  const wishN = goodsFavList().filter((id) => (state.products || []).some((p) => String(p.id) === id)).length;
+  const fpN = footprintList().filter((x) => (state.products || []).some((p) => String(p.id) === String(x.id))).length;
 
   return `
     <div class="card user-hero">
@@ -1647,6 +1985,29 @@ function renderUserCenter() {  const v = state.viewer;
     <div class="section-head">
       <h2>我的订单</h2>
       <button class="mini-btn" data-act="open-orders">全部订单${orders.length ? ' ' + orders.length : ''} ›</button>
+    </div>
+
+    <div class="section-head"><h2>我的服务</h2></div>
+    <div class="card set-list">
+      <button class="set-row" data-act="open-messages">
+        <span>消息中心${unreadN ? ` <em class="dot-num">${unreadN}</em>` : ''}</span>
+        <i style="font-size:12px;color:var(--muted)">${
+          unreadN ? `${unreadN} 条新动态` : msgTotal ? '订单与售后通知' : '暂无消息'
+        }</i>
+        <i>›</i>
+      </button>
+      <button class="set-row" data-act="open-wishlist">
+        <span>心愿单</span>
+        <i style="font-size:12px;color:var(--muted)">${
+          wishN ? `${wishN} 件商品` : '收藏想买的商品'
+        }</i>
+        <i>›</i>
+      </button>
+      <button class="set-row" data-act="open-footprint">
+        <span>最近浏览</span>
+        <i style="font-size:12px;color:var(--muted)">${fpN ? `${fpN} 件` : '看看逛过什么'}</i>
+        <i>›</i>
+      </button>
     </div>
 
     <div class="section-head"><h2>分享给好友</h2></div>
@@ -2722,6 +3083,118 @@ function refundsSheet() {
 }
 
 /**
+ * 心愿单：本机收藏的商品（只在这台手机上，换设备不同步）
+ * 商品下架后自动从列表里藏起来，不清空本地记录
+ */
+function wishlistSheet() {
+  sheetState.type = 'wishlist';
+  const ids = goodsFavList();
+  const items = ids
+    .map((id) => (state.products || []).find((p) => String(p.id) === id))
+    .filter(Boolean);
+  const gone = ids.length - items.length;
+  openSheet(`
+    <h3>心愿单</h3>
+    <p class="sheet-sub">${
+      items.length ? `收藏了 ${items.length} 件商品${gone ? `（另有 ${gone} 件已下架）` : ''}` : '还没有收藏商品'
+    }</p>
+    ${
+      items.length
+        ? `<div class="wish-list">${items
+            .map((p) => {
+              const idx = Math.max(0, (state.products || []).findIndex((x) => x.id === p.id));
+              return `<div class="wish-item">
+            <button class="wish-open" data-act="goods" data-id="${esc(p.id)}">
+              ${
+                p.image
+                  ? `<span class="wish-thumb"><img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy" /></span>`
+                  : `<span class="wish-emoji">${GOODS_ICONS[idx % GOODS_ICONS.length]}</span>`
+              }
+              <span class="wish-main">
+                <b>${esc(p.title)}</b>
+                <i>${esc(p.desc || (p.memberOnly ? '会员专享' : '在售中'))}</i>
+              </span>
+              <span class="wish-price">${yuan(memberPriceOf(p))}</span>
+            </button>
+            <div class="wish-acts">
+              <button class="fav-sheet-btn" data-act="buy" data-id="${esc(p.id)}">购买</button>
+              <button class="fav-sheet-btn is-quiet" data-act="goods-fav" data-id="${esc(p.id)}">取消收藏</button>
+            </div>
+          </div>`;
+            })
+            .join('')}</div>`
+        : `<div class="empty" style="padding:22px 4px"><p>在商品卡片右上角点 ♡ 就能收藏，方便下次再找</p></div>`
+    }
+    <button class="btn-ghost" data-act="close" style="margin-top:14px">关闭</button>
+  `);
+}
+
+/** 最近浏览：本机足迹，按时间倒序 */
+function footprintSheet() {
+  sheetState.type = 'footprint';
+  const rows = footprintList()
+    .map((x) => {
+      const p = (state.products || []).find((y) => String(y.id) === String(x.id));
+      return p ? { p, at: x.at } : null;
+    })
+    .filter(Boolean);
+  openSheet(`
+    <h3>最近浏览</h3>
+    <p class="sheet-sub">${rows.length ? `共 ${rows.length} 件 · 只保存在这台手机上` : '还没有浏览记录'}</p>
+    ${
+      rows.length
+        ? `<div class="fp-list">${rows
+            .map(({ p, at }) => {
+              const idx = Math.max(0, (state.products || []).findIndex((x) => x.id === p.id));
+              return `<button class="fp-line" data-act="goods" data-id="${esc(p.id)}">
+            ${
+              p.image
+                ? `<span class="fp-thumb"><img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy" /></span>`
+                : `<span class="fp-emoji">${GOODS_ICONS[idx % GOODS_ICONS.length]}</span>`
+            }
+            <span class="fp-line-main"><b>${esc(p.title)}</b><i>${agoText(at)}</i></span>
+            <span class="fp-price">${yuan(memberPriceOf(p))}</span>
+          </button>`;
+            })
+            .join('')}</div>
+          <button class="btn-ghost" data-act="footprint-clear" style="margin-top:12px;color:#f05252">清空浏览记录</button>`
+        : `<div class="empty" style="padding:22px 4px"><p>点开商品详情后，这里会留下记录</p></div>`
+    }
+    <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>
+  `);
+}
+
+/** 消息中心：订单/售后动态（由订单与退款记录派生），打开即已读 */
+function messagesSheet() {
+  sheetState.type = 'messages';
+  const list = messageList();
+  const icon = { pay: '💰', refund: '↩️', unpaid: '⏳' };
+  markMsgRead();
+  updateTabBadge();
+  openSheet(`
+    <h3>消息中心</h3>
+    <p class="sheet-sub">${list.length ? `共 ${list.length} 条动态` : '还没有新消息'}</p>
+    ${
+      list.length
+        ? `<div class="msg-list">${list
+            .map(
+              (m) => `<button class="msg-item" data-act="order" data-id="${esc(m.orderId || '')}">
+          <span class="msg-ico ${esc(m.kind)}">${icon[m.kind] || '🔔'}</span>
+          <span class="msg-main">
+            <b>${esc(m.title)}</b>
+            <i>${esc(m.text)}</i>
+          </span>
+          <span class="msg-time">${agoText(m.at)}</span>
+        </button>`
+            )
+            .join('')}</div>`
+        : `<div class="empty" style="padding:22px 4px"><p>下单、支付、退款有变化时，这里会收到通知</p></div>`
+    }
+    <button class="btn-ghost" data-act="close" style="margin-top:14px">关闭</button>
+  `);
+}
+
+/**
  * 继续支付：订单已经创建过（created / pending），不再新建订单，直接对这笔订单重新拉起收银台。
  * 收银台未关闭时用户又点了一次二维码支付，也能从这里重新打开二维码。
  */
@@ -2836,6 +3309,9 @@ view.addEventListener('input', (e) => {
   if (!e.target) return;
   if (e.target.id === 'goodsSearch') {
     state.goodsQuery = e.target.value || '';
+    // 输入时把「最近搜索」收起来，避免占地方
+    const sh = view.querySelector('.sh-row');
+    if (sh) sh.hidden = Boolean(state.goodsQuery);
     refreshGoodsBox();
     return;
   }
@@ -2846,6 +3322,25 @@ view.addEventListener('input', (e) => {
     const clear = view.querySelector('.search-clear[data-act="content-clear"]');
     if (clear) clear.hidden = !state.contentQuery;
   }
+});
+
+// 搜索框失焦/回车时把关键词记进「最近搜索」（只在这台手机上）
+view.addEventListener('change', (e) => {
+  if (e.target && e.target.id === 'goodsSearch') {
+    pushSearchHistory(e.target.value);
+    const sh = view.querySelector('.sh-row');
+    if (sh) sh.hidden = Boolean(state.goodsQuery);
+  }
+});
+
+// 订单弹层里搜订单：只重绘列表，输入框不丢焦点
+sheetEl.addEventListener('input', (e) => {
+  if (!e.target || e.target.id !== 'orderSearch') return;
+  state.orderQuery = e.target.value || '';
+  const rows = document.getElementById('orderRows');
+  if (rows) rows.innerHTML = mineOrderRowsHTML(dropExpiredOrders(state.orders), state.orderQuery);
+  const clear = sheetEl.querySelector('[data-act="order-search-clear"]');
+  if (clear) clear.hidden = !state.orderQuery;
 });
 
 /* 下拉刷新：内容在顶部时继续往下拉，松手重新拉一遍数据 */
@@ -3048,8 +3543,35 @@ view.addEventListener('click', async (e) => {
   if (act === 'goods-reset') {
     state.goodsQuery = '';
     state.goodsFilter = 'all';
+    state.goodsSort = 'default';
     return render();
   }
+
+  /* 商品心愿单 / 排序 / 搜索历史 */
+  if (act === 'goods-fav') {
+    return handleGoodsFav(el.dataset.id);
+  }
+  if (act === 'goods-sort') {
+    const s = el.dataset.s || 'default';
+    if (s === 'price') state.goodsSort = state.goodsSort === 'priceAsc' ? 'priceDesc' : 'priceAsc';
+    else state.goodsSort = s;
+    return render();
+  }
+  if (act === 'goods-search-q') {
+    state.goodsQuery = el.dataset.q || '';
+    return render();
+  }
+  if (act === 'goods-search-clear') {
+    clearSearchHistory();
+    toast('已清空搜索历史');
+    return render();
+  }
+
+  /* 我的服务：消息 / 心愿单 / 足迹 */
+  if (act === 'open-wishlist') return wishlistSheet();
+  if (act === 'open-footprint') return footprintSheet();
+  if (act === 'open-messages') return messagesSheet();
+  if (act === 'reorder') return reorder(el.dataset.id);
 
   if (act === 'open-orders') return ordersSheet();
 
@@ -3081,6 +3603,27 @@ sheetEl.addEventListener('click', async (e) => {
   if (act === 'fav') return toggleFav(el.dataset.id);
   if (act === 'open-favorites') return favoritesSheet();
   if (act === 'open-refunds') return refundsSheet();
+  if (act === 'open-wishlist') return wishlistSheet();
+  if (act === 'open-footprint') return footprintSheet();
+  if (act === 'open-messages') return messagesSheet();
+  if (act === 'goods-fav') return handleGoodsFav(el.dataset.id);
+  if (act === 'reorder') return reorder(el.dataset.id);
+  if (act === 'footprint-clear') {
+    clearFootprint();
+    toast('浏览记录已清空');
+    return footprintSheet();
+  }
+  if (act === 'order-search-clear') {
+    state.orderQuery = '';
+    const input = document.getElementById('orderSearch');
+    if (input) {
+      input.value = '';
+      input.focus();
+    }
+    const box = document.getElementById('ordersBox');
+    if (box) box.innerHTML = mineOrderList(dropExpiredOrders(state.orders));
+    return;
+  }
   if (act === 'feedback-new') return feedbackSheet();
   if (act === 'feedback-mine') return myFeedbackSheet();
   if (act === 'feedback-send') return sendFeedback();

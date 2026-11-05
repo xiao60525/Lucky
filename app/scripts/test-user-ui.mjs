@@ -87,9 +87,9 @@ const BOOTSTRAP = {
     },
   },
   products: [
-    { id: 'demo_001', title: '测试商品', amount: 1, desc: 'x', tag: '示例' },
-    { id: 'member_month', title: '会员月卡', amount: 1200, desc: '30 天权益', tag: '会员', memberDays: 30 },
-    { id: 'vip_kit', title: '会员专属礼包', amount: 1900, desc: '仅会员可买', tag: '', memberOnly: true, memberPrice: 990, image: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=' },
+    { id: 'demo_001', title: '测试商品', amount: 1, desc: 'x', tag: '示例', sales: 5 },
+    { id: 'member_month', title: '会员月卡', amount: 1200, desc: '30 天权益', tag: '会员', memberDays: 30, sales: 12 },
+    { id: 'vip_kit', title: '会员专属礼包', amount: 1900, desc: '仅会员可买', tag: '', memberOnly: true, memberPrice: 990, sales: 0, image: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=' },
   ],
   contents: [
     { id: 'n1', title: '新人立减 5 元', desc: '注册即送，首单可用', tag: '活动', image: null, link: '', sort: 1, active: true },
@@ -800,6 +800,148 @@ if (openCard) {
 }
 tabTo('mine');
 await wait(60);
+
+// 10.7 心愿单 / 浏览足迹 / 商品排序 / 订单搜索 / 再来一单 / 消息中心
+tabTo('home');
+await wait(80);
+const favBtn = $('.goods-card[data-id="demo_001"] .goods-fav');
+check('商品卡有心愿单标记', Boolean(favBtn), favBtn ? favBtn.textContent.trim() : '未找到');
+if (favBtn) {
+  favBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(60);
+  check('点 ♡ 能收藏商品', text('#toast').includes('心愿单'), text('#toast'));
+  check('收藏后变成实心 ♥', Boolean(favBtn.classList.contains('on')), favBtn.textContent.trim());
+  check('收藏不会误开商品详情', !$('.sheet .gs-title'), text('.sheet h3'));
+}
+
+// 心愿单：列出收藏 → 取消收藏后清空
+await goMine();
+await wait(60);
+const wishEntry = $('[data-act="open-wishlist"]');
+check('我的服务里有心愿单入口', Boolean(wishEntry), wishEntry ? text('[data-act="open-wishlist"]') : '未找到');
+if (wishEntry) {
+  wishEntry.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(80);
+  check('心愿单列出刚收藏的商品', text('.sheet').includes('测试商品'), text('.sheet h3'));
+  const unFav = $('.sheet [data-act="goods-fav"]');
+  if (unFav) {
+    unFav.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    await wait(80);
+    check('心愿单里取消收藏后变空', text('.sheet').includes('还没有收藏商品'), text('.sheet').slice(0, 40));
+  } else {
+    check('心愿单里有取消收藏按钮', false);
+  }
+  closeSheetForTest();
+  await wait(50);
+}
+
+// 足迹：看两个商品后首页出现「最近看过」
+tabTo('home');
+await wait(60);
+for (const id of ['demo_001', 'member_month']) {
+  const c = $(`.goods-card[data-id="${id}"]`);
+  if (c) {
+    c.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    await wait(80);
+    closeSheetForTest();
+    await wait(60);
+  }
+}
+tabTo('home');
+await wait(80);
+check('首页出现「最近看过」', Boolean($('.fp-row')), String(window.document.querySelectorAll('.fp-card').length));
+await goMine();
+await wait(60);
+const fpEntry = $('[data-act="open-footprint"]');
+if (fpEntry) {
+  fpEntry.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(80);
+  check('足迹弹层列出浏览过的商品', text('.sheet').includes('会员月卡'), text('.sheet h3'));
+  const clearFp = $('.sheet [data-act="footprint-clear"]');
+  if (clearFp) {
+    clearFp.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    await wait(80);
+    check('清空足迹后没有记录', text('.sheet').includes('还没有浏览记录'), text('.sheet').slice(0, 40));
+  }
+  closeSheetForTest();
+  await wait(50);
+} else {
+  check('我的服务里有最近浏览入口', false);
+}
+
+// 商品排序：按销量排，销量最高的排第一
+tabTo('home');
+await wait(80);
+const hotChip = $('[data-act="goods-sort"][data-s="hot"]');
+check('首页有销量排序', Boolean(hotChip), hotChip ? hotChip.textContent.trim() : '未找到');
+if (hotChip) {
+  hotChip.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(80);
+  const first = $('.goods-card');
+  check('按销量排序后销量最高的在前', Boolean(first) && first.dataset.id === 'member_month', first ? first.dataset.id : '无卡片');
+  const priceChip = $('[data-act="goods-sort"][data-s="price"]');
+  if (priceChip) {
+    priceChip.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    await wait(80);
+    const cheap = $('.goods-card');
+    check('按价格升序时最便宜的在前', Boolean(cheap) && cheap.dataset.id === 'demo_001', cheap ? cheap.dataset.id : '无卡片');
+    // 再点一次切成降序
+    const priceChip2 = $('[data-act="goods-sort"][data-s="price"]');
+    priceChip2.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    await wait(80);
+    const dear = $('.goods-card');
+    check('再点一次切成价格降序', Boolean(dear) && dear.dataset.id !== 'demo_001', dear ? dear.dataset.id : '无卡片');
+    check('价格按钮显示降序', text('[data-act="goods-sort"][data-s="price"]').includes('↓'), text('[data-act="goods-sort"][data-s="price"]'));
+  }
+}
+
+// 订单搜索 + 再来一单
+await goMine();
+await wait(50);
+$('[data-act="open-orders"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(80);
+const orderSearchInput = $('#orderSearch');
+check('订单弹层有搜索框', Boolean(orderSearchInput));
+if (orderSearchInput) {
+  const before = window.document.querySelectorAll('#orderRows .order-row').length;
+  orderSearchInput.value = '会员';
+  orderSearchInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await wait(80);
+  const after = window.document.querySelectorAll('#orderRows .order-row').length;
+  check('搜「会员」只剩匹配的订单', after === 1 && before > 1, `前 ${before} 条 → 后 ${after} 条`);
+  const clearBtn = $('.sheet [data-act="order-search-clear"]');
+  if (clearBtn) {
+    clearBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+    await wait(80);
+    check('清空搜索恢复全部订单', window.document.querySelectorAll('#orderRows .order-row').length === before, String(window.document.querySelectorAll('#orderRows .order-row').length));
+  }
+}
+const reorderBtn = $('.sheet [data-act="reorder"]');
+check('已支付订单有「再来一单」', Boolean(reorderBtn), reorderBtn ? reorderBtn.textContent.trim() : '未找到');
+if (reorderBtn) {
+  reorderBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(100);
+  check('再来一单直接进确认订单', text('.sheet h3') === '确认订单', text('.sheet h3'));
+  closeSheetForTest();
+  await wait(50);
+}
+
+// 消息中心：订单动态 + 未读清零
+await goMine();
+await wait(60);
+const msgEntry = $('[data-act="open-messages"]');
+check('我的服务里有消息中心', Boolean(msgEntry), msgEntry ? text('[data-act="open-messages"]') : '未找到');
+check('消息中心显示未读角标', Boolean($('.dot-num')), $('.dot-num') ? $('.dot-num').textContent : '无角标');
+if (msgEntry) {
+  msgEntry.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(80);
+  check('消息中心列出支付动态', text('.sheet').includes('支付成功'), text('.sheet h3'));
+  closeSheetForTest();
+  await wait(60);
+  await goMine();
+  await wait(60);
+  check('看过消息后未读清零', !$('.dot-num'));
+}
 
 // 11. 退出登录（从设置中心进入）
 $('[data-act="settings"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
