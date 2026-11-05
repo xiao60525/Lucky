@@ -459,7 +459,15 @@ check(
   text('.sheet .order-count')
 );
 check('分享区存在', !!$('[data-act="share-copy"]') && !!$('[data-act="share-more"]') && !!$('[data-act="share-qr"]'));
-check('设置中心入口存在', Boolean($('[data-act="settings"]')) && window.document.querySelectorAll('.set-row').length === 1);
+check(
+  '设置中心入口存在',
+  Boolean($('[data-act="settings"]')) && window.document.querySelectorAll('.set-row').length >= 1,
+  window.document.querySelectorAll('.set-row').length + ' 个入口'
+);
+check(
+  '我的页有收藏与反馈入口',
+  Boolean($('[data-act="open-favorites"]')) && Boolean($('[data-act="feedback-new"]')) && Boolean($('[data-act="feedback-mine"]'))
+);
 
 // 4b. 「支付中」订单：点进去直接进支付界面，且复用同一笔订单付款
 const pendingRow = [...window.document.querySelectorAll('.sheet .order-row')].find((r) => r.dataset.id === 'O2');
@@ -522,10 +530,16 @@ await wait(40);
 const setRows = [...window.document.querySelectorAll('.sheet .set-row')].map((e) => e.textContent.trim());
 check(
   '设置中心项目齐全',
-  ['修改密码', '收货地址', '深色模式', '刷新数据', '清除缓存', '关于', '退出登录'].every((k) => setRows.some((r) => r.includes(k))),
+  ['修改密码', '收货地址', '深色模式', '刷新数据', '清除缓存', '意见反馈', '我的反馈', '关于', '退出登录'].every((k) =>
+    setRows.some((r) => r.includes(k))
+  ),
   setRows.join(' | ')
 );
-check('设置中心分组标题', window.document.querySelectorAll('.sheet .sheet-group').length === 4, window.document.querySelectorAll('.sheet .sheet-group').length + ' 组');
+check(
+  '设置中心分组标题',
+  window.document.querySelectorAll('.sheet .sheet-group').length === 5,
+  window.document.querySelectorAll('.sheet .sheet-group').length + ' 组'
+);
 $('.sheet [data-act="toggle-dark"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(40);
 check('深色模式可开启', window.document.body.classList.contains('dark'));

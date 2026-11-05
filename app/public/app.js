@@ -26,11 +26,14 @@ const state = {
   site: { name: 'App', tagline: '', iconUrl: null, hasIcon: false },
   products: [],
   contents: [],
+  favorites: [], // 收藏的内容 id（登录才有）
   orders: [],
   tab: 'home',
   loaded: false,
   goodsQuery: '', // 首页商品搜索词（纯前端过滤，不落库）
   goodsFilter: 'all', // all / member / deal / owned
+  contentQuery: '', // 内容页搜索词
+  contentCat: 'all', // 内容页分类筛选：all / 分类名 / __fav
 };
 
 const sheetState = { type: null, product: null, order: null, channel: 'wechat' };
@@ -357,9 +360,15 @@ function avatarHTML(v, cls) {
 /** 商品缩略图标：没有商品图时用一组中性 emoji 轮换，看起来不至于太空 */
 const GOODS_ICONS = ['🧩', '💎', '🪙', '🎟️', '🎁', '⭐'];
 
+function isFav(id) {
+  return (state.favorites || []).includes(id);
+}
+
 function contentCardHTML(c, big = false) {
   const locked = Boolean(c.locked);
   const price = Math.max(0, Number(c.price) || 0);
+  const fav = isFav(c.id);
+  const views = Math.max(0, Number(c.views) || 0);
   const thumb = c.image
     ? `<span class="content-thumb ${locked ? 'is-locked' : ''}"><img src="${esc(c.image)}" alt="${esc(c.title)}" /></span>`
     : `<span class="content-thumb is-blank"><span>${locked ? '🔒' : esc((c.title || '内').trim().slice(0, 1))}</span></span>`;
@@ -378,12 +387,22 @@ function contentCardHTML(c, big = false) {
       : c.tag
         ? `<span class="tag tag-blue">${esc(c.tag)}</span>`
         : '';
+  // 归档信息：分类 / 阅读量，给内容一点「有人在看」的实感
+  const meta = [c.category ? esc(c.category) : '', views ? `👁 ${views}` : ''].filter(Boolean).join(' · ');
   const body = `
     ${thumb}
     <span class="content-main">
       <span class="content-title">${esc(c.title)}${badge}</span>
       ${descHTML}
-    </span>`;
+      ${meta ? `<span class="content-meta">${meta}</span>` : ''}
+    </span>
+    ${
+      state.viewer
+        ? `<span class="fav-btn ${fav ? 'on' : ''}" role="button" tabindex="0" aria-label="${
+            fav ? '取消收藏' : '收藏'
+          }" data-act="fav" data-id="${esc(c.id)}">${fav ? '★' : '☆'}</span>`
+        : ''
+    }`;
   const cls = 'content-card' + (big ? ' is-big' : '') + (locked ? ' is-locked' : '');
   if (locked) {
     return `<button class="${cls}" data-act="locked-content" data-id="${esc(c.id)}">${body}</button>`;
@@ -781,22 +800,95 @@ function entriesHTML() {
 
 /* ---------------- 渲染：内容 ---------------- */
 
-function renderContent() {
-  const contents = state.contents || [];
-  if (!contents.length) {
-    return `
-      <div class="section-head" style="margin-top:14px"><h2>内容</h2><span>0 条</span></div>
-      <div class="card">
-        <div class="empty">
-          <div class="empty-icon">${ICON.box}</div>
-          <h3>还没有内容</h3>
-          <p>在后台「首页内容」里添加图文，<br/>这里会自动同步显示</p>
-        </div>
-      </div>`;
+/** 内容分类（按出现顺序去重，后台没填分类的内容不进 chips） */
+function contentCats(list) {
+  const out = [];
+  (list || []).forEach((c) => {
+    const cat = String(c.category || '').trim();
+    if (cat && !out.includes(cat)) out.push(cat);
+  });
+  return out;
+}
+
+/** 内容页当前筛选结果（分类 + 关键词 + 只看收藏） */
+function filteredContents() {
+  const q = (state.contentQuery || '').trim().toLowerCase();
+  const cat = state.contentCat || 'all';
+  return (state.contents || []).filter((c) => {
+    if (cat === '__fav' && !isFav(c.id)) return false;
+    if (cat !== 'all' && cat !== '__fav' && String(c.category || '') !== cat) return false;
+    if (q) {
+      const hay = `${c.title || ''} ${c.desc || ''} ${c.tag || ''} ${c.category || ''}`.toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+/** 内容列表（单独抽出来，输入搜索时只换这一块，输入框不丢焦点） */
+function contentListHTML() {
+  const list = filteredContents();
+  if (!list.length) {
+    const empty = (state.contentQuery || '').trim() || state.contentCat !== 'all';
+    return `<div class="card"><div class="empty" style="padding:26px 10px">
+      <div class="empty-icon">${ICON.box}</div>
+      <h3>${empty ? '没有符合条件的内容' : '还没有内容'}</h3>
+      <p>${
+        empty
+          ? '换个关键词或分类试试，<br/>也可以点「全部」看所有内容'
+          : '在后台「首页内容」里添加图文，<br/>这里会自动同步显示'
+      }</p>
+    </div></div>`;
   }
+  return `<div class="content-list">${list.map((c) => contentCardHTML(c, true)).join('')}</div>`;
+}
+
+function renderContent() {
+  const all = state.contents || [];
+  const cats = contentCats(all);
+  const favN = (state.favorites || []).length;
+  const chips = [
+    ['all', '全部', all.length],
+    ...cats.map((c) => [c, c, all.filter((x) => String(x.category || '') === c).length]),
+    ...(state.viewer ? [['__fav', '★ 收藏', favN]] : []),
+  ];
   return `
-    <div class="section-head" style="margin-top:14px"><h2>内容</h2><span>${contents.length} 条</span></div>
-    <div class="content-list">${contents.map((c) => contentCardHTML(c, true)).join('')}</div>`;
+    <div class="section-head" style="margin-top:14px">
+      <h2>${esc(homeCfg().tabs.content)}</h2>
+      <span>${all.length} 条</span>
+    </div>
+    ${
+      all.length
+        ? `<div class="search-bar">
+            <span class="search-icon" aria-hidden="true">🔍</span>
+            <input id="contentSearch" type="search" placeholder="搜索标题 / 描述 / 分类" value="${esc(
+              state.contentQuery || ''
+            )}" autocomplete="off" />
+            <button class="search-clear" data-act="content-clear" aria-label="清空搜索" ${
+              state.contentQuery ? '' : 'hidden'
+            }>✕</button>
+          </div>
+          ${
+            cats.length || state.viewer
+              ? `<div class="gchips">${chips
+                  .map(
+                    ([k, label, n]) =>
+                      `<button class="gchip ${state.contentCat === k ? 'on' : ''}" data-act="content-cat" data-c="${esc(
+                        k
+                      )}">${esc(label)}${n ? ` <i>${n}</i>` : ''}</button>`
+                  )
+                  .join('')}</div>`
+              : ''
+          }
+          <div id="contentListBox">${contentListHTML()}</div>`
+        : `<div class="card">
+             <div class="empty">
+               <div class="empty-icon">${ICON.box}</div>
+               <h3>还没有内容</h3>
+               <p>在后台「首页内容」里添加图文，<br/>这里会自动同步显示</p>
+             </div>
+           </div>`
+    }`;
 }
 
 /* ---------------- 渲染：我的 ---------------- */
@@ -1177,6 +1269,83 @@ function memberSheet() {
 }
 
 /** 付费内容弹层：两条路都给——单篇解锁（永久）或开通会员（全部免费） */
+/** 内容详情里的一行小信息：分类 · 阅读数 */
+function contentMetaText(c) {
+  const bits = [];
+  if (c.category) bits.push(c.category);
+  if (Number(c.views)) bits.push(`${Number(c.views)} 次阅读`);
+  bits.push(new Date(c.createdAt || Date.now()).toLocaleDateString('zh-CN'));
+  return bits.join(' · ');
+}
+
+/** 收藏按钮（弹层里用；卡片上用右上角的星标） */
+function contentFavBtnHTML(c) {
+  if (!state.viewer) return '';
+  const fav = isFav(c.id);
+  return `<button class="fav-sheet-btn ${fav ? 'on' : ''}" data-act="fav" data-id="${esc(c.id)}">${
+    fav ? '★ 已收藏' : '☆ 收藏'
+  }</button>`;
+}
+
+/** 阅读上报：同一篇 30 分钟内只报一次，避免刷新把数字刷上去 */
+const VIEW_DEBOUNCE_MS = 30 * 60 * 1000;
+function reportContentView(contentId) {
+  if (!contentId) return;
+  const key = 'viewed_' + contentId;
+  try {
+    const last = Number(localStorage.getItem(key) || 0);
+    if (last && Date.now() - last < VIEW_DEBOUNCE_MS) return;
+    localStorage.setItem(key, String(Date.now()));
+  } catch {
+    /* 隐私模式下 localStorage 不可用，照常上报 */
+  }
+  api('/api/content/view', { method: 'POST', body: JSON.stringify({ contentId }) })
+    .then((r) => {
+      const c = (state.contents || []).find((x) => x.id === contentId);
+      if (c && r && Number(r.views) >= 0) c.views = Number(r.views);
+    })
+    .catch(() => {});
+}
+
+/** 星标变颜色（只改这一篇的按钮，不整页重绘，避免打断阅读） */
+function paintFav(id) {
+  const fav = isFav(id);
+  document.querySelectorAll('[data-act="fav"]').forEach((el) => {
+    if (el.dataset.id !== id) return;
+    if (el.classList.contains('fav-btn')) {
+      el.textContent = fav ? '★' : '☆';
+      el.classList.toggle('on', fav);
+    } else if (el.classList.contains('fav-sheet-btn')) {
+      el.textContent = fav ? '★ 已收藏' : '☆ 收藏';
+      el.classList.toggle('on', fav);
+    }
+  });
+}
+
+/** 收藏 / 取消收藏 */
+async function toggleFav(contentId) {
+  if (!contentId) return;
+  if (!state.viewer) {
+    state.tab = 'mine';
+    render();
+    return toast('登录后就能收藏');
+  }
+  try {
+    const r = await api('/api/content/favorite', {
+      method: 'POST',
+      body: JSON.stringify({ contentId }),
+    });
+    const set = new Set(state.favorites || []);
+    if (r.favorited) set.add(contentId);
+    else set.delete(contentId);
+    state.favorites = Array.from(set);
+    paintFav(contentId);
+    toast(r.favorited ? '已收藏，可在「我的收藏」查看' : '已取消收藏');
+  } catch (e) {
+    toast(e.message || '操作失败');
+  }
+}
+
 function contentSheet(contentId) {
   const c = (state.contents || []).find((x) => x.id === contentId);
   if (!c) return toast('内容不存在或已下线');
@@ -1185,19 +1354,27 @@ function contentSheet(contentId) {
   const price = Math.max(0, Number(c.price) || 0);
   // 已经能看（会员 / 已解锁 / 免费）：直接给全文，不再出现任何付费引导
   if (!c.locked) {
+    reportContentView(c.id);
     return openSheet(`
     <h3>${esc(c.title)}</h3>
-    <p class="sheet-sub">${c.unlocked ? '已解锁 · 永久可看' : viewerIsMember() ? '会员权益 · 免费阅读' : '免费内容'}</p>
+    <p class="sheet-sub">${c.unlocked ? '已解锁 · 永久可看' : viewerIsMember() ? '会员权益 · 免费阅读' : '免费内容'} · ${esc(
+      contentMetaText(c)
+    )}</p>
     ${c.image ? `<div class="content-hero"><img src="${esc(c.image)}" alt="${esc(c.title)}" /></div>` : ''}
     <div class="content-full">${esc(c.desc || '这篇内容还没有正文，稍后再来看看～').replace(/\n/g, '<br />')}</div>
-    <button class="btn-ghost" data-act="close" style="margin-top:14px">关闭</button>
+    <div class="sheet-actions">
+      ${contentFavBtnHTML(c)}
+      <button class="btn-ghost" data-act="close">关闭</button>
+    </div>
   `);
   }
   const memberGoods = state.products.filter((p) => Number(p.memberDays) > 0).sort((a, b) => a.amount - b.amount);
   const cheapest = memberGoods[0];
   openSheet(`
     <h3>${esc(c.title)}</h3>
-    <p class="sheet-sub">${price > 0 ? '这是付费内容，两种方式都能看全文' : '这是会员专享内容，开通会员后可看全文'}</p>
+    <p class="sheet-sub">${price > 0 ? '这是付费内容，两种方式都能看全文' : '这是会员专享内容，开通会员后可看全文'}${
+      c.category ? ' · ' + esc(c.category) : ''
+    }</p>
     <div class="paywall-box">
       <span class="pw-lock">🔒</span>
       <span class="pw-main">
@@ -1423,6 +1600,26 @@ function renderUserCenter() {  const v = state.viewer;
       </div>
     </div>
 
+    <div class="section-head">
+      <h2>内容与帮助</h2>
+      <button class="mini-btn" data-act="go-content">看内容 ›</button>
+    </div>
+    <div class="card set-list">
+      <button class="set-row" data-act="open-favorites">
+        <span>我的收藏</span>
+        <i style="font-size:12px;color:var(--muted)">${
+          (state.favorites || []).length ? (state.favorites || []).length + ' 篇' : '还没有收藏'
+        }</i>
+        <i>›</i>
+      </button>
+      <button class="set-row" data-act="feedback-new">
+        <span>意见反馈</span>
+        <i style="font-size:12px;color:var(--muted)">想加功能 / 遇到问题</i>
+        <i>›</i>
+      </button>
+      <button class="set-row" data-act="feedback-mine"><span>我的反馈</span><i>›</i></button>
+    </div>
+
     <div class="section-head"><h2>设置</h2></div>
     <div class="card set-list">
       <button class="set-row" data-act="settings">
@@ -1490,6 +1687,7 @@ async function refreshContents() {
   try {
     const data = await api('/api/bootstrap');
     state.contents = Array.isArray(data.contents) ? data.contents : [];
+    state.favorites = Array.isArray(data.favorites) ? data.favorites : [];
     state.balance = data.balance;
     state.orders = dropExpiredOrders(data.orders || []);
     if (state.viewer) state.viewer.orders = state.orders;
@@ -1754,9 +1952,117 @@ function settingsSheet() {
     <p class="sheet-group">通用</p>
     <button class="set-row" data-act="refresh"><span>刷新数据</span><i>›</i></button>
     <button class="set-row" data-act="clear-cache"><span>清除缓存</span><i style="font-size:12px;color:var(--muted)">${localStorageSize()}</i></button>
+    <p class="sheet-group">帮助与反馈</p>
+    <button class="set-row" data-act="feedback-new"><span>意见反馈</span><i>›</i></button>
+    <button class="set-row" data-act="feedback-mine"><span>我的反馈</span><i>›</i></button>
     <p class="sheet-group">其他</p>
     <button class="set-row" data-act="about"><span>关于</span><i>›</i></button>
     <button class="set-row danger" data-act="logout"><span>退出登录</span><i>›</i></button>
+    <button class="btn-ghost" data-act="close" style="margin-top:14px">关闭</button>
+  `);
+}
+
+/* ---------------- 意见反馈 ---------------- */
+
+/** 提交反馈：登录用户才能用，商家在后台「反馈」页看到并回复 */
+function feedbackSheet() {
+  if (!state.viewer) {
+    state.tab = 'mine';
+    render();
+    return toast('登录后才能提交反馈');
+  }
+  const contact = '';
+  openSheet(`
+    <h3>意见反馈</h3>
+    <p class="sheet-sub">用着不顺手、想加功能、遇到报错，都可以写在这里，我们看到会回复</p>
+    <textarea id="fbText" class="fb-text" rows="5" maxlength="1000" placeholder="请描述你遇到的问题或想要的功能…"></textarea>
+    <input id="fbContact" class="fb-input" maxlength="60" placeholder="联系方式（选填，方便我们找到你）" value="${esc(contact)}" />
+    <button class="btn-primary" data-act="feedback-send" style="margin-top:12px">提交反馈</button>
+    <button class="btn-ghost" data-act="feedback-mine" style="margin-top:10px">查看我提交过的反馈</button>
+  `);
+}
+
+async function sendFeedback() {
+  const text = (($('#fbText') || {}).value || '').trim();
+  const contact = (($('#fbContact') || {}).value || '').trim();
+  if (text.length < 2) return toast('请把问题描述得再具体一点');
+  const btn = document.querySelector('[data-act="feedback-send"]');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '提交中…';
+  }
+  try {
+    await api('/api/feedback', { method: 'POST', body: JSON.stringify({ content: text, contact }) });
+    toast('已收到，感谢反馈！');
+    return myFeedbackSheet();
+  } catch (e) {
+    toast(e.message || '提交失败');
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '提交反馈';
+    }
+  }
+}
+
+/** 我的反馈：带商家回复 */
+async function myFeedbackSheet() {
+  if (!state.viewer) {
+    state.tab = 'mine';
+    render();
+    return toast('登录后才能查看反馈');
+  }
+  openSheet('<h3>我的反馈</h3><p class="sheet-sub">加载中…</p>');
+  let list = [];
+  try {
+    const r = await api('/api/feedback/mine');
+    list = r.feedbacks || [];
+  } catch (e) {
+    return openSheet(`<h3>我的反馈</h3><p class="sheet-sub">${esc(e.message || '读取失败')}</p>
+      <button class="btn-ghost" data-act="close" style="margin-top:14px">关闭</button>`);
+  }
+  const rows = list.length
+    ? list
+        .map(
+          (f) => `<div class="fb-item">
+        <div class="fb-head">
+          <span class="fb-status ${f.status === 'done' ? 'done' : ''}">${f.status === 'done' ? '已回复' : '待处理'}</span>
+          <span class="muted">${timeText(f.createdAt)}</span>
+        </div>
+        <div class="fb-body">${esc(f.content)}</div>
+        ${
+          f.reply
+            ? `<div class="fb-reply"><b>商家回复</b>${esc(f.reply)}</div>`
+            : '<div class="muted fb-wait">商家还没回复，处理后会显示在这里</div>'
+        }
+      </div>`
+        )
+        .join('')
+    : '<div class="empty" style="padding:24px 8px"><p>你还没有提交过反馈</p></div>';
+  openSheet(`
+    <h3>我的反馈</h3>
+    <p class="sheet-sub">共 ${list.length} 条</p>
+    <div class="fb-list">${rows}</div>
+    <button class="btn-primary" data-act="feedback-new" style="margin-top:14px">再提一条</button>
+    <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>
+  `);
+}
+
+/** 我的收藏：只列当前仍上线的内容 */
+function favoritesSheet() {
+  if (!state.viewer) {
+    state.tab = 'mine';
+    render();
+    return toast('登录后才能收藏');
+  }
+  const list = (state.contents || []).filter((c) => isFav(c.id));
+  openSheet(`
+    <h3>我的收藏</h3>
+    <p class="sheet-sub">${list.length ? list.length + ' 篇' : '还没有收藏内容'}</p>
+    ${
+      list.length
+        ? `<div class="content-list">${list.map((c) => contentCardHTML(c)).join('')}</div>`
+        : '<div class="empty" style="padding:22px 8px"><p>在内容卡片右上角点 ☆ 就能收藏</p></div>'
+    }
     <button class="btn-ghost" data-act="close" style="margin-top:14px">关闭</button>
   `);
 }
@@ -2246,9 +2552,19 @@ maskEl.addEventListener('click', closeSheet);
 
 // 商品搜索：边输入边过滤，只重绘网格，输入框不会丢焦点
 view.addEventListener('input', (e) => {
-  if (!e.target || e.target.id !== 'goodsSearch') return;
-  state.goodsQuery = e.target.value || '';
-  refreshGoodsBox();
+  if (!e.target) return;
+  if (e.target.id === 'goodsSearch') {
+    state.goodsQuery = e.target.value || '';
+    refreshGoodsBox();
+    return;
+  }
+  if (e.target.id === 'contentSearch') {
+    state.contentQuery = e.target.value || '';
+    const box = document.getElementById('contentListBox');
+    if (box) box.innerHTML = contentListHTML();
+    const clear = view.querySelector('.search-clear[data-act="content-clear"]');
+    if (clear) clear.hidden = !state.contentQuery;
+  }
 });
 
 /* 下拉刷新：内容在顶部时继续往下拉，松手重新拉一遍数据 */
@@ -2376,6 +2692,18 @@ view.addEventListener('click', async (e) => {
   if (act === 'open-content') {
     return contentSheet(el.dataset.id);
   }
+  if (act === 'content-cat') {
+    state.contentCat = el.dataset.c || 'all';
+    return render();
+  }
+  if (act === 'content-clear') {
+    state.contentQuery = '';
+    return render();
+  }
+  if (act === 'fav') return toggleFav(el.dataset.id);
+  if (act === 'open-favorites') return favoritesSheet();
+  if (act === 'feedback-new') return feedbackSheet();
+  if (act === 'feedback-mine') return myFeedbackSheet();
   if (act === 'locked-content') {
     if (!state.viewer) {
       state.tab = 'mine';
@@ -2468,6 +2796,11 @@ sheetEl.addEventListener('click', async (e) => {
     return startUnlockContent(el.dataset.id || (sheetState.content && sheetState.content.id));
   }
   if (act === 'open-member') return memberSheet();
+  if (act === 'fav') return toggleFav(el.dataset.id);
+  if (act === 'open-favorites') return favoritesSheet();
+  if (act === 'feedback-new') return feedbackSheet();
+  if (act === 'feedback-mine') return myFeedbackSheet();
+  if (act === 'feedback-send') return sendFeedback();
   if (act === 'copy-order') {
     const ok = await copyText(el.dataset.id || '');
     toast(ok ? '订单号已复制' : '复制失败，请长按手动复制');
@@ -2766,6 +3099,7 @@ async function bootstrap() {
   state.balance = data.balance;
   state.products = data.products;
   state.contents = Array.isArray(data.contents) ? data.contents : [];
+  state.favorites = Array.isArray(data.favorites) ? data.favorites : [];
   state.orders = data.orders;
   await loadViewer();
   if (state.viewer) state.viewer.orders = state.orders;

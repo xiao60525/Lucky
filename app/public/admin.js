@@ -124,6 +124,8 @@ const NAV = [
   ['members', '👑', '会员'],
   ['users', '👥', '用户'],
   ['contents', '📝', '首页内容'],
+  ['feedback', '💬', '反馈'],
+  ['logs', '📜', '日志'],
   ['site', '🎨', '外观'],
   ['preview', '📱', '页面预览'],
   ['pay', '💳', '支付'],
@@ -146,7 +148,12 @@ function render() {
           <div class="side-brand-txt"><b>管理后台</b><i>${esc(siteName)}</i></div>
         </div>
         <nav class="side-nav">${NAV.map(
-          ([k, ic, label]) => `<button class="nav-btn ${state.tab === k ? 'on' : ''}" data-tab="${k}"><span class="ic">${ic}</span>${label}</button>`
+          ([k, ic, label]) =>
+            `<button class="nav-btn ${state.tab === k ? 'on' : ''}" data-tab="${k}"><span class="ic">${ic}</span>${label}${
+              k === 'feedback' && d.stats && d.stats.feedbackPending
+                ? `<span class="nav-badge">${d.stats.feedbackPending}</span>`
+                : ''
+            }</button>`
         ).join('')}</nav>
         <div class="side-foot">
           <span class="muted">管理员 ${esc(sessionStorage.getItem('admin_user') || 'admin')} · 商户号 ${d.pay.mchid || '未配置'}</span>
@@ -157,7 +164,7 @@ function render() {
     </div>`;
   document.querySelectorAll('.nav-btn').forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; render(); }));
   $('#logoutBtn').onclick = () => { state.token = ''; sessionStorage.removeItem('admin_token'); render(); };
-  ({ overview: renderOverview, products: renderProducts, members: renderMembers, contents: renderContents, orders: renderOrders, users: renderUsers, site: renderSite, preview: renderPreview, pay: renderPay, settings: renderSettings })[state.tab]();
+  ({ overview: renderOverview, products: renderProducts, members: renderMembers, contents: renderContents, orders: renderOrders, users: renderUsers, site: renderSite, preview: renderPreview, pay: renderPay, settings: renderSettings, feedback: renderFeedback, logs: renderLogs })[state.tab]();
 }
 
 function renderOverview() {
@@ -224,9 +231,33 @@ function renderOverview() {
     </div>
 
     <div class="card">
+      <h3>内容与反馈</h3>
+      <div class="ostat-row">
+        <div class="ostat"><b>${s.contentCount || 0} 条</b><span>内容总数</span></div>
+        <div class="ostat"><b>${s.viewCount || 0}</b><span>累计阅读</span></div>
+        <div class="ostat"><b>${s.favCount || 0}</b><span>累计收藏</span></div>
+        <div class="ostat"><b>${s.unlockCount || 0}</b><span>单篇解锁</span></div>
+        <div class="ostat ${s.feedbackPending ? 'warn' : ''}"><b>${s.feedbackPending || 0} 条</b><span>待处理反馈</span></div>
+      </div>
+      <div class="row-actions" style="margin-top:12px">
+        <button class="btn ghost" id="ovGoContent">去管内容</button>
+        <button class="btn ghost" id="ovGoFeedback">看反馈</button>
+      </div>
+    </div>
+
+    <div class="card">
       <h3>最近订单</h3>
       ${orderTable(state.data.orders.slice(0, 8))}
     </div>`;
+
+  const go = (tab) => {
+    state.tab = tab;
+    render();
+  };
+  const gc = $('#ovGoContent');
+  const gf = $('#ovGoFeedback');
+  if (gc) gc.onclick = () => go('contents');
+  if (gf) gf.onclick = () => go('feedback');
 }
 
 /** 订单页筛选状态（内存态，切标签页后保留） */
@@ -623,6 +654,16 @@ async function delProduct(id) {
 let editingContent = null;
 const contentDraft = { image: '' };
 
+/** 已有的内容分类（给表单做 datalist 建议，避免同一个分类写成两种） */
+function contentCatsArg(cs) {
+  const out = [];
+  (cs || []).forEach((c) => {
+    const cat = String(c.category || '').trim();
+    if (cat && !out.includes(cat)) out.push(cat);
+  });
+  return out;
+}
+
 function renderContents() {
   const cs = state.data.contents || [];
   let cfilter = 'all';
@@ -654,6 +695,11 @@ function renderContents() {
         <div><label>角标（如：活动 / 新品）</label><input id="c-tag" maxlength="10" /></div>
         <div class="full"><label>描述（最多 200 字）</label><textarea id="c-desc" rows="2" maxlength="200" placeholder="一句话说清这是什么"></textarea></div>
         <div><label>跳转链接（可选）</label><input id="c-link" placeholder="https://… 或 /admin" /></div>
+        <div><label>分类（可选，前台按它分组）</label><input id="c-category" list="c-cat-list" maxlength="12" placeholder="如 行业资讯 / 使用教程" />
+          <datalist id="c-cat-list">${contentCatsArg(cs)
+            .map((x) => `<option value="${esc(x)}"></option>`)
+            .join('')}</datalist>
+        </div>
         <div><label>排序（小在前）</label><input id="c-sort" type="number" value="100" /></div>
         <div><label>状态</label><select id="c-active"><option value="1">上线</option><option value="0">隐藏</option></select></div>
         <div><label>可见范围</label><select id="c-membersonly"><option value="0">所有人可见</option><option value="1">仅会员可见</option></select></div>
@@ -696,7 +742,7 @@ function renderContents() {
             (cfilter === 'member' && (c.membersOnly || Number(c.price) > 0)))
       );
       box.innerHTML = fl.length
-        ? `<table><thead><tr><th>配图</th><th>标题</th><th>付费</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${fl
+        ? `<table><thead><tr><th>配图</th><th>标题</th><th>分类</th><th>数据</th><th>付费</th><th>状态</th><th>操作</th></tr></thead><tbody>${fl
             .map(
               (c) => `<tr>
             <td>${
@@ -711,12 +757,16 @@ function renderContents() {
                   ? ' <span class="tag tag-gold">会员专享</span>'
                   : ''
             }${c.tag ? ` <span class="tag tag-blue">${esc(c.tag)}</span>` : ''}<div class="muted" style="font-size:11.5px;margin-top:2px">${esc(c.desc || '')}</div></td>
+            <td class="muted">${c.category ? esc(c.category) : '<span class="muted">未分类</span>'}</td>
+            <td class="muted" style="white-space:nowrap">
+              👁 ${Number(c.views) || 0}<br/>
+              ★ ${Number(c.favCount) || 0}
+            </td>
             <td class="muted">${
               Number(c.price) > 0
                 ? `¥${(Number(c.price) / 100).toFixed(2)}<div style="font-size:11.5px">已解锁 ${Number(c.unlockCount) || 0}</div>`
                 : '仅会员'
             }</td>
-            <td class="muted">${c.sort}</td>
             <td>${c.active ? '<span class="tag paid">上线</span>' : '<span class="tag off">隐藏</span>'}</td>
             <td style="white-space:nowrap">
               <button class="op" data-cedit="${esc(c.id)}">编辑</button>
@@ -786,6 +836,7 @@ function fillContentForm(c) {
   $('#c-active').value = c && c.active === false ? '0' : '1';
   $('#c-membersonly').value = c && c.membersOnly ? '1' : '0';
   $('#c-price').value = c && Number(c.price) > 0 ? (Number(c.price) / 100).toFixed(2) : '0';
+  $('#c-category').value = c ? c.category || '' : '';
   renderContentPreview();
 }
 
@@ -839,6 +890,7 @@ async function saveContent() {
         active: $('#c-active').value === '1',
         membersOnly: $('#c-membersonly').value === '1',
         price,
+        category: ($('#c-category').value || '').trim(),
         image: contentDraft.image || '',
       }),
     });
@@ -864,16 +916,49 @@ async function delContent(id) {
   }
 }
 
+/** 导出 CSV：走 fetch 带 token，避免把登录态拼在 URL 上 */
+async function exportCSV(type) {
+  const label = type === 'users' ? '用户' : '订单';
+  try {
+    const res = await fetch(apiPath('/api/admin/export?type=' + type), {
+      headers: state.token ? { 'x-admin-token': state.token } : {},
+    });
+    if (res.status === 401) {
+      toast('登录已过期，请重新登录');
+      return;
+    }
+    if (!res.ok) throw new Error(`导出失败(${res.status})`);
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    const d = new Date();
+    a.href = url;
+    a.download = `${type}-${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 3000);
+    toast(`已导出${label} CSV`);
+  } catch (e) {
+    toast(e.message || '导出失败');
+  }
+}
+
 function renderOrders() {
   const orders = state.data.orders || [];
   $('#panel').innerHTML = `
     <div class="card">
-      <h3>订单管理</h3>
+      <div class="card-head">
+        <h3>订单管理</h3>
+        <button class="op" id="exportOrders">导出 CSV</button>
+      </div>
       ${renderOrderStats(orders)}
       ${renderOrderControls()}
       <div id="orderTableBox">${orderTable(orders)}</div>
     </div>`;
   bindOrderOps();
+  const eo = $('#exportOrders');
+  if (eo) eo.onclick = () => exportCSV('orders');
 
   // 状态筛选
   document.querySelectorAll('[data-of]').forEach((b) => {
@@ -1004,10 +1089,15 @@ async function closeOrder(id) {
 function renderUsers() {
   $('#panel').innerHTML = `
     <div class="card">
-      <h3>用户</h3>
+      <div class="card-head">
+        <h3>用户</h3>
+        <button class="op" id="exportUsers">导出 CSV</button>
+      </div>
       <p class="muted" style="font-size:12.5px;margin:0 0 12px">手机号登录的用户：网页版 / PWA 用户来自本应用云库，小程序用户来自小程序云库，这里只读展示。</p>
       <div id="userTable"><p class="muted">加载中…</p></div>
     </div>`;
+  const eu = $('#exportUsers');
+  if (eu) eu.onclick = () => exportCSV('users');
 
   api('/api/admin/users')
     .then((r) => {
@@ -2282,6 +2372,202 @@ function renderSettings() {
       toast(e.message);
       btn.disabled = false;
       btn.textContent = '保存修改';
+    }
+  };
+}
+
+/* ---------------- 用户反馈 ---------------- */
+
+const fbFilter = { status: 'all', q: '' };
+
+function renderFeedback() {
+  const list = state.data.feedbacks || [];
+  const counts = { all: list.length, pending: 0, done: 0 };
+  list.forEach((f) => (f.status === 'done' ? counts.done++ : counts.pending++));
+
+  $('#panel').innerHTML = `
+    <div class="card">
+      <h3>用户反馈（${list.length}）</h3>
+      <p class="muted" style="font-size:12.5px;margin:0 0 12px;line-height:1.7">
+        用户在手机端「我的 → 意见反馈」提交的内容会出现在这里。写上回复并保存，状态会变成「已回复」，
+        用户在自己的反馈里就能看到你的答复。留空保存等于撤销回复。
+      </p>
+      <div class="ochips">
+        ${[
+          ['all', '全部', counts.all],
+          ['pending', '待处理', counts.pending],
+          ['done', '已回复', counts.done],
+        ]
+          .map(
+            ([k, label, n]) =>
+              `<button class="ochip ${fbFilter.status === k ? 'on' : ''}" data-fbf="${k}">${label}${
+                n ? ` <i>${n}</i>` : ''
+              }</button>`
+          )
+          .join('')}
+      </div>
+      <div class="search-box"><input id="fbSearch" placeholder="🔍 搜反馈内容 / 联系方式" value="${esc(fbFilter.q)}" /></div>
+      <div id="fbRows"></div>
+    </div>`;
+
+  const rowsHTML = () => {
+    const q = fbFilter.q.trim().toLowerCase();
+    const fl = list.filter(
+      (f) =>
+        (fbFilter.status === 'all' || f.status === fbFilter.status) &&
+        (!q || `${f.content || ''} ${f.contact || ''}`.toLowerCase().includes(q))
+    );
+    if (!fl.length) {
+      return `<p class="search-none muted">${
+        list.length ? '没有符合筛选条件的反馈' : '还没有用户提交反馈'
+      }</p>`;
+    }
+    return fl
+      .map(
+        (f) => `<div class="fb-item">
+        <div class="fb-head">
+          <span class="fb-status ${f.status === 'done' ? 'done' : ''}">${f.status === 'done' ? '已回复' : '待处理'}</span>
+          <span class="muted">${fmtTime(f.createdAt)}${f.contact ? ' · ' + esc(f.contact) : ''}</span>
+        </div>
+        <div class="fb-body">${esc(f.content)}</div>
+        ${
+          f.reply
+            ? `<div class="fb-reply"><b>我的回复 · ${fmtTime(f.repliedAt)}</b>${esc(f.reply)}</div>`
+            : ''
+        }
+        <textarea class="fb-text" id="fbr-${esc(f.id)}" rows="2" maxlength="1000" placeholder="写回复（用户能看到）">${esc(
+          f.reply || ''
+        )}</textarea>
+        <div class="row-actions" style="margin-top:8px">
+          <button class="btn" style="padding:7px 14px;font-size:13px" data-fbreply="${esc(f.id)}">保存回复</button>
+          <button class="op danger" data-fbdel="${esc(f.id)}">删除</button>
+        </div>
+      </div>`
+      )
+      .join('');
+  };
+
+  const paint = () => {
+    const box = $('#fbRows');
+    if (!box) return;
+    box.innerHTML = rowsHTML();
+    box.querySelectorAll('[data-fbreply]').forEach((b) => {
+      b.onclick = async () => {
+        const id = b.dataset.fbreply;
+        const ta = document.getElementById('fbr-' + id);
+        const reply = (ta && ta.value ? ta.value : '').trim();
+        b.disabled = true;
+        b.textContent = '保存中…';
+        try {
+          const r = await api('/api/admin/feedback/reply', {
+            method: 'POST',
+            body: JSON.stringify({ id, reply }),
+          });
+          const item = list.find((x) => x.id === id);
+          if (item && r.feedback) Object.assign(item, r.feedback);
+          toast(reply ? '已回复，用户可在「我的反馈」看到' : '已撤销回复');
+          renderFeedback();
+        } catch (e) {
+          toast(e.message);
+          b.disabled = false;
+          b.textContent = '保存回复';
+        }
+      };
+    });
+    box.querySelectorAll('[data-fbdel]').forEach((b) => {
+      b.onclick = async () => {
+        if (!confirm('确定删除这条反馈？删除后用户也看不到了。')) return;
+        try {
+          await api('/api/admin/feedback/delete', {
+            method: 'POST',
+            body: JSON.stringify({ id: b.dataset.fbdel }),
+          });
+          const i = list.findIndex((x) => x.id === b.dataset.fbdel);
+          if (i >= 0) list.splice(i, 1);
+          toast('已删除');
+          renderFeedback();
+        } catch (e) {
+          toast(e.message);
+        }
+      };
+    });
+  };
+
+  paint();
+  let timer = null;
+  $('#fbSearch').oninput = (e) => {
+    fbFilter.q = e.target.value || '';
+    clearTimeout(timer);
+    timer = setTimeout(paint, 180);
+  };
+  document.querySelectorAll('[data-fbf]').forEach((b) => {
+    b.onclick = () => {
+      fbFilter.status = b.dataset.fbf;
+      renderFeedback();
+    };
+  });
+}
+
+/* ---------------- 后台操作日志 ---------------- */
+
+function renderLogs() {
+  const logs = state.data.logs || [];
+  const ACTION_ICON = {
+    登录后台: '🔑',
+    保存外观: '🎨',
+    保存商品: '📦',
+    删除商品: '🗑️',
+    保存内容: '📝',
+    删除内容: '🗑️',
+    订单退款: '↩️',
+    开通会员: '👑',
+    取消会员: '👑',
+    封禁用户: '⛔',
+    解封用户: '✅',
+    调整余额: '👛',
+    延长支付: '⏱️',
+    回复反馈: '💬',
+    删除反馈: '🗑️',
+    清理日志: '🧹',
+    导出订单: '📤',
+    导出用户: '📤',
+    修改管理员: '🔐',
+  };
+  $('#panel').innerHTML = `
+    <div class="card">
+      <h3>操作日志（最近 ${logs.length} 条）</h3>
+      <p class="muted" style="font-size:12.5px;margin:0 0 12px;line-height:1.7">
+        记录后台做过的关键动作：改配置、退款、调余额、封禁、回复反馈等，出问题时可以回溯是谁在什么时候改了什么。
+        日志只保留最近 7 天。
+      </p>
+      <div class="row-actions" style="margin:0 0 12px">
+        <button class="btn ghost" id="logClear">清理 7 天前日志</button>
+        <button class="btn ghost" id="logReload">刷新</button>
+      </div>
+      ${
+        logs.length
+          ? `<table><thead><tr><th>时间</th><th>操作</th><th>详情</th><th>操作人</th></tr></thead><tbody>${logs
+              .map(
+                (l) => `<tr>
+              <td class="muted" style="white-space:nowrap">${fmtTime(l.createdAt)}</td>
+              <td style="white-space:nowrap">${ACTION_ICON[l.action] || '·'} ${esc(l.action)}</td>
+              <td>${esc(l.detail || '')}</td>
+              <td class="muted">${esc(l.actor || '')}</td>
+            </tr>`
+              )
+              .join('')}</tbody></table>`
+          : '<p class="search-none muted">还没有日志。后台的每次重要操作都会记在这里。</p>'
+      }
+    </div>`;
+  $('#logReload').onclick = () => load();
+  $('#logClear').onclick = async () => {
+    if (!confirm('清理 7 天前的日志？近 7 天的记录会保留。')) return;
+    try {
+      const r = await api('/api/admin/logs/clear', { method: 'POST', body: '{}' });
+      toast(r.removed ? `已清理 ${r.removed} 条` : '没有可清理的旧日志');
+      await load();
+    } catch (e) {
+      toast(e.message);
     }
   };
 }

@@ -150,6 +150,15 @@ function checkAdmin(req) {
   return got.length === expect.length && crypto.timingSafeEqual(Buffer.from(got), Buffer.from(expect));
 }
 
+/** 后台操作日志：异步写、失败不影响主流程（云库没起来时也不会把请求带崩） */
+function audit(action, detail) {
+  try {
+    Promise.resolve(store.adminLogAdd(currentAdminUser(), action, detail)).catch(() => {});
+  } catch {
+    /* 忽略 */
+  }
+}
+
 
 /** 商品表：内容暂空，先用示例商品把支付链路跑通，随时可删可改 */
 const CATALOG = [
@@ -678,6 +687,31 @@ function sendJSON(res, code, data) {
   });
   res.end(body);
 }
+
+/** CSV 下载：带 BOM 让 Excel 正确识别中文，字段做双引号转义 */
+function sendCSV(res, filename, rows) {
+  const cell = (v) => {
+    const s = String(v == null ? '' : v);
+    return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  };
+  const body = '\ufeff' + rows.map((r) => r.map(cell).join(',')).join('\r\n');
+  res.writeHead(200, {
+    'Content-Type': 'text/csv; charset=utf-8',
+    'Content-Disposition': `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`,
+    'Cache-Control': 'no-store',
+    'Content-Length': Buffer.byteLength(body),
+  });
+  res.end(body);
+}
+
+/** 订单状态中文（导出用） */
+const ORDER_STATUS_TEXT = {
+  created: '待支付',
+  pending: '支付中',
+  paid: '已支付',
+  refunded: '已退款',
+  closed: '已关闭',
+};
 
 async function readBody(req) {
   if (req._bodyParsed) return req._bodyParsed;
@@ -1226,6 +1260,15 @@ async function handleApi(req, res, url) {
         console.warn('[bootstrap] 读取内容解锁失败:', e.message);
       }
     }
+    // 收藏（登录才有；前端据此点亮卡片上的收藏标记，并在「我的收藏」里过滤）
+    let favorites = [];
+    if (uid) {
+      try {
+        favorites = await store.contentFavorites(uid);
+      } catch (e) {
+        console.warn('[bootstrap] 读取收藏失败:', e.message);
+      }
+    }
     contents = contents.map((c) => {
       const price = Math.max(0, Number(c.price) || 0);
       const owned = unlockedIds.has(c.id);
@@ -1246,6 +1289,7 @@ async function handleApi(req, res, url) {
       site: publicSite(),
       products: db.products,
       contents,
+      favorites,
       orders: recentOrders.map(publicOrder),
     });
   }
@@ -1328,6 +1372,75 @@ async function handleApi(req, res, url) {
       return sendJSON(res, 200, { viewer });
     } catch (e) {
       return sendJSON(res, 502, { message: e.message || '读取用户信息失败' });
+    }
+  }
+
+  /* ---------------- 内容互动：阅读量 / 收藏 ---------------- */
+
+  // 阅读 +1：只统计已上线内容，前端按内容做了本地去重
+  if (pathname === '/api/content/view' && method === 'POST') {
+    const body = await readBody(req);
+    const contentId = String(body.contentId || '').trim();
+    if (!contentId) return sendJSON(res, 400, { message: '缺少内容 id' });
+    try {
+      const views = await store.bumpContentView(contentId);
+      return sendJSON(res, 200, { views });
+    } catch (e) {
+      return sendJSON(res, 502, { message: '记录阅读失败：' + e.message });
+    }
+  }
+
+  // 收藏 / 取消收藏（需登录）
+  if (pathname === '/api/content/favorite' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '登录后才能收藏' });
+    const body = await readBody(req);
+    const contentId = String(body.contentId || '').trim();
+    if (!contentId) return sendJSON(res, 400, { message: '缺少内容 id' });
+    try {
+      const favorited = await store.toggleContentFavorite(uid, contentId);
+      return sendJSON(res, 200, { favorited });
+    } catch (e) {
+      return sendJSON(res, 502, { message: '收藏失败：' + e.message });
+    }
+  }
+
+  // 我的收藏 id 列表
+  if (pathname === '/api/content/favorites' && method === 'GET') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 200, { favorites: [] });
+    try {
+      return sendJSON(res, 200, { favorites: await store.contentFavorites(uid) });
+    } catch (e) {
+      return sendJSON(res, 502, { message: '读取收藏失败：' + e.message });
+    }
+  }
+
+  /* ---------------- 用户反馈 ---------------- */
+
+  if (pathname === '/api/feedback' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录后再提交反馈' });
+    const body = await readBody(req);
+    const text = String(body.content || '').trim();
+    if (text.length < 2) return sendJSON(res, 400, { message: '请把问题描述得再具体一点（至少 2 个字）' });
+    if (text.length > 1000) return sendJSON(res, 400, { message: '反馈内容最多 1000 字' });
+    const contact = String(body.contact || '').trim().slice(0, 60);
+    try {
+      const fb = await store.addFeedback(uid, text, contact);
+      return sendJSON(res, 200, { feedback: fb });
+    } catch (e) {
+      return sendJSON(res, 502, { message: '提交失败：' + e.message });
+    }
+  }
+
+  if (pathname === '/api/feedback/mine' && method === 'GET') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    try {
+      return sendJSON(res, 200, { feedbacks: await store.myFeedbacks(uid) });
+    } catch (e) {
+      return sendJSON(res, 502, { message: '读取反馈失败：' + e.message });
     }
   }
 
@@ -2245,6 +2358,7 @@ async function handleApi(req, res, url) {
     const userOk = !sentUser || sentUser.toLowerCase() === currentAdminUser().toLowerCase();
     const pwdOk = verifyAdminPassword(body.password);
     if (!userOk || !pwdOk) return sendJSON(res, 401, { message: '管理员账号或密码错误' });
+    audit('登录后台', `来自 ${String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0]}`);
     return sendJSON(res, 200, {
       token: adminToken(Date.now() + 12 * 3600 * 1000),
       expiresIn: 12 * 3600,
@@ -2286,6 +2400,7 @@ async function handleApi(req, res, url) {
       try {
         const saved = await store.setAdminCredentials({ user: nextUser, pwdHash: hash, pwdSalt: finalSalt });
         adminCred = saved;
+        audit('修改管理员', `账号 ${nextUser}${changePwd ? ' + 改密码' : ''}`);
         return sendJSON(res, 200, { ok: true, user: currentAdminUser(), changedPassword: changePwd });
       } catch (e) {
         return sendJSON(res, 502, { message: '保存失败：' + e.message });
@@ -2317,6 +2432,26 @@ async function handleApi(req, res, url) {
       } catch (e) {
         console.warn('[admin] 读取内容解锁统计失败:', e.message);
         contents = contents.map((c) => ({ ...c, unlockCount: 0 }));
+      }
+      // 每篇内容的收藏人数 + 分类聚合（内容页顶部按分类看分布）
+      try {
+        const favCounts = await store.adminContentFavCounts();
+        contents = contents.map((c) => ({ ...c, favCount: Number(favCounts[c.id]) || 0 }));
+      } catch (e) {
+        contents = contents.map((c) => ({ ...c, favCount: 0 }));
+      }
+      // 用户反馈 + 后台操作日志
+      let feedbacks = [];
+      try {
+        feedbacks = await store.adminFeedbackList();
+      } catch (e) {
+        console.warn('[admin] 读取反馈失败:', e.message);
+      }
+      let logs = [];
+      try {
+        logs = await store.adminLogList(150);
+      } catch (e) {
+        console.warn('[admin] 读取操作日志失败:', e.message);
       }
       const umap = await userMap();
 
@@ -2380,12 +2515,19 @@ async function handleApi(req, res, url) {
           userCount: userRows.length,
           payRate: todayOrders.length ? Math.round((todayPaid.length / todayOrders.length) * 100) : 0,
           unlockCount: contents.reduce((s, c) => s + (Number(c.unlockCount) || 0), 0),
+          viewCount: contents.reduce((s, c) => s + (Number(c.views) || 0), 0),
+          favCount: contents.reduce((s, c) => s + (Number(c.favCount) || 0), 0),
+          contentCount: contents.length,
+          feedbackPending: feedbacks.filter((f) => f.status === 'pending').length,
+          feedbackTotal: feedbacks.length,
           trend,
         },
         orders: db.orders.slice(-200).reverse().map((o) => adminOrder(o, umap)),
         orderTtlMinutes: ORDER_TTL_MINUTES, // 后台按这个数算「剩余支付时间」
         products,
         contents,
+        feedbacks,
+        logs,
         site: publicSite(),
         mp: { ready: mpstore.enabled, endpoint: mpstore.endpoint || null },
         pay: {
@@ -2564,6 +2706,7 @@ async function handleApi(req, res, url) {
       );
 
       // 顺带把名称/图标推给小程序云库（失败不影响网页版保存）
+      audit('保存外观', `名称「${site.name}」 图标${iconAction === 'set' ? '已替换' : iconAction === 'clear' ? '已恢复默认' : '未变'}`);
       const mp = await syncBrandToMiniProgram();
       return sendJSON(res, 200, { site: publicSite(), mp });
     }
@@ -2613,6 +2756,7 @@ async function handleApi(req, res, url) {
           image,
         });
         await refreshProducts();
+        audit('保存商品', `「${saved.title}」 ¥${(saved.amount / 100).toFixed(2)}`);
         return sendJSON(res, 200, { product: saved });
       } catch (e) {
         await refreshProducts().catch(() => {});
@@ -2627,6 +2771,7 @@ async function handleApi(req, res, url) {
         const removed = await store.adminDeleteProduct(String(body.id || ''));
         if (!removed) return sendJSON(res, 404, { message: '商品不存在' });
         await refreshProducts();
+        audit('删除商品', `${removed.title || body.id} · ¥${(Number(removed.amount || 0) / 100).toFixed(2)}`);
         return sendJSON(res, 200, { ok: true });
       } catch (e) {
         await refreshProducts().catch(() => {});
@@ -2672,7 +2817,10 @@ async function handleApi(req, res, url) {
           membersOnly: Boolean(body.membersOnly),
           // 单篇解锁价（分）：0 = 不单卖，只能靠会员看
           price: Math.min(10000000, Math.max(0, Math.floor(Number(body.price) || 0))),
+          // 内容分类：前台「内容」页按这个分组筛选，留空归到「未分类」
+          category: String(body.category || '').trim().slice(0, 12),
         });
+        audit('保存内容', `「${saved.title}」${saved.category ? ' [' + saved.category + ']' : ''}`);
         return sendJSON(res, 200, { content: saved });
       } catch (e) {
         return sendJSON(res, 502, { message: '保存失败：' + e.message });
@@ -2685,6 +2833,7 @@ async function handleApi(req, res, url) {
       try {
         const removed = await store.adminDeleteContent(String(body.id || ''));
         if (!removed) return sendJSON(res, 404, { message: '内容不存在' });
+        audit('删除内容', `「${removed.title}」`);
         return sendJSON(res, 200, { ok: true });
       } catch (e) {
         return sendJSON(res, 502, { message: '删除失败：' + e.message });
@@ -2702,6 +2851,7 @@ async function handleApi(req, res, url) {
       } catch (e) {
         return sendJSON(res, e.status || 502, { message: `退款失败：${e.message}` });
       }
+      audit('订单退款', `${order.id} · ¥${(order.amount / 100).toFixed(2)} · ${order.title}`);
       return sendJSON(res, 200, {
         order: publicOrder(order),
         balance: result && result.balance != null ? result.balance : db.user.balance,
@@ -2727,12 +2877,12 @@ async function handleApi(req, res, url) {
           note: String(body.note || '后台开通/续费'),
           expireAfter: expire ? new Date(expire).toISOString() : '',
         });
+        audit('开通会员', `用户 ${body.userId.slice(0, 10)} +${days} 天 · ${body.note || '后台操作'}`);
         return sendJSON(res, 200, { ok: true, expire });
       } catch (e) {
         return sendJSON(res, 502, { message: '开通失败：' + e.message });
       }
     }
-
     // 会员管理：取消会员
     if (pathname === '/api/admin/member/revoke' && method === 'POST') {
       const body = await readBody(req);
@@ -2747,6 +2897,7 @@ async function handleApi(req, res, url) {
         days: 0,
         note: String(body.note || '后台取消会员'),
       });
+      audit('取消会员', `用户 ${String(body.userId).slice(0, 10)} · ${body.note || '后台操作'}`);
       return sendJSON(res, 200, { ok: true });
     } catch (e) {
       return sendJSON(res, 502, { message: '取消失败：' + e.message });
@@ -2791,6 +2942,7 @@ async function handleApi(req, res, url) {
         const out = await store.adminSetUserBan(userId, Boolean(body.banned), String(body.reason || ''));
         clearBanCache(userId);
         console.log(`[admin] 用户 ${userId} ${body.banned ? '已封禁' : '已解封'}`);
+        audit(body.banned ? '封禁用户' : '解封用户', `${userId.slice(0, 10)} ${body.banned ? '原因：' + (body.reason || '未填') : ''}`);
         return sendJSON(res, 200, { ok: true, user: out });
       } catch (e) {
         return sendJSON(res, 502, { message: '操作失败：' + e.message });
@@ -2808,6 +2960,7 @@ async function handleApi(req, res, url) {
       try {
         const balance = await users.adjustUserBalance(userId, delta, 'admin', String(body.note || '后台调整'));
         console.log(`[admin] 用户 ${userId} 余额 ${delta > 0 ? '+' : ''}${delta} 分`);
+        audit('调整余额', `${userId.slice(0, 10)} ${delta > 0 ? '+' : ''}¥${(delta / 100).toFixed(2)} · ${body.note || '后台调整'}`);
         return sendJSON(res, 200, { ok: true, balance });
       } catch (e) {
         return sendJSON(res, 502, { message: '调整失败：' + e.message });
@@ -2828,7 +2981,124 @@ async function handleApi(req, res, url) {
         return sendJSON(res, 502, { message: '延长失败：' + e.message });
       }
       order.createdAt = Date.now();
+      audit('延长支付', `订单 ${order.id}（¥${(Number(order.amount || 0) / 100).toFixed(2)}）延长 30 分钟`);
       return sendJSON(res, 200, { order: publicOrder(order) });
+    }
+
+    /* ---------------- 用户反馈（后台） ---------------- */
+
+    if (pathname === '/api/admin/feedback' && method === 'GET') {
+      try {
+        return sendJSON(res, 200, { feedbacks: await store.adminFeedbackList() });
+      } catch (e) {
+        return sendJSON(res, 502, { message: '读取反馈失败：' + e.message });
+      }
+    }
+
+    if (pathname === '/api/admin/feedback/reply' && method === 'POST') {
+      const body = await readBody(req);
+      const id = String(body.id || '').trim();
+      const reply = String(body.reply || '').trim();
+      if (!id) return sendJSON(res, 400, { message: '缺少反馈 id' });
+      try {
+        const fb = await store.adminFeedbackReply(id, reply);
+        if (!fb) return sendJSON(res, 404, { message: '反馈不存在' });
+        audit('回复反馈', `${id.slice(0, 10)} · ${reply ? reply.slice(0, 40) : '清空回复'}`);
+        return sendJSON(res, 200, { feedback: fb });
+      } catch (e) {
+        return sendJSON(res, 502, { message: '回复失败：' + e.message });
+      }
+    }
+
+    if (pathname === '/api/admin/feedback/delete' && method === 'POST') {
+      const body = await readBody(req);
+      const id = String(body.id || '').trim();
+      if (!id) return sendJSON(res, 400, { message: '缺少反馈 id' });
+      try {
+        const removed = await store.adminFeedbackDelete(id);
+        audit('删除反馈', id.slice(0, 10));
+        return sendJSON(res, 200, { removed: removed > 0 });
+      } catch (e) {
+        return sendJSON(res, 502, { message: '删除失败：' + e.message });
+      }
+    }
+
+    /* ---------------- 操作日志（后台） ---------------- */
+
+    if (pathname === '/api/admin/logs' && method === 'GET') {
+      const url = new URL(req.url, 'http://x');
+      const limit = Math.min(Math.max(Number(url.searchParams.get('limit')) || 150, 1), 500);
+      try {
+        return sendJSON(res, 200, { logs: await store.adminLogList(limit) });
+      } catch (e) {
+        return sendJSON(res, 502, { message: '读取日志失败：' + e.message });
+      }
+    }
+
+    if (pathname === '/api/admin/logs/clear' && method === 'POST') {
+      try {
+        const removed = await store.adminLogClear();
+        audit('清理日志', `清理 7 天前日志 ${removed} 条`);
+        return sendJSON(res, 200, { removed });
+      } catch (e) {
+        return sendJSON(res, 502, { message: '清理失败：' + e.message });
+      }
+    }
+
+    /* ---------------- 数据导出（CSV） ---------------- */
+
+    if (pathname === '/api/admin/export' && method === 'GET') {
+      const url = new URL(req.url, 'http://x');
+      const type = String(url.searchParams.get('type') || 'orders');
+      const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      if (type === 'users') {
+        let list = [];
+        try {
+          list = await users.listUsers();
+        } catch (e) {
+          return sendJSON(res, 502, { message: '读取用户失败：' + e.message });
+        }
+        const rows = [['ID', '手机号', '昵称', '积分', '余额(元)', '会员到期', '订单数', '状态', '注册时间', '最近登录']];
+        list.forEach((u) => {
+          rows.push([
+            u.id,
+            u.phone || '',
+            u.nickname || '',
+            u.points || 0,
+            (Number(u.balance || 0) / 100).toFixed(2),
+            u.member_expire ? new Date(u.member_expire).toLocaleString('zh-CN', { hour12: false }) : '',
+            u.order_count || 0,
+            u.banned ? '已封禁' : '正常',
+            u.created_at ? new Date(u.created_at).toLocaleString('zh-CN', { hour12: false }) : '',
+            u.last_login_at ? new Date(u.last_login_at).toLocaleString('zh-CN', { hour12: false }) : '',
+          ]);
+        });
+        audit('导出用户', `${list.length} 条`);
+        return sendCSV(res, `users-${stamp}.csv`, rows);
+      }
+      const rows = [['订单号', '商品', '金额(元)', '状态', '用户ID', '手机号', '渠道', '创建时间', '支付时间', '退款时间', '交易号']];
+      const umap = await userMap();
+      db.orders
+        .slice()
+        .reverse()
+        .forEach((o) => {
+          const buyer = (o.userId && umap[o.userId]) || {};
+          rows.push([
+            o.id,
+            o.title || '',
+            (Number(o.amount || 0) / 100).toFixed(2),
+            ORDER_STATUS_TEXT[o.status] || o.status,
+            o.userId || '',
+            buyer.phone || '',
+            o.channel || '',
+            o.createdAt ? new Date(o.createdAt).toLocaleString('zh-CN', { hour12: false }) : '',
+            o.paidAt ? new Date(o.paidAt).toLocaleString('zh-CN', { hour12: false }) : '',
+            o.refundedAt ? new Date(o.refundedAt).toLocaleString('zh-CN', { hour12: false }) : '',
+            o.transactionId || '',
+          ]);
+        });
+      audit('导出订单', `${db.orders.length} 条`);
+      return sendCSV(res, `orders-${stamp}.csv`, rows);
     }
 
     return sendJSON(res, 404, { message: '接口不存在' });

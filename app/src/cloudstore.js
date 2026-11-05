@@ -277,6 +277,8 @@ function contentRow(row) {
     active: row.active !== false,
     membersOnly: row.members_only === true,
     price: Math.max(0, Number(row.price) || 0),
+    views: Math.max(0, Number(row.views) || 0),
+    category: row.category || '',
     createdAt: toMs(row.created_at),
   };
 }
@@ -309,6 +311,7 @@ async function adminUpsertContent(c) {
         active: c.active !== false,
         membersOnly: Boolean(c.membersOnly),
         price: Math.max(0, Math.floor(Number(c.price) || 0)),
+        category: String(c.category || '').trim().slice(0, 12),
       },
     },
     '保存首页内容'
@@ -354,6 +357,129 @@ async function adminContentUnlockCounts() {
 /** 退款后收回解锁（按订单号，幂等） */
 async function revokeContentUnlock(orderId) {
   const r = await call('app_content_unlock_remove', { p_secret: secret, p_order: String(orderId || '') }, '收回解锁');
+  return Number(r && r.removed) || 0;
+}
+
+/* ---------------- 内容运营：阅读量 / 收藏 ---------------- */
+
+/** 阅读 +1，返回最新阅读数 */
+async function bumpContentView(contentId) {
+  const r = await call('app_content_view', { p_secret: secret, p_content: String(contentId || '') }, '记录阅读');
+  return Number((r && r.views) || 0) || 0;
+}
+
+/** 收藏 / 取消收藏，返回切换后的状态 */
+async function toggleContentFavorite(userId, contentId) {
+  const r = await call(
+    'app_content_fav_toggle',
+    { p_secret: secret, p_user: String(userId), p_content: String(contentId) },
+    '收藏内容'
+  );
+  return Boolean(r && r.favorited);
+}
+
+/** 某用户收藏的内容 id（收藏时间倒序） */
+async function contentFavorites(userId) {
+  if (!userId) return [];
+  const rows = await call('app_content_favorites', { p_secret: secret, p_user: String(userId) }, '读取收藏');
+  return Array.isArray(rows) ? rows.map(String) : [];
+}
+
+/** 后台：{contentId: 收藏人数} */
+async function adminContentFavCounts() {
+  const map = await call('app_admin_content_fav_counts', { p_secret: secret }, '读取收藏统计');
+  return map && typeof map === 'object' ? map : {};
+}
+
+/* ---------------- 用户反馈 ---------------- */
+
+function feedbackRow(row) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    userId: row.user_id || '',
+    content: row.content || '',
+    contact: row.contact || '',
+    status: row.status === 'done' ? 'done' : 'pending',
+    reply: row.reply || '',
+    createdAt: toMs(row.created_at),
+    repliedAt: toMs(row.replied_at),
+  };
+}
+
+async function addFeedback(userId, content, contact) {
+  const row = await call(
+    'app_feedback_add',
+    { p_secret: secret, p_user: String(userId || ''), p_content: String(content || ''), p_contact: String(contact || '') },
+    '提交反馈'
+  );
+  return feedbackRow(row);
+}
+
+async function myFeedbacks(userId) {
+  if (!userId) return [];
+  const rows = await call('app_feedback_mine', { p_secret: secret, p_user: String(userId) }, '读取我的反馈');
+  return (Array.isArray(rows) ? rows : []).map(feedbackRow).filter(Boolean);
+}
+
+async function adminFeedbackList() {
+  const rows = await call('app_admin_feedback_list', { p_secret: secret }, '读取反馈');
+  return (Array.isArray(rows) ? rows : []).map(feedbackRow).filter(Boolean);
+}
+
+async function adminFeedbackReply(id, reply) {
+  const row = await call(
+    'app_admin_feedback_reply',
+    { p_secret: secret, p_id: String(id), p_reply: String(reply || '') },
+    '回复反馈'
+  );
+  return feedbackRow(row);
+}
+
+async function adminFeedbackDelete(id) {
+  const r = await call('app_admin_feedback_delete', { p_secret: secret, p_id: String(id) }, '删除反馈');
+  return Number(r && r.removed) || 0;
+}
+
+/* ---------------- 后台操作日志 ---------------- */
+
+async function adminLogAdd(actor, action, detail) {
+  try {
+    await call(
+      'app_admin_log_add',
+      {
+        p_secret: secret,
+        p_actor: String(actor || ''),
+        p_action: String(action || ''),
+        p_detail: String(detail || ''),
+      },
+      '写操作日志'
+    );
+    return true;
+  } catch (e) {
+    // 日志写失败不能影响主流程
+    console.warn('[log] 写入操作日志失败：' + e.message);
+    return false;
+  }
+}
+
+async function adminLogList(limit = 150) {
+  const rows = await call(
+    'app_admin_log_list',
+    { p_secret: secret, p_limit: Math.max(1, Math.floor(Number(limit) || 150)) },
+    '读取操作日志'
+  );
+  return (Array.isArray(rows) ? rows : []).map((r) => ({
+    id: r.id,
+    actor: r.actor || '',
+    action: r.action || '',
+    detail: r.detail || '',
+    createdAt: toMs(r.created_at),
+  }));
+}
+
+async function adminLogClear() {
+  const r = await call('app_admin_log_clear', { p_secret: secret }, '清理操作日志');
   return Number(r && r.removed) || 0;
 }
 
@@ -435,6 +561,18 @@ module.exports = {
   unlockContent,
   revokeContentUnlock,
   adminContentUnlockCounts,
+  bumpContentView,
+  toggleContentFavorite,
+  contentFavorites,
+  adminContentFavCounts,
+  addFeedback,
+  myFeedbacks,
+  adminFeedbackList,
+  adminFeedbackReply,
+  adminFeedbackDelete,
+  adminLogAdd,
+  adminLogList,
+  adminLogClear,
   getAdminCredentials,
   setAdminCredentials,
   purgeStaleOrders,
