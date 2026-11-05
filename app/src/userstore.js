@@ -117,9 +117,19 @@ function normalizeProfile(row) {
   };
 }
 
-/** 会员是否有效（到期时间晚于当前） */
-function isMember(profile) {
-  return Boolean(profile && profile.memberLevel && profile.memberExpire && profile.memberExpire > Date.now());
+/**
+ * 会员是否有效（到期时间晚于当前）
+ * 入参既可以是 profile（normalizeProfile 的产物），也可以是 getUser() 返回的
+ * { profile, balance, orders } 外层对象——历史上两种传法都有，这里统一兼容，
+ * 避免「明明开了会员却被判成非会员」。
+ */
+function isMember(input) {
+  const profile = input && input.profile ? input.profile : input;
+  if (!profile) return false;
+  const level = profile.memberLevel || profile.member_level;
+  const expireRaw = profile.memberExpire || profile.member_expire;
+  const expire = expireRaw ? new Date(expireRaw).getTime() : 0;
+  return Boolean(level && expire && expire > Date.now());
 }
 
 /** 注册：手机号唯一，返回 {profile, token} */

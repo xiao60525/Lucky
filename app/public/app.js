@@ -360,7 +360,8 @@ function contentCardHTML(c, big = false) {
   if (c.link) {
     return `<a class="${cls}" href="${esc(c.link)}" target="_blank" rel="noopener noreferrer">${body}</a>`;
   }
-  return `<div class="${cls}">${body}</div>`;
+  // 已可读（会员 / 已解锁 / 免费）：点开看全文
+  return `<button class="${cls}" data-act="open-content" data-id="${esc(c.id)}">${body}</button>`;
 }
 
 /* ---------------- 首页商品：搜索 + 筛选 + 卡片 ---------------- */
@@ -1039,6 +1040,16 @@ function contentSheet(contentId) {
   sheetState.type = 'content';
   sheetState.content = c;
   const price = Math.max(0, Number(c.price) || 0);
+  // 已经能看（会员 / 已解锁 / 免费）：直接给全文，不再出现任何付费引导
+  if (!c.locked) {
+    return openSheet(`
+    <h3>${esc(c.title)}</h3>
+    <p class="sheet-sub">${c.unlocked ? '已解锁 · 永久可看' : viewerIsMember() ? '会员权益 · 免费阅读' : '免费内容'}</p>
+    ${c.image ? `<div class="content-hero"><img src="${esc(c.image)}" alt="${esc(c.title)}" /></div>` : ''}
+    <div class="content-full">${esc(c.desc || '这篇内容还没有正文，稍后再来看看～').replace(/\n/g, '<br />')}</div>
+    <button class="btn-ghost" data-act="close" style="margin-top:14px">关闭</button>
+  `);
+  }
   const memberGoods = state.products.filter((p) => Number(p.memberDays) > 0).sort((a, b) => a.amount - b.amount);
   const cheapest = memberGoods[0];
   openSheet(`
@@ -2197,6 +2208,9 @@ view.addEventListener('click', async (e) => {
   if (act === 'share-qr') return shareQrSheet();
 
   if (act === 'open-member') return memberSheet();
+  if (act === 'open-content') {
+    return contentSheet(el.dataset.id);
+  }
   if (act === 'locked-content') {
     if (!state.viewer) {
       state.tab = 'mine';
@@ -2205,6 +2219,16 @@ view.addEventListener('click', async (e) => {
     }
     const cid = el.dataset.id;
     const c = (state.contents || []).find((x) => x.id === cid);
+    // 兜底：本地认为自己是会员却点到锁，多半是会员刚生效而页面还是旧数据，
+    // 先拉一次最新状态，是会员就直接打开正文，避免重复弹「开通会员」。
+    if (viewerIsMember()) {
+      toast('正在同步会员状态…');
+      await refreshMe().catch(() => {});
+      await refreshContents();
+      const fresh = (state.contents || []).find((x) => x.id === cid);
+      if (fresh && !fresh.locked) return contentSheet(cid);
+      if (fresh && Number(fresh.price) > 0) return contentSheet(cid);
+    }
     if (c && Number(c.price) > 0) return contentSheet(cid);
     toast('会员专享内容，开通会员后查看全文');
     return memberSheet();

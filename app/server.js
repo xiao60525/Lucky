@@ -1095,7 +1095,7 @@ async function handleApi(req, res, url) {
     if (uid) {
       try {
         const me = await users.getUser(uid);
-        bootstrapIsMember = Boolean(me && users.isMember(me));
+        bootstrapIsMember = Boolean(me && users.isMember(me.profile));
       } catch (e) {
         console.warn('[bootstrap] 读取会员状态失败:', e.message);
       }
@@ -1540,7 +1540,7 @@ async function handleApi(req, res, url) {
       let buyerMember = false;
       try {
         const buyer = await users.getUser(uid);
-        buyerMember = Boolean(buyer && users.isMember(buyer));
+        buyerMember = Boolean(buyer && users.isMember(buyer.profile));
       } catch (e) {
         console.warn('[order:content] 读取会员状态失败:', e.message);
       }
@@ -1581,7 +1581,7 @@ async function handleApi(req, res, url) {
     if (uid) {
       try {
         const buyer = await users.getUser(uid);
-        buyerIsMember = Boolean(buyer && users.isMember(buyer));
+        buyerIsMember = Boolean(buyer && users.isMember(buyer.profile));
       } catch (e) {
         console.warn('[order] 读取会员状态失败:', e.message);
       }

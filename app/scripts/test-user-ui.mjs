@@ -214,6 +214,10 @@ check(
 const lockedCard = [...window.document.querySelectorAll('.content-card')].find((c) => c.textContent.includes('会员专享攻略'));
 check('会员专享内容有锁标', Boolean(lockedCard) && lockedCard.textContent.includes('会员专享'), lockedCard ? lockedCard.textContent.replace(/\s+/g, ' ').trim() : '');
 check('锁态内容不下发正文', Boolean(lockedCard) && lockedCard.textContent.includes('开通会员后查看全文'));
+// 可读内容（免费/会员）：卡片可点、有正文预览、不带锁标
+const readCard = [...window.document.querySelectorAll('.content-card')].find((c) => c.dataset.id === 'n1');
+check('可读内容显示正文预览', Boolean(readCard) && readCard.textContent.includes('注册即送'), readCard ? readCard.textContent.replace(/\s+/g, ' ').trim() : '');
+check('可读内容不是锁态且可点开', Boolean(readCard) && !readCard.classList.contains('is-locked') && readCard.dataset.act === 'open-content', readCard ? readCard.dataset.act : 'no-card');
 check(
   '首页显示后台配置的内容',
   window.document.querySelectorAll('.content-card').length === 4 && text('.section-head').length >= 0,
@@ -575,6 +579,22 @@ if (payCard) {
     text('.sheet').includes('确认订单') && text('.sheet').includes('1.99'),
     text('.sheet').replace(/\s+/g, ' ').slice(0, 60)
   );
+  closeSheetForTest();
+  await wait(40);
+}
+// 10.6 点开可读内容（免费/会员）：直接给全文，不再出现任何付费引导
+const openCard = [...window.document.querySelectorAll('.content-card')].find((c) => c.dataset.id === 'n1');
+if (openCard) {
+  openCard.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(60);
+  const sheetText = text('.sheet');
+  check('点开内容直接显示全文', sheetText.includes('注册即送'), sheetText.replace(/\s+/g, ' ').slice(0, 50));
+  check(
+    '看已购/会员内容不再出现开通会员',
+    !sheetText.includes('开通会员') && !$('.sheet [data-act="open-member"]'),
+    sheetText.replace(/\s+/g, ' ').slice(0, 50)
+  );
+  check('看已购/会员内容不出现单篇解锁', !$('.sheet [data-act="unlock-content"]'));
   closeSheetForTest();
   await wait(40);
 }
