@@ -190,6 +190,32 @@ function fakeFetch(url, opts = {}) {
         { id: 2, delta: -1200, kind: 'pay', ref: 'O1', balanceAfter: 1200, createdAt: Date.now() - 120000 },
       ],
     });
+  if (path === '/api/orders' && method === 'POST' && body && Array.isArray(body.items)) {
+    const items = body.items.map((it) => {
+      const p = BOOTSTRAP.products.find((x) => x.id === it.productId) || { title: it.productId, amount: 0 };
+      return { productId: it.productId, title: p.title, price: p.amount, listPrice: p.amount, qty: it.qty, memberPrice: false };
+    });
+    const amount = items.reduce((s, it) => s + it.price * it.qty, 0);
+    const order = {
+      id: 'OCART1',
+      kind: 'product',
+      productId: items[0].productId,
+      title: items.length > 1 ? `${items[0].title} 等 ${items.length} 种` : items[0].title,
+      amount,
+      items,
+      itemCount: items.reduce((s, it) => s + it.qty, 0),
+      status: 'created',
+      createdAt: Date.now(),
+    };
+    VIEWER.orders.unshift(order);
+    return json({ order }, 201);
+  }
+  if (path === '/api/orders/OCART1/pay' && method === 'POST') {
+    const o = VIEWER.orders.find((x) => x.id === 'OCART1');
+    const paid = { ...o, status: 'paid', channel: 'balance', channelName: '余额支付', paidAt: Date.now() };
+    VIEWER.orders = VIEWER.orders.map((x) => (x.id === 'OCART1' ? paid : x));
+    return json({ mode: 'balance', balance: 5000, order: paid });
+  }
   if (path === '/api/orders' && method === 'POST' && body && body.recharge)
     return json({ order: { id: 'OR1', title: '余额充值 ¥30.00', amount: body.recharge, status: 'created', createdAt: Date.now() } }, 201);
   return json({}, 404);
@@ -942,6 +968,75 @@ if (msgEntry) {
   await wait(60);
   check('看过消息后未读清零', !$('.dot-num'));
 }
+
+// 10.8 购物车：详情加购 → 改数量 → 多件合并结算
+window.localStorage.removeItem('cart_v1');
+const tabBy = (key) => [...window.document.querySelectorAll('.tab')].find((t) => t.dataset.tab === key);
+tabBy('home').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
+
+$('[data-act="goods"][data-id="demo_001"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(80);
+const addBtn = $('.sheet [data-act="cart-add"]');
+check('商品详情有「加入购物车」', Boolean(addBtn), addBtn ? addBtn.textContent.trim() : '未找到');
+if (addBtn) {
+  addBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(60);
+  addBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(60);
+  check('加购后按钮显示已加购件数', text('.sheet [data-act="cart-add"]').includes('已加购 2 件'), text('.sheet [data-act="cart-add"]'));
+}
+closeSheetForTest();
+await wait(60);
+check('底部购物车角标显示件数', text('.tab[data-tab="cart"] .tab-badge') === '2', text('.tab[data-tab="cart"] .tab-badge'));
+
+// 再加一件别的商品
+$('[data-act="goods"][data-id="member_month"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(80);
+$('.sheet [data-act="cart-add"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
+closeSheetForTest();
+await wait(60);
+
+tabBy('cart').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(80);
+check('购物车列出两件商品', window.document.querySelectorAll('.cart-item').length === 2, String(window.document.querySelectorAll('.cart-item').length));
+check('购物车显示总件数', text('.cart-head h2').includes('3 件'), text('.cart-head h2'));
+check('购物车合计按数量算', text('.cart-sum b') === '¥12.02', text('.cart-sum b'));
+
+const plusBtn = $('.stepper [data-act="cart-qty"][data-id="demo_001"][data-d="1"]');
+check('明细行有数量步进器', Boolean(plusBtn));
+if (plusBtn) {
+  plusBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(80);
+  check('点 + 数量加一', window.localStorage.getItem('cart_v1').includes('"qty":3'), window.localStorage.getItem('cart_v1'));
+  check('合计随数量更新', text('.cart-sum b') === '¥12.03', text('.cart-sum b'));
+}
+check('结算按钮显示可结算件数', text('.cart-pay').includes('4'), text('.cart-pay'));
+
+$('.cart-pay').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(80);
+check('结算弹层列出多件明细', window.document.querySelectorAll('.sheet .co-line').length === 2, String(window.document.querySelectorAll('.sheet .co-line').length));
+check('结算金额与购物车一致', text('.sheet .amount-big').includes('12.03'), text('.sheet .amount-big'));
+const payCartBtn = $('.sheet [data-act="pay"]');
+if (payCartBtn) {
+  payCartBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(250);
+}
+const cartOrderCall = calls.filter((c) => c.path === '/api/orders' && c.method === 'POST' && c.body && Array.isArray(c.body.items)).pop();
+check('结算提交多件明细分', Boolean(cartOrderCall) && cartOrderCall.body.items.length === 2, cartOrderCall ? JSON.stringify(cartOrderCall.body) : '未提交');
+check('购物车结算支付成功', text('.sheet .success-title') === '支付成功', text('.sheet .success-title'));
+check('下单后购物车已清空', window.localStorage.getItem('cart_v1') === '[]', String(window.localStorage.getItem('cart_v1')));
+check('购物车角标消失', !$('.tab[data-tab="cart"] .tab-badge'));
+closeSheetForTest();
+await wait(60);
+tabBy('cart').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(80);
+check('空购物车有引导文案', text('.cart-empty h3') === '购物车还是空的', text('.cart-empty h3'));
+
+// 回到「我的」，后面的退出登录从这里进
+await goMine();
+await wait(60);
 
 // 11. 退出登录（从设置中心进入）
 $('[data-act="settings"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));

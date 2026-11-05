@@ -61,6 +61,7 @@ function fromRow(row) {
     status: row.status,
     transactionId: row.transaction_id,
     settleSource: row.settle_source,
+    items: Array.isArray(row.items) ? row.items : [],
     createdAt: toMs(row.created_at),
     paidAt: toMs(row.paid_at),
     refundedAt: toMs(row.refunded_at),
@@ -106,6 +107,8 @@ async function insertOrder(order) {
         channel: order.channel,
         status: order.status,
         created_at_ms: order.createdAt,
+        // 购物车订单：明细一起落库；单件订单传空数组
+        items: Array.isArray(order.items) ? order.items : [],
       },
     },
     '写入'

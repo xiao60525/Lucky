@@ -780,8 +780,39 @@ function contentIdOfOrder(order) {
   return pid.startsWith(CONTENT_ORDER_PREFIX) ? pid.slice(CONTENT_ORDER_PREFIX.length) : null;
 }
 
+/** 订单明细：购物车订单有多件，老订单没有 items 就按单件补一条 */
+function orderItems(order) {
+  const list = Array.isArray(order && order.items) ? order.items : [];
+  if (list.length) {
+    return list.map((it) => ({
+      productId: it.productId,
+      title: it.title,
+      price: Number(it.price) || 0,
+      listPrice: Number(it.listPrice) || Number(it.price) || 0,
+      qty: Math.max(1, Number(it.qty) || 1),
+      memberPrice: Boolean(it.memberPrice),
+    }));
+  }
+  if (!order || !order.productId) return [];
+  return [
+    {
+      productId: order.productId,
+      title: order.title || '',
+      price: Number(order.amount) || 0,
+      listPrice: Number(order.listAmount) || Number(order.amount) || 0,
+      qty: 1,
+      memberPrice: Boolean(order.memberPrice),
+    },
+  ];
+}
+
+function orderItemCount(order) {
+  return orderItems(order).reduce((s, it) => s + (Number(it.qty) || 1), 0);
+}
+
 function publicOrder(order) {
   const contentId = contentIdOfOrder(order);
+  const items = order.recharge || contentId ? [] : orderItems(order);
   return {
     id: order.id,
     kind: order.recharge ? 'recharge' : contentId ? 'content' : 'product',
@@ -790,6 +821,9 @@ function publicOrder(order) {
     title: order.title,
     amount: order.amount,
     amountText: (order.amount / 100).toFixed(2),
+    items,
+    itemCount: items.reduce((s, it) => s + (Number(it.qty) || 1), 0),
+    listAmount: Number(order.listAmount) || 0,
     channel: order.channel,
     channelName: channelName(order.channel),
     status: order.status,
@@ -891,19 +925,27 @@ async function grantMembershipForOrder(order) {
   // 重复回调/重复查单不重复开通（settleOrder 会标记 _dup）
   if (order._dup) return null;
   if (!users.enabled || !order.userId || order.status !== 'paid') return null;
-  const p = db.products.find((x) => x.id === order.productId);
-  const days = p ? Number(p.memberDays || 0) : 0;
+  // 购物车订单会带多件商品：把里面所有「会员商品」的天数按件数累加，一起开通
+  let days = 0;
+  const memberProductIds = [];
+  for (const it of orderItems(order)) {
+    const p = db.products.find((x) => x.id === it.productId);
+    const d = p ? Number(p.memberDays || 0) : 0;
+    if (!d) continue;
+    days += d * Math.max(1, Number(it.qty) || 1);
+    memberProductIds.push(it.productId);
+  }
   if (!days) return null;
   const autoRenew = order.settleSource === 'autorenew';
   try {
-    const expire = await users.grantMember(order.userId, days, order.productId);
+    const expire = await users.grantMember(order.userId, days, memberProductIds[0]);
     console.log(`[member] 订单 ${order.id} 开通会员 ${days} 天 -> 到期 ${expire ? new Date(expire).toLocaleString() : '-'}`);
     await users.appendMemberLog({
       userId: order.userId,
       action: autoRenew ? 'autorenew' : 'purchase',
       source: 'user',
       days,
-      productId: order.productId || '',
+      productId: memberProductIds.join(','),
       orderId: order.id,
       amount: autoRenew ? order.amount : 0, // 自动续费记录扣了多少钱；用户主动购买金额在订单里
       note: autoRenew ? (order.channel === 'alipay_cycle' ? '到期自动续费（支付宝免密代扣）' : '到期自动续费（余额扣款）') : '',
@@ -1322,12 +1364,20 @@ async function handleApi(req, res, url) {
         console.warn('[bootstrap] 读取退款申请失败:', e.message);
       }
     }
-    // 商品销量（全站已支付/已退款订单数）：前端用来做「销量」排序和「已售 N」
+    // 商品销量（全站已支付/已退款订单的件数）：前端用来做「销量」排序和「已售 N」
     const salesMap = {};
     (db.orders || []).forEach((o) => {
-      if (!o || !o.productId) return;
-      if (o.status !== 'paid' && o.status !== 'refunded') return;
-      salesMap[o.productId] = (salesMap[o.productId] || 0) + 1;
+      if (!o || (o.status !== 'paid' && o.status !== 'refunded')) return;
+      const list =
+        Array.isArray(o.items) && o.items.length
+          ? o.items
+          : o.productId
+            ? [{ productId: o.productId, qty: 1 }]
+            : [];
+      list.forEach((it) => {
+        if (!it || !it.productId) return;
+        salesMap[it.productId] = (salesMap[it.productId] || 0) + Math.max(1, Number(it.qty) || 1);
+      });
     });
     const productsWithSales = db.products.map((p) => ({ ...p, sales: salesMap[p.id] || 0 }));
     return sendJSON(res, 200, {
@@ -1886,6 +1936,88 @@ async function handleApi(req, res, url) {
         return sendJSON(res, 502, { message: '订单创建失败：' + e.message });
       }
       return sendJSON(res, 201, { order: publicOrder(cOrder) });
+    }
+
+    // 购物车结算：body.items = [{ productId, qty }]
+    // 金额、会员价、会员专享一律服务端重新算，绝不信前端传的单价
+    if (Array.isArray(body.items) && body.items.length) {
+      if (body.items.length > 20) return sendJSON(res, 400, { message: '一次最多结算 20 种商品' });
+      let cartMember = false;
+      try {
+        const buyer = await users.getUser(uid);
+        cartMember = Boolean(buyer && users.isMember(buyer.profile));
+      } catch (e) {
+        console.warn('[order:cart] 读取会员状态失败:', e.message);
+      }
+      // 同一商品传了多条就先合并数量
+      const merged = new Map();
+      for (const raw of body.items) {
+        const pid = String((raw && raw.productId) || '');
+        const qty = Math.floor(Number(raw && raw.qty) || 0);
+        if (!pid) return sendJSON(res, 400, { message: '购物车里有商品信息不完整，请刷新后重试' });
+        if (!(qty >= 1 && qty <= 99)) return sendJSON(res, 400, { message: '每件商品数量需在 1 ~ 99 之间' });
+        merged.set(pid, Math.min(99, (merged.get(pid) || 0) + qty));
+      }
+      const items = [];
+      for (const [pid, qty] of merged) {
+        const p = db.products.find((x) => x.id === pid);
+        if (!p) {
+          return sendJSON(res, 400, {
+            code: 'ITEM_GONE',
+            productId: pid,
+            message: '购物车里有商品已下架，请移除后再结算',
+          });
+        }
+        if (p.memberOnly && !cartMember) {
+          return sendJSON(res, 403, {
+            message: `「${p.title}」为会员专享，开通会员后可购买`,
+            needMember: true,
+            productId: p.id,
+          });
+        }
+        const mp = Number(p.memberPrice) || 0;
+        const useMember = cartMember && mp > 0 && mp < p.amount;
+        items.push({
+          productId: p.id,
+          title: p.title,
+          price: useMember ? mp : p.amount,
+          listPrice: p.amount,
+          qty,
+          memberPrice: useMember,
+        });
+      }
+      const amount = items.reduce((s, it) => s + it.price * it.qty, 0);
+      const listAmount = items.reduce((s, it) => s + it.listPrice * it.qty, 0);
+      if (!amount) return sendJSON(res, 400, { message: '订单金额不能为 0' });
+      const totalQty = items.reduce((s, it) => s + it.qty, 0);
+      const title =
+        items.length === 1
+          ? totalQty > 1
+            ? `${items[0].title} ×${totalQty}`
+            : items[0].title
+          : `${items[0].title} 等 ${items.length} 种共 ${totalQty} 件`;
+      const cartOrder = {
+        id: newOrderId(),
+        userId: uid,
+        productId: items[0].productId, // 兼容老逻辑（销量/会员商品判定）取第一件
+        title,
+        amount,
+        listAmount,
+        memberPrice: items.some((it) => it.memberPrice),
+        items,
+        channel: null,
+        status: 'created',
+        createdAt: Date.now(),
+      };
+      db.orders.push(cartOrder);
+      try {
+        await store.insertOrder(cartOrder);
+      } catch (e) {
+        db.orders.pop();
+        console.error('[order:cart] 写入云库失败:', e.message);
+        return sendJSON(res, 502, { message: '订单创建失败：' + e.message });
+      }
+      return sendJSON(res, 201, { order: publicOrder(cartOrder) });
     }
 
     const product = db.products.find((p) => p.id === body.productId);
@@ -3284,9 +3416,14 @@ async function handleApi(req, res, url) {
       sortOrdersDesc(db.orders)
         .forEach((o) => {
           const buyer = (o.userId && umap[o.userId]) || {};
+          const detail = orderItems(o);
+          const titleCell =
+            detail.length > 1
+              ? `${o.title || ''}（${detail.map((it) => `${it.title} ×${it.qty}`).join('、')}）`
+              : o.title || '';
           rows.push([
             o.id,
-            o.title || '',
+            titleCell,
             (Number(o.amount || 0) / 100).toFixed(2),
             ORDER_STATUS_TEXT[o.status] || o.status,
             o.userId || '',

@@ -105,6 +105,7 @@ const LS_GOODS_FAV = 'goods_fav_v1';
 const LS_FOOTPRINT = 'footprint_v1';
 const LS_SEARCH_HISTORY = 'search_history_v1';
 const LS_MSG_READ = 'msg_read_v1';
+const LS_CART = 'cart_v1';
 
 function lsGet(key, fallback) {
   try {
@@ -178,6 +179,111 @@ function pushSearchHistory(q) {
 
 function clearSearchHistory() {
   lsSet(LS_SEARCH_HISTORY, []);
+}
+
+/* ---------------- 购物车（本机存储） ---------------- */
+/* 只存「商品 id + 数量」，单价与会员价永远按服务端下发的商品表现算，避免改价后算错 */
+
+function cartList() {
+  const v = lsGet(LS_CART, []);
+  if (!Array.isArray(v)) return [];
+  return v
+    .filter((x) => x && x.id && Number(x.qty) > 0)
+    .map((x) => ({ id: String(x.id), qty: Math.min(99, Math.max(1, Math.floor(Number(x.qty) || 1))), at: Number(x.at) || 0 }));
+}
+
+function cartSave(list) {
+  lsSet(LS_CART, (list || []).slice(0, 50));
+  updateTabBadge();
+}
+
+/** 购物车总件数：底部导航角标用 */
+function cartCount() {
+  return cartList().reduce((s, x) => s + (Number(x.qty) || 0), 0);
+}
+
+function cartHas(id) {
+  return cartList().some((x) => String(x.id) === String(id));
+}
+
+/** 加购，返回加完后的总件数 */
+function cartAdd(id, qty) {
+  const key = String(id || '');
+  if (!key) return cartCount();
+  const add = Math.max(1, Math.floor(Number(qty) || 1));
+  const list = cartList();
+  const hit = list.find((x) => x.id === key);
+  if (hit) hit.qty = Math.min(99, hit.qty + add);
+  else list.unshift({ id: key, qty: Math.min(99, add), at: Date.now() });
+  cartSave(list);
+  return cartCount();
+}
+
+function cartSetQty(id, qty) {
+  const key = String(id || '');
+  const n = Math.floor(Number(qty) || 0);
+  let list = cartList();
+  if (n <= 0) list = list.filter((x) => x.id !== key);
+  else {
+    const hit = list.find((x) => x.id === key);
+    if (hit) hit.qty = Math.min(99, n);
+  }
+  cartSave(list);
+}
+
+function cartRemove(id) {
+  const key = String(id || '');
+  cartSave(cartList().filter((x) => x.id !== key));
+}
+
+function cartClear() {
+  cartSave([]);
+}
+
+/**
+ * 购物车明细：把本机 id/数量 和当前商品表拼起来
+ * gone = 商品已下架/被删；locked = 会员专享但当前不是会员
+ */
+function cartRows() {
+  return cartList().map((it) => {
+    const p = (state.products || []).find((x) => String(x.id) === String(it.id)) || null;
+    const qty = Math.max(1, Number(it.qty) || 1);
+    const price = p ? memberPriceOf(p) : 0;
+    return {
+      id: it.id,
+      qty,
+      at: it.at,
+      product: p,
+      price,
+      sum: price * qty,
+      gone: !p,
+      locked: Boolean(p && p.memberOnly && !viewerIsMember()),
+    };
+  });
+}
+
+/** 可结算的明细（排除下架/会员受限的） */
+function cartPayableRows() {
+  return cartRows().filter((r) => !r.gone && !r.locked);
+}
+
+function cartTotal() {
+  return cartPayableRows().reduce((s, r) => s + r.sum, 0);
+}
+
+/** 加购（页面与弹层两套监听共用）：会员专享商品先引导开通 */
+function handleCartAdd(el) {
+  const id = el && el.dataset ? el.dataset.id : '';
+  const p = (state.products || []).find((x) => String(x.id) === String(id));
+  if (!p) return toast('商品不存在或已下架');
+  if (p.memberOnly && !viewerIsMember()) {
+    toast('该商品为会员专享，开通会员后可购买');
+    return memberSheet();
+  }
+  const n = cartAdd(id, 1);
+  const item = cartList().find((x) => x.id === String(id));
+  if (el) el.textContent = `✓ 已加购 ${item ? item.qty : 1} 件`;
+  return toast(`已加入购物车，共 ${n} 件`);
 }
 
 /** 消息中心：由订单 / 售后记录派生，不额外存库 */
@@ -429,7 +535,7 @@ function applyTabs(tabs) {
   const cfg = tabs || HOME_FALLBACK.tabs;
   const bar = document.getElementById('tabbar');
   if (!bar) return;
-  const labels = { home: cfg.home, content: cfg.content, mine: cfg.mine };
+  const labels = { home: cfg.home, content: cfg.content, cart: cfg.cart || '购物车', mine: cfg.mine };
   bar.querySelectorAll('.tab').forEach((t) => {
     const key = t.dataset.tab;
     const span = t.querySelector('span');
@@ -1452,6 +1558,9 @@ function goodsSheet(productId) {
   const bought = boughtProductIds().has(p.id);
   const sold = Number(p.sales) || (state.orders || []).filter((o) => o.productId === p.id && o.status === 'paid').length;
   const fav = goodsFavOn(p.id);
+  const cartItem = cartList().find((x) => String(x.id) === String(p.id));
+  const inCart = Boolean(cartItem);
+  const inCartQty = cartItem ? cartItem.qty : 0;
   const idx = Math.max(0, state.products.findIndex((x) => x.id === p.id));
   const save = hasMemberPrice ? p.amount - mp : 0;
 
@@ -1504,9 +1613,14 @@ function goodsSheet(productId) {
     ${priceHTML}
     <p class="gs-desc">${esc(p.desc || '商家还没有填写商品描述')}</p>
     ${metaChips ? `<div class="gs-chips">${metaChips}</div>` : ''}
-    <button class="btn-primary" data-act="buy" data-id="${esc(p.id)}">
-      ${p.memberOnly && !isMember ? '开通会员后购买' : '立即购买'}
-    </button>
+    <div class="gs-buy-row">
+      <button class="btn-ghost gs-cart" data-act="cart-add" data-id="${esc(p.id)}">
+        ${inCart ? `✓ 已加购 ${inCartQty} 件` : '加入购物车'}
+      </button>
+      <button class="btn-primary" data-act="buy" data-id="${esc(p.id)}">
+        ${p.memberOnly && !isMember ? '开通会员后购买' : '立即购买'}
+      </button>
+    </div>
     <div class="gs-actions">
       <button class="btn-ghost ${fav ? 'is-on' : ''}" data-act="goods-fav" data-id="${esc(p.id)}">${
         fav ? '♥ 已收藏' : '♡ 收藏'
@@ -1514,9 +1628,11 @@ function goodsSheet(productId) {
       <button class="btn-ghost" data-act="share-goods" data-id="${esc(p.id)}">分享给朋友</button>
     </div>
     ${
-      fav
-        ? '<button class="link-btn" data-act="open-wishlist">去心愿单看看 ›</button>'
-        : '<p class="gs-tip">收藏后可在「我的 → 心愿单」随时找到</p>'
+      inCart
+        ? `<button class="link-btn" data-act="go-tab" data-tab="cart">去购物车结算（${inCartQty}）›</button>`
+        : fav
+          ? '<button class="link-btn" data-act="open-wishlist">去心愿单看看 ›</button>'
+          : '<p class="gs-tip">收藏后可在「我的 → 心愿单」随时找到</p>'
     }
     ${recHTML}
   `);
@@ -1928,6 +2044,161 @@ function rechargeGo() {
   confirmSheet();
 }
 
+/* ---------------- 购物车页 ---------------- */
+
+/** 单行购物车明细：图 / 标题 / 标签 / 单价 / 数量步进 / 删除 */
+function cartLineHTML(r) {
+  const p = r.product;
+  const idx = p ? Math.max(0, (state.products || []).findIndex((x) => String(x.id) === String(p.id))) : 0;
+  const thumb = p
+    ? p.image
+      ? `<img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy" />`
+      : `<span class="cart-emoji">${GOODS_ICONS[idx % GOODS_ICONS.length]}</span>`
+    : '<span class="cart-emoji">🚫</span>';
+  const memberOn = Boolean(p && viewerIsMember() && Number(p.memberPrice) > 0 && Number(p.memberPrice) < p.amount);
+  const tags = [
+    r.gone ? '<span class="cart-tag is-bad">已下架</span>' : '',
+    r.locked ? '<span class="cart-tag is-warn">会员专享</span>' : '',
+    memberOn ? '<span class="cart-tag is-ok">会员价</span>' : '',
+    p && Number(p.memberDays) > 0 ? `<span class="cart-tag">送 ${p.memberDays} 天会员</span>` : '',
+  ]
+    .filter(Boolean)
+    .join('');
+
+  return `
+    <div class="cart-item${r.gone ? ' is-gone' : ''}">
+      <button class="cart-thumb" data-act="goods" data-id="${esc(r.id)}" ${r.gone ? 'disabled' : ''}>${thumb}</button>
+      <div class="cart-main">
+        <div class="cart-name">${esc(p ? p.title : '商品已下架')}</div>
+        ${tags ? `<div class="cart-tags">${tags}</div>` : ''}
+        <div class="cart-bottom">
+          <span class="cart-price">${p ? yuan(r.price) : ''}${memberOn ? `<s>${yuan(p.amount)}</s>` : ''}</span>
+          <div class="stepper">
+            <button data-act="cart-qty" data-id="${esc(r.id)}" data-d="-1" aria-label="减少数量" ${
+              r.gone ? 'disabled' : ''
+            }>−</button>
+            <i>${r.qty}</i>
+            <button data-act="cart-qty" data-id="${esc(r.id)}" data-d="1" aria-label="增加数量" ${
+              r.gone ? 'disabled' : ''
+            }>+</button>
+          </div>
+        </div>
+      </div>
+      <button class="cart-del" data-act="cart-remove" data-id="${esc(r.id)}" aria-label="删除">✕</button>
+    </div>`;
+}
+
+/** 购物车页：明细 + 底部合计/结算 */
+function renderCart() {
+  const rows = cartRows();
+  if (!rows.length) {
+    const recs = (state.products || []).slice(0, 6);
+    return `
+      <div class="card cart-empty">
+        <div class="cart-empty-ico">🛒</div>
+        <h3>购物车还是空的</h3>
+        <p>把想买的先加进来，一次结算更省事</p>
+        <button class="btn-primary" data-act="go-tab" data-tab="home" style="margin-top:14px">去挑商品</button>
+      </div>
+      ${
+        recs.length
+          ? `<div class="section-head"><h2>随便看看</h2><span>${recs.length} 件</span></div>
+             <div class="fp-row">${recs
+               .map((x) => {
+                 const xi = Math.max(0, (state.products || []).findIndex((y) => String(y.id) === String(x.id)));
+                 return `<button class="fp-card" data-act="goods" data-id="${esc(x.id)}">
+                   ${
+                     x.image
+                       ? `<span class="fp-thumb"><img src="${esc(x.image)}" alt="${esc(x.title)}" loading="lazy" /></span>`
+                       : `<span class="fp-emoji">${GOODS_ICONS[xi % GOODS_ICONS.length]}</span>`
+                   }
+                   <span class="fp-name">${esc(x.title)}</span>
+                   <span class="fp-price">${yuan(memberPriceOf(x))}</span>
+                 </button>`;
+               })
+               .join('')}</div>`
+          : ''
+      }`;
+  }
+
+  const payable = rows.filter((r) => !r.gone && !r.locked);
+  const total = payable.reduce((s, r) => s + r.sum, 0);
+  const listTotal = payable.reduce((s, r) => s + (r.product ? r.product.amount * r.qty : 0), 0);
+  const count = rows.reduce((s, r) => s + r.qty, 0);
+  const payCount = payable.reduce((s, r) => s + r.qty, 0);
+  const blocked = rows.filter((r) => r.gone || r.locked);
+
+  return `
+    <div class="cart-head">
+      <h2>购物车 <span>${count} 件</span></h2>
+      <button class="mini-btn" data-act="cart-clear">清空</button>
+    </div>
+    ${
+      blocked.length
+        ? `<p class="cart-hint">${
+            blocked.some((r) => r.gone)
+              ? '有商品已下架，已自动跳过，可直接删除'
+              : '有会员专享商品，开通会员后即可一起结算'
+          }</p>`
+        : ''
+    }
+    <div class="cart-list">${rows.map(cartLineHTML).join('')}</div>
+    <div class="cart-bar">
+      <div class="cart-sum">
+        <span>合计</span>
+        <b>${yuan(total)}</b>
+        ${listTotal > total ? `<s>${yuan(listTotal)}</s>` : ''}
+      </div>
+      <button class="btn-primary cart-pay" data-act="cart-checkout" ${payable.length ? '' : 'disabled'}>
+        ${payable.length ? `去结算（${payCount}）` : '暂无可结算商品'}
+      </button>
+    </div>`;
+}
+
+/** 购物车结算前的确认弹层：列出明细 + 选支付方式 */
+function cartConfirmSheet() {
+  const rows = cartPayableRows();
+  if (!rows.length) return toast('购物车里没有可结算的商品');
+  const total = rows.reduce((s, r) => s + r.sum, 0);
+  const count = rows.reduce((s, r) => s + r.qty, 0);
+  sheetState.type = 'cart-confirm';
+  sheetState.items = rows.map((r) => ({ productId: r.id, qty: r.qty }));
+  sheetState.total = total;
+  if (!sheetState.channel) sheetState.channel = preferredChannel(channelList());
+  const ch = sheetState.channel;
+  const balanceEnough = state.balance >= total;
+  openSheet(`
+    <h3>确认订单</h3>
+    <p class="sheet-sub">共 ${count} 件商品</p>
+    <div class="co-list">
+      ${rows
+        .map(
+          (r) => `<div class="co-line">
+            <span class="co-name">${esc(r.product.title)}</span>
+            <i>×${r.qty}</i>
+            <b>${yuan(r.sum)}</b>
+          </div>`
+        )
+        .join('')}
+    </div>
+    <div class="amount-box">
+      <div class="amount-label">支付金额</div>
+      <div class="amount-big"><small>¥</small>${(total / 100).toFixed(2)}</div>
+    </div>
+    <div class="pay-list">
+      ${channelItemsHTML(ch)}
+    </div>
+    <button class="btn-primary" id="payBtn" data-act="pay" ${ch === 'balance' && !balanceEnough ? 'disabled' : ''}>
+      ${ch === 'balance' && !balanceEnough ? '余额不足' : '确认支付 ' + yuan(total)}
+    </button>
+    <p class="cashier-note">${
+      state.channels.wechat || state.channels.alipay || state.channels.alipayQr
+        ? '真实支付渠道 · 会真实扣款，请用小额测试'
+        : '沙箱环境，不会产生真实扣款'
+    }</p>
+  `);
+}
+
 function renderUserCenter() {
   const v = state.viewer;
   const addr = v.address || {};
@@ -1938,6 +2209,7 @@ function renderUserCenter() {
   const msgTotal = msgs.length;
   const wishN = goodsFavList().filter((id) => (state.products || []).some((p) => String(p.id) === id)).length;
   const fpN = footprintList().filter((x) => (state.products || []).some((p) => String(p.id) === String(x.id))).length;
+  const cartN = cartCount();
 
   return `
     <div class="card user-hero">
@@ -1989,6 +2261,11 @@ function renderUserCenter() {
 
     <div class="section-head"><h2>我的服务</h2></div>
     <div class="card set-list">
+      <button class="set-row" data-act="go-tab" data-tab="cart">
+        <span>购物车${cartN ? ` <em class="dot-num">${cartN}</em>` : ''}</span>
+        <i style="font-size:12px;color:var(--muted)">${cartN ? `${cartN} 件待结算` : '还没加购商品'}</i>
+        <i>›</i>
+      </button>
       <button class="set-row" data-act="open-messages">
         <span>消息中心${unreadN ? ` <em class="dot-num">${unreadN}</em>` : ''}</span>
         <i style="font-size:12px;color:var(--muted)">${
@@ -2561,13 +2838,17 @@ function favoritesSheet() {
 
 /* ---------------- 渲染入口 ---------------- */
 
-const TITLES = { home: '首页', content: '内容', mine: '我的' };
+const TITLES = { home: '首页', content: '内容', cart: '购物车', mine: '我的' };
 
-/** 底部「我的」上的待支付角标：有未付订单时提醒用户回来付 */
+/** 底部角标：「我的」= 待支付订单数，「购物车」= 已加购件数 */
 function updateTabBadge() {
-  const tab = document.querySelector('.tab[data-tab="mine"]');
+  paintTabBadge('.tab[data-tab="mine"]', dropExpiredOrders(state.orders || []).filter(isUnpaid).length);
+  paintTabBadge('.tab[data-tab="cart"]', cartCount());
+}
+
+function paintTabBadge(selector, n) {
+  const tab = document.querySelector(selector);
   if (!tab) return;
-  const n = dropExpiredOrders(state.orders).filter(isUnpaid).length;
   let badge = tab.querySelector('.tab-badge');
   if (!n) {
     if (badge) badge.remove();
@@ -2578,7 +2859,7 @@ function updateTabBadge() {
     badge.className = 'tab-badge';
     tab.appendChild(badge);
   }
-  badge.textContent = n > 9 ? '9+' : String(n);
+  badge.textContent = n > 99 ? '99+' : String(n);
 }
 
 /** 首屏骨架屏：比转圈更接近最终版式，减少等待的突兀感 */
@@ -2613,7 +2894,13 @@ function render() {
     return;
   }
   view.innerHTML =
-    state.tab === 'home' ? renderHome() : state.tab === 'content' ? renderContent() : renderMine();
+    state.tab === 'home'
+      ? renderHome()
+      : state.tab === 'content'
+        ? renderContent()
+        : state.tab === 'cart'
+          ? renderCart()
+          : renderMine();
   if (state.tab === 'home') refreshGoodsBox(); // 统一走一遍：空结果空态、emoji 对齐、计数
   if (view.querySelector('.order-count')) startCountdownTick(); // 有待支付倒计时才开始计时
   view.scrollTop = 0;
@@ -2864,17 +3151,27 @@ async function doPay() {
     btn.disabled = true;
     btn.textContent = '正在创建订单…';
   }
+  const cartItems =
+    sheetState.type === 'cart-confirm' && Array.isArray(sheetState.items) && sheetState.items.length
+      ? sheetState.items
+      : null;
   try {
+    const payload = cartItems
+      ? { items: cartItems.map((it) => ({ productId: it.productId, qty: it.qty })) }
+      : sheetState.product.contentId
+        ? { contentId: sheetState.product.contentId }
+        : sheetState.product.recharge
+          ? { recharge: sheetState.product.amount }
+          : { productId: sheetState.product.id };
     const created = await api('/api/orders', {
       method: 'POST',
-      body: JSON.stringify(
-        sheetState.product.contentId
-          ? { contentId: sheetState.product.contentId }
-          : sheetState.product.recharge
-            ? { recharge: sheetState.product.amount }
-            : { productId: sheetState.product.id }
-      ),
+      body: JSON.stringify(payload),
     });
+    // 购物车下单：这几件从购物车移除（万一没付成，还能在「我的订单 → 继续支付」里找回这笔单）
+    if (cartItems) {
+      const ids = cartItems.map((it) => String(it.productId));
+      cartSave(cartList().filter((x) => !ids.includes(x.id)));
+    }
     const res = await api(`/api/orders/${created.order.id}/pay`, {
       method: 'POST',
       body: JSON.stringify({ channel: sheetState.channel }),
@@ -2884,15 +3181,21 @@ async function doPay() {
     toast(e.message);
     if (btn) {
       btn.disabled = false;
-      btn.textContent = '确认支付 ' + yuan(sheetState.product.amount);
+      const amt = cartItems ? Number(sheetState.total) || 0 : sheetState.product.amount;
+      btn.textContent = '确认支付 ' + yuan(amt);
     }
   }
 }
 
 function showSuccess(order) {
-  // 会员商品支付成功后，静默刷新一次用户信息，让会员状态立即生效
-  const p = state.products.find((x) => x.id === order.productId);
-  if ((p && Number(p.memberDays) > 0) || order.recharge) refreshMe().catch(() => {});
+  // 会员商品支付成功后，静默刷新一次用户信息，让会员状态立即生效（购物车订单逐件判断）
+  const boughtIds = (order.items && order.items.length ? order.items.map((it) => it.productId) : [order.productId]).filter(
+    Boolean
+  );
+  const boughtGoods = boughtIds
+    .map((id) => (state.products || []).find((x) => String(x.id) === String(id)))
+    .filter(Boolean);
+  if (boughtGoods.some((p) => Number(p.memberDays) > 0) || order.recharge) refreshMe().catch(() => {});
   // 内容解锁：重新拉一次内容，正文才会由服务端下发
   if (order.kind === 'content' || String(order.productId || '').startsWith('c:')) {
     refreshContents().catch(() => {});
@@ -2980,8 +3283,16 @@ function orderSheet(order) {
         : ''
     }
     <div class="detail-list">
-      <div class="detail-row"><span class="k">商品</span><span class="v">${order.title}</span></div>
-      <div class="detail-row"><span class="k">金额</span><span class="v">${yuan(order.amount)}</span></div>
+      ${
+        order.items && order.items.length > 1
+          ? `<div class="detail-row"><span class="k">商品</span><span class="v">${order.items
+              .map((it) => `${esc(it.title)} ×${it.qty}`)
+              .join('<br />')}</span></div>`
+          : `<div class="detail-row"><span class="k">商品</span><span class="v">${esc(order.title)}</span></div>`
+      }
+      <div class="detail-row"><span class="k">金额</span><span class="v">${yuan(order.amount)}${
+        Number(order.listAmount) > Number(order.amount) ? `<s class="detail-old">${yuan(order.listAmount)}</s>` : ''
+      }</span></div>
       <div class="detail-row"><span class="k">支付方式</span><span class="v">${order.channelName}</span></div>
       <div class="detail-row">
         <span class="k">订单号</span>
@@ -3444,6 +3755,43 @@ view.addEventListener('click', async (e) => {
   if (act === 'share-qr') return shareQrSheet();
 
   if (act === 'open-member') return memberSheet();
+  if (act === 'go-tab') {
+    state.tab = el.dataset.tab || 'home';
+    return render();
+  }
+  /* 购物车 */
+  if (act === 'cart-add') {
+    return handleCartAdd(el);
+  }
+  if (act === 'cart-qty') {
+    const cur = cartList().find((x) => x.id === String(el.dataset.id));
+    if (!cur) return;
+    const next = cur.qty + (Number(el.dataset.d) || 0);
+    if (next > 99) return toast('单件商品最多 99 件');
+    cartSetQty(el.dataset.id, next);
+    if (state.tab === 'cart') render();
+    return;
+  }
+  if (act === 'cart-remove') {
+    cartRemove(el.dataset.id);
+    toast('已移出购物车');
+    if (state.tab === 'cart') render();
+    return;
+  }
+  if (act === 'cart-clear') {
+    if (!window.confirm('确定清空购物车？')) return;
+    cartClear();
+    toast('购物车已清空');
+    return render();
+  }
+  if (act === 'cart-checkout') {
+    if (!state.viewer) {
+      state.tab = 'mine';
+      render();
+      return toast('请先登录后再结算');
+    }
+    return cartConfirmSheet();
+  }
   if (act === 'home-banner') {
     return goLink(homeCfg().banner.link);
   }
@@ -3591,6 +3939,20 @@ sheetEl.addEventListener('click', async (e) => {
     startBuy(el.dataset.id);
     return;
   }
+  if (act === 'cart-add') {
+    handleCartAdd(el);
+    return;
+  }
+  if (act === 'go-tab') {
+    state.tab = el.dataset.tab || 'home';
+    closeSheet();
+    render();
+    return;
+  }
+  if (act === 'cart-checkout') {
+    cartConfirmSheet();
+    return;
+  }
   if (act === 'share-goods') {
     await shareGoods(el.dataset.id);
     return;
@@ -3677,6 +4039,7 @@ sheetEl.addEventListener('click', async (e) => {
     sheetState.channel = el.dataset.id;
     rememberChannel(el.dataset.id);
     if (sheetState.type === 'continue' && sheetState.order) continuePaySheet(sheetState.order);
+    else if (sheetState.type === 'cart-confirm') cartConfirmSheet();
     else confirmSheet();
   }
 

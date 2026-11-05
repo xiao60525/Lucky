@@ -425,7 +425,13 @@ function orderTable(orders) {  const list = filteredOrders(orders);
       <td style="font-family:monospace;font-size:12px;max-width:150px;word-break:break-all">
         <span class="oid" data-copy="${esc(o.id)}" title="点击复制">${esc(o.id)}</span>
       </td>
-      <td style="max-width:130px;word-break:break-all">${esc(o.title)}</td>
+      <td style="max-width:130px;word-break:break-all">${esc(o.title)}${
+        Number(o.itemCount) > 1
+          ? `<div class="muted" style="font-size:11px" title="${esc(
+              (o.items || []).map((it) => `${it.title} ×${it.qty}`).join('、')
+            )}">共 ${o.itemCount} 件</div>`
+          : ''
+      }</td>
       <td style="white-space:nowrap">${orderBuyerText(o)}</td>
       <td style="white-space:nowrap">¥${o.amountText}</td>
       <td class="muted" style="white-space:nowrap">${o.channelName || '-'}</td>

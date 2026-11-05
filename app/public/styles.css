@@ -2259,3 +2259,188 @@ body.dark .btn-ghost.is-on { background: #33232a; border-color: #54323a; }
   font-weight: 700;
   color: var(--text);
 }
+
+/* ==================================================================
+   20261105j：购物车（多件合并结算）
+================================================================== */
+
+/* 商品详情底部：加购 + 立即购买 */
+.gs-buy-row { display: flex; gap: 10px; align-items: stretch; }
+.gs-buy-row .gs-cart {
+  flex: 0 0 38%;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--accent);
+  border-color: #dfe2fb;
+  background: #f5f6ff;
+}
+.gs-buy-row .btn-primary { flex: 1; }
+
+/* 购物车页头 */
+.cart-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 2px 10px;
+}
+.cart-head h2 { font-size: 16px; font-weight: 700; }
+.cart-head h2 span { margin-left: 6px; font-size: 12px; font-weight: 500; color: var(--muted); }
+.cart-hint {
+  margin: 0 0 10px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  background: #fff7ed;
+  color: #b45309;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* 明细列表 */
+.cart-list { display: flex; flex-direction: column; gap: 10px; }
+.cart-item {
+  position: relative;
+  display: flex;
+  gap: 10px;
+  padding: 12px 12px 12px 10px;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+.cart-item.is-gone { opacity: 0.62; }
+.cart-thumb {
+  flex: 0 0 auto;
+  width: 66px;
+  height: 66px;
+  padding: 0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: #f2f4f9;
+}
+.cart-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.cart-emoji {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 26px;
+  background: linear-gradient(135deg, #eef0ff, #f8f0ff);
+}
+.cart-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 5px; }
+.cart-name {
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.35;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  padding-right: 20px;
+}
+.cart-tags { display: flex; flex-wrap: wrap; gap: 5px; }
+.cart-tag {
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 10.5px;
+  line-height: 16px;
+  background: #f2f4f9;
+  color: #6b7280;
+}
+.cart-tag.is-ok { background: #fff1f0; color: #e0483c; }
+.cart-tag.is-warn { background: #fff7ed; color: #b45309; }
+.cart-tag.is-bad { background: #f3f4f6; color: #9ca3af; }
+.cart-bottom { display: flex; align-items: flex-end; justify-content: space-between; margin-top: auto; }
+.cart-price { font-size: 15px; font-weight: 700; color: #e0483c; }
+.cart-price s { margin-left: 5px; font-size: 11.5px; font-weight: 400; color: var(--muted); }
+
+/* 数量步进器 */
+.stepper { display: flex; align-items: center; gap: 0; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.stepper button {
+  width: 26px;
+  height: 26px;
+  font-size: 14px;
+  line-height: 1;
+  color: #4a5164;
+  background: #f7f8fc;
+}
+.stepper button:disabled { color: #c8ccd8; }
+.stepper i {
+  min-width: 30px;
+  text-align: center;
+  font-style: normal;
+  font-size: 13px;
+  font-weight: 600;
+}
+.cart-del {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  font-size: 11px;
+  color: #9aa1b2;
+  background: #f4f5f9;
+}
+
+/* 底部合计条：贴在页面底部，滚动时始终可见 */
+.cart-bar {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 14px -2px 0;
+  padding: 10px 12px calc(10px + env(safe-area-inset-bottom, 0px));
+  background: rgba(255, 255, 255, 0.96);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 -6px 18px rgba(20, 26, 48, 0.06);
+}
+.cart-sum { display: flex; flex-direction: column; gap: 1px; }
+.cart-sum span { font-size: 11px; color: var(--muted); }
+.cart-sum b { font-size: 19px; font-weight: 800; color: #e0483c; }
+.cart-sum s { font-size: 11px; color: var(--muted); }
+.cart-pay { flex: 0 0 auto; min-width: 132px; }
+
+/* 空购物车 */
+.cart-empty { text-align: center; padding: 30px 16px 26px; }
+.cart-empty-ico { font-size: 40px; line-height: 1; }
+.cart-empty h3 { margin: 12px 0 6px; font-size: 15px; }
+.cart-empty p { font-size: 12.5px; color: var(--muted); }
+.cart-empty .btn-primary { display: inline-block; padding: 10px 26px; }
+
+/* 结算确认弹层里的明细 */
+.co-list {
+  margin: 4px 0 12px;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: #f7f8fc;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.co-line { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; }
+.co-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.co-line i { font-style: normal; color: var(--muted); }
+.co-line b { font-weight: 600; }
+
+.detail-old { margin-left: 6px; font-size: 11.5px; font-weight: 400; color: var(--muted); }
+
+/* 深色模式 */
+body.dark .gs-buy-row .gs-cart { background: #232840; border-color: #333a5c; }
+body.dark .cart-item { border-color: #2a2f3c; }
+body.dark .cart-emoji { background: linear-gradient(135deg, #252a3a, #2a2438); }
+body.dark .cart-tag { background: #262a36; color: #b7bdcc; }
+body.dark .cart-tag.is-ok { background: #3a2226; color: #ff8b80; }
+body.dark .cart-tag.is-warn { background: #3a2f1d; color: #f0b45f; }
+body.dark .stepper button { background: #262a36; color: #cfd4e2; }
+body.dark .cart-del { background: #2a2f3c; color: #9aa1b2; }
+body.dark .cart-bar { background: rgba(26, 29, 38, 0.96); border-color: #2a2f3c; }
+body.dark .co-list { background: #23283a; }
+body.dark .cart-hint { background: #3a2f1d; color: #f0b45f; }
