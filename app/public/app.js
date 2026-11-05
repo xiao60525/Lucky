@@ -27,6 +27,7 @@ const state = {
   products: [],
   contents: [],
   favorites: [], // 收藏的内容 id（登录才有）
+  refunds: [], // 我的退款/退货申请（登录才有）
   orders: [],
   tab: 'home',
   loaded: false,
@@ -970,10 +971,33 @@ function mmss(ms) {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, '0')}`;
 }
 
+/** 这笔订单的退款申请（优先返回待审核的那条，否则返回最近一条） */
+function refundOfOrder(orderId) {
+  const list = (state.refunds || []).filter((r) => r.orderId === orderId);
+  return list.find((r) => r.status === 'pending') || list[0] || null;
+}
+
+const REFUND_REASONS = ['不想要了', '商品与描述不符', '重复购买', '服务未使用', '其他原因'];
+
+const REFUND_STATUS_TEXT = {
+  pending: '审核中',
+  approved: '已通过',
+  rejected: '已拒绝',
+  cancelled: '已撤销',
+};
+
 function mineOrderRow(o) {
   const meta = [esc(o.id), timeText(o.createdAt)].join(' · ');
   const ch = mineChannelName(o);
   const chTag = ch && o.status !== 'created' ? `<span class="tag tag-blue" style="margin-left:6px">${esc(ch)}</span>` : '';
+  // 退款进度：待审核 / 已拒绝都能在列表上一眼看到
+  const rf = refundOfOrder(o.id);
+  const rfTag =
+    rf && rf.status === 'pending'
+      ? '<span class="tag tag-gold" style="margin-left:6px">退款审核中</span>'
+      : rf && rf.status === 'rejected'
+        ? '<span class="tag tag-gray" style="margin-left:6px">退款被拒</span>'
+        : '';
   // 没付完的订单给一个明确入口，点整行就直接进支付界面
   const cta = isUnpaid(o) ? `<span class="order-cta">继续支付 ›</span>` : '';
   // 未支付订单带倒计时：到点服务端就删了，先让用户看见剩余时间
@@ -984,7 +1008,7 @@ function mineOrderRow(o) {
   return `
     <button class="order-row" data-act="order" data-id="${esc(o.id)}">
       <span class="order-main">
-        <span class="order-title">${esc(o.title)}${chTag}</span>
+        <span class="order-title">${esc(o.title)}${chTag}${rfTag}</span>
         <span class="order-meta">${meta}</span>
       </span>
       <span class="order-right">
@@ -1615,6 +1639,17 @@ function renderUserCenter() {  const v = state.viewer;
         }</i>
         <i>›</i>
       </button>
+      <button class="set-row" data-act="open-refunds">
+        <span>退款与售后</span>
+        <i style="font-size:12px;color:var(--muted)">${
+          (state.refunds || []).some((r) => r.status === 'pending')
+            ? '有申请审核中'
+            : (state.refunds || []).length
+              ? (state.refunds || []).length + ' 条记录'
+              : '申请与进度'
+        }</i>
+        <i>›</i>
+      </button>
       <button class="set-row" data-act="feedback-new">
         <span>意见反馈</span>
         <i style="font-size:12px;color:var(--muted)">想加功能 / 遇到问题</i>
@@ -1681,6 +1716,13 @@ async function refreshMe() {
   const { orders } = await api('/api/orders');
   state.orders = dropExpiredOrders(orders);
   state.viewer.orders = state.orders;
+  // 退款进度也一起刷新（后台审核后再下拉就能看到结果）
+  try {
+    const { refunds } = await api('/api/refunds');
+    state.refunds = Array.isArray(refunds) ? refunds : [];
+  } catch (e) {
+    /* 未登录或网络异常时忽略 */
+  }
   render();
   return state.viewer;
 }
@@ -1697,6 +1739,19 @@ async function refreshContents() {
     render();
   } catch (e) {
     /* 失败就保持原样，用户可下拉刷新 */
+  }
+}
+
+/** 退款申请提交/撤销后，重新拉一次退款列表与订单状态 */
+async function refreshRefundState() {
+  try {
+    const data = await api('/api/bootstrap');
+    state.refunds = Array.isArray(data.refunds) ? data.refunds : [];
+    state.orders = dropExpiredOrders(data.orders || []);
+    if (state.viewer) state.viewer.orders = state.orders;
+    state.balance = data.balance;
+  } catch (e) {
+    /* 网络失败就保持原样，用户可以下拉刷新 */
   }
 }
 
@@ -2480,7 +2535,30 @@ function orderSheet(order) {
       }
       <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>`;
   } else if (order.status === 'paid') {
-    actions = `<button class="btn-ghost" data-act="refund" data-id="${order.id}" style="color:#f05252">申请退款</button>`;
+    const rf = refundOfOrder(order.id);
+    if (rf && rf.status === 'pending') {
+      actions = `
+        <div class="refund-note">
+          <b>退款申请审核中</b>
+          <i>${esc(rf.reason || '')} · ${timeText(rf.createdAt)}</i>
+          <i>商家审核通过后原路退回，审核期间不用重复提交</i>
+        </div>
+        <button class="btn-ghost" data-act="cancel-refund" data-id="${esc(rf.id)}" style="color:#f05252">撤销申请</button>
+        <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>`;
+    } else {
+      actions = `
+        ${
+          rf && rf.status === 'rejected'
+            ? `<div class="refund-note is-bad"><b>上次申请未通过</b><i>${esc(
+                rf.adminNote || '商家未填写原因'
+              )}</i><i>可以改一下说明后重新申请</i></div>`
+            : rf && rf.status === 'approved'
+              ? `<div class="refund-note is-ok"><b>退款已通过</b><i>${esc(rf.adminNote || '款项已原路退回')}</i></div>`
+              : ''
+        }
+        <button class="btn-ghost" data-act="refund" data-id="${order.id}" style="color:#f05252">申请退款 / 退货</button>
+        <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>`;
+    }
   } else {
     actions = `<button class="btn-primary" data-act="close">知道了</button>`;
   }
@@ -2516,6 +2594,83 @@ function orderSheet(order) {
       }
     </div>
     ${actions}
+  `);
+}
+
+/** 申请退款 / 退货：选原因 + 补充说明，提交后等商家审核 */
+function refundSheet(order) {
+  sheetState.type = 'refund';
+  sheetState.order = order;
+  sheetState.reason = '';
+  openSheet(`
+    <h3>申请退款 / 退货</h3>
+    <p class="sheet-sub">${esc(order.title)} · ${yuan(order.amount)}</p>
+    <p class="sheet-group">退款原因</p>
+    <div class="reason-chips">
+      ${REFUND_REASONS.map(
+        (r) => `<button class="reason-chip" data-act="refund-reason" data-r="${esc(r)}">${esc(r)}</button>`
+      ).join('')}
+    </div>
+    <textarea class="fb-text" id="refundDetail" rows="3" maxlength="300" placeholder="补充说明（选填）：遇到的问题、期望怎么处理"></textarea>
+    <div class="refund-tip">
+      提交后由商家审核，通过后按原支付渠道退回（余额支付退回余额），通常 1~3 个工作日到账。<br />
+      审核期间这笔订单不能重复申请，可以随时撤销。
+    </div>
+    <button class="btn-primary" data-act="submit-refund" data-id="${esc(order.id)}">提交申请</button>
+    <button class="btn-ghost" data-act="close" style="margin-top:10px">取消</button>
+  `);
+}
+
+/** 我的退款 / 售后记录 */
+function refundsSheet() {
+  sheetState.type = 'refunds';
+  const list = state.refunds || [];
+  const badge = (s) =>
+    s === 'pending'
+      ? '<span class="fb-status">审核中</span>'
+      : s === 'approved'
+        ? '<span class="fb-status done">已通过</span>'
+        : s === 'rejected'
+          ? '<span class="fb-status is-bad">已拒绝</span>'
+          : '<span class="fb-status is-off">已撤销</span>';
+  openSheet(`
+    <h3>退款与售后</h3>
+    <p class="sheet-sub">${list.length ? `共 ${list.length} 条记录` : '还没有提交过退款申请'}</p>
+    ${
+      list.length
+        ? `<div class="fb-list">${list
+            .map(
+              (r) => `<div class="fb-item">
+          <div class="fb-head">
+            <span>${esc(r.orderTitle || r.orderId)} · ${yuan(r.amount)}</span>
+            ${badge(r.status)}
+          </div>
+          <div class="fb-body">${esc(r.reason || '未填写原因')}${
+            r.detail ? `\n${esc(r.detail)}` : ''
+          }</div>
+          <div class="fb-wait muted">提交于 ${timeText(r.createdAt)}${
+            r.handledAt ? ` · 处理于 ${timeText(r.handledAt)}` : ''
+          }</div>
+          ${
+            r.adminNote
+              ? `<div class="fb-reply"><b>商家回复</b>${esc(r.adminNote)}</div>`
+              : r.status === 'pending'
+                ? '<div class="fb-wait muted">等待商家审核…</div>'
+                : ''
+          }
+          ${
+            r.status === 'pending'
+              ? `<div class="sheet-actions"><button class="fav-sheet-btn" data-act="cancel-refund" data-id="${esc(
+                  r.id
+                )}">撤销申请</button></div>`
+              : ''
+          }
+        </div>`
+            )
+            .join('')}</div>`
+        : `<div class="empty" style="padding:20px 4px"><p>退款 / 退货申请提交后，可以在这里查看审核进度和商家回复</p></div>`
+    }
+    <button class="btn-ghost" data-act="close" style="margin-top:14px">关闭</button>
   `);
 }
 
@@ -2747,6 +2902,7 @@ view.addEventListener('click', async (e) => {
   }
   if (act === 'fav') return toggleFav(el.dataset.id);
   if (act === 'open-favorites') return favoritesSheet();
+  if (act === 'open-refunds') return refundsSheet();
   if (act === 'feedback-new') return feedbackSheet();
   if (act === 'feedback-mine') return myFeedbackSheet();
   if (act === 'locked-content') {
@@ -2843,6 +2999,7 @@ sheetEl.addEventListener('click', async (e) => {
   if (act === 'open-member') return memberSheet();
   if (act === 'fav') return toggleFav(el.dataset.id);
   if (act === 'open-favorites') return favoritesSheet();
+  if (act === 'open-refunds') return refundsSheet();
   if (act === 'feedback-new') return feedbackSheet();
   if (act === 'feedback-mine') return myFeedbackSheet();
   if (act === 'feedback-send') return sendFeedback();
@@ -3165,18 +3322,54 @@ sheetEl.addEventListener('click', async (e) => {
   }
 
   if (act === 'refund') {
+    const order = sheetState.order || (state.orders || []).find((o) => o.id === el.dataset.id);
+    if (!order) return toast('订单不存在');
+    return refundSheet(order);
+  }
+
+  if (act === 'refund-reason') {
+    sheetState.reason = el.dataset.r || '';
+    sheetEl.querySelectorAll('[data-act="refund-reason"]').forEach((x) => x.classList.toggle('on', x === el));
+    return;
+  }
+
+  if (act === 'submit-refund') {
+    const order = sheetState.order;
+    if (!order) return toast('订单不存在');
+    if (!sheetState.reason) return toast('请先选一个退款原因');
+    const detail = (($('#refundDetail') || {}).value || '').trim();
+    el.disabled = true;
     try {
-      const res = await api(`/api/orders/${el.dataset.id}/refund`, { method: 'POST' });
-      state.balance = res.balance;
-      const idx = state.orders.findIndex((o) => o.id === res.order.id);
-      if (idx > -1) state.orders[idx] = res.order;
+      const res = await api(`/api/orders/${order.id}/refund-request`, {
+        method: 'POST',
+        body: JSON.stringify({ reason: sheetState.reason, detail }),
+      });
+      await refreshRefundState();
       closeSheet();
-      toast(res.order.channel === 'wechat' ? '已提交微信退款' : '已退款到余额');
+      toast((res && res.message) || '退款申请已提交，等待商家审核');
+      render();
+    } catch (err) {
+      el.disabled = false;
+      toast(err.message);
+    }
+    return;
+  }
+
+  if (act === 'cancel-refund') {
+    if (!confirm('确定撤销这条退款申请？撤销后可以重新提交。')) return;
+    try {
+      await api(`/api/refunds/${el.dataset.id}/cancel`, { method: 'POST' });
+      await refreshRefundState();
+      closeSheet();
+      toast('已撤销申请');
       render();
     } catch (err) {
       toast(err.message);
     }
+    return;
   }
+
+  if (act === 'open-refunds') return refundsSheet();
 });
 
 /* ---------------- 启动 ---------------- */
@@ -3188,6 +3381,7 @@ async function bootstrap() {
   state.products = data.products;
   state.contents = Array.isArray(data.contents) ? data.contents : [];
   state.favorites = Array.isArray(data.favorites) ? data.favorites : [];
+  state.refunds = Array.isArray(data.refunds) ? data.refunds : [];
   state.orders = data.orders;
   await loadViewer();
   if (state.viewer) state.viewer.orders = state.orders;

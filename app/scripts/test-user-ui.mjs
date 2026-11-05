@@ -29,6 +29,7 @@ const VIEWER = {
   memberLevel: 'member',
   memberExpire: Date.now() + 15 * 86400000,
   autoRenew: false,
+  refunds: [],
   orders: [
     { id: 'O1', productId: 'demo_001', title: '会员月卡', amount: 1200, status: 'paid', createdAt: Date.now() },
     {
@@ -121,8 +122,31 @@ function fakeFetch(url, opts = {}) {
       json: () => Promise.resolve(body),
     });
 
-  if (path === '/api/bootstrap') return json({ ...BOOTSTRAP, orders: token ? VIEWER.orders : [] });
+  if (path === '/api/bootstrap')
+    return json({ ...BOOTSTRAP, orders: token ? VIEWER.orders : [], refunds: token ? VIEWER.refunds || [] : [] });
   if (path === '/api/orders' && method === 'GET') return json({ orders: token ? VIEWER.orders : [] });
+  if (path === '/api/refunds' && method === 'GET') return json({ refunds: VIEWER.refunds || [] });
+  if (path === '/api/orders/O1/refund-request' && method === 'POST') {
+    const rf = {
+      id: 'rf_t1',
+      orderId: 'O1',
+      amount: 1200,
+      reason: (body && body.reason) || '',
+      detail: (body && body.detail) || '',
+      status: 'pending',
+      adminNote: '',
+      createdAt: Date.now(),
+      handledAt: null,
+      orderTitle: '会员月卡',
+    };
+    VIEWER.refunds = [rf, ...(VIEWER.refunds || [])];
+    return json({ refund: rf, message: '退款申请已提交，等待商家审核' });
+  }
+  if (path === '/api/refunds/rf_t1/cancel' && method === 'POST') {
+    const r = (VIEWER.refunds || []).find((x) => x.id === 'rf_t1');
+    if (r) r.status = 'cancelled';
+    return json({ ok: true });
+  }
   if (path === '/api/orders/O2/pay') {
     // 模拟「上次其实已经付成功、只是回调没到」：服务端直接回已付，不再重复收款
     const paid = { ...VIEWER.orders[1], status: 'paid', paidAt: Date.now() };
@@ -160,6 +184,7 @@ function fakeFetch(url, opts = {}) {
 const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'https://example.com/?sharecode=TESTCODE' });
 const { window } = dom;
 window.fetch = fakeFetch;
+window.confirm = () => true;
 Object.defineProperty(window, 'localStorage', {
   value: {
     store: {},
@@ -634,6 +659,54 @@ if (paidRow) {
   await wait(40);
 } else {
   check('订单列表里有已支付订单', false, '未找到 O1');
+}
+
+// 9c. 退款 / 退货：用户申请 → 等后台审核 → 可撤销
+await goMine();
+await wait(40);
+$('[data-act="open-orders"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+const rfRow = [...window.document.querySelectorAll('.sheet .order-row')].find((r) => r.dataset.id === 'O1');
+if (rfRow) {
+  rfRow.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(40);
+  check('已支付订单有申请退款入口', Boolean($('.sheet [data-act="refund"]')));
+  $('.sheet [data-act="refund"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(40);
+  check('退款弹层有 5 个原因可选', window.document.querySelectorAll('.sheet .reason-chip').length === 5);
+  $('.sheet [data-act="submit-refund"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(60);
+  check('没选原因不让提交', text('#toast').includes('请先选一个退款原因'), text('#toast'));
+
+  const chip = [...window.document.querySelectorAll('.sheet .reason-chip')].find((c) => c.dataset.r === '不想要了');
+  chip.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(30);
+  check('点原因后高亮', chip.classList.contains('on'));
+  $('.sheet #refundDetail').value = '买多了';
+  $('.sheet [data-act="submit-refund"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(120);
+  const rfCall = calls.filter((c) => c.path === '/api/orders/O1/refund-request' && c.method === 'POST').pop();
+  check(
+    '提交退款申请带上原因与说明',
+    Boolean(rfCall) && rfCall.body.reason === '不想要了' && rfCall.body.detail === '买多了',
+    JSON.stringify(rfCall && rfCall.body)
+  );
+  check('提交后有审核提示', text('#toast').includes('等待商家审核'), text('#toast'));
+
+  // 再打开这笔订单：显示审核中，且能撤销
+  $('[data-act="open-orders"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(40);
+  const rfRow2 = [...window.document.querySelectorAll('.sheet .order-row')].find((r) => r.dataset.id === 'O1');
+  rfRow2.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(40);
+  check('订单详情显示退款审核中', text('.sheet').includes('退款申请审核中'), text('.sheet .refund-note'));
+  check('审核中可撤销申请', Boolean($('.sheet [data-act="cancel-refund"]')));
+  $('.sheet [data-act="cancel-refund"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(120);
+  check('撤销申请调用接口', calls.some((c) => c.path === '/api/refunds/rf_t1/cancel' && c.method === 'POST'));
+  check('撤销后回到可申请状态', (VIEWER.refunds[0] || {}).status === 'cancelled', (VIEWER.refunds[0] || {}).status);
+} else {
+  check('退款测试找到已支付订单', false, '未找到 O1');
 }
 
 // 10. 关于（从设置中心进入）

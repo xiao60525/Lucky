@@ -11,11 +11,56 @@
  */
 
 import { spawn } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import crypto from 'node:crypto';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const PORT = 3997;
 const BASE = `http://localhost:${PORT}`;
+
+function envValue(key) {
+  try {
+    const t = readFileSync(join(ROOT, '.env'), 'utf8');
+    for (const line of t.split(/\r?\n/)) {
+      if (line.startsWith(key + '=')) return line.slice(key.length + 1).trim();
+    }
+  } catch {
+    /* ignore */
+  }
+  return '';
+}
+
+/** 退款现在需要后台审核：测试里自己拿一个后台 token（.env 密码失效就用本地签名兜底） */
+async function adminToken() {
+  const pwd = process.env.TEST_ADMIN_PASSWORD || envValue('ADMIN_PASSWORD');
+  try {
+    const r = await fetch(BASE + '/api/admin/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userName: envValue('ADMIN_USER') || 'admin', password: pwd }),
+    });
+    const d = await r.json().catch(() => null);
+    if (d && d.token) return d.token;
+  } catch {
+    /* ignore */
+  }
+  const key = (envValue('ADMIN_TOKEN_SECRET') || envValue('PAY_SECRET') || pwd || 'admin-dev-token').trim();
+  const exp = Date.now() + 3600 * 1000;
+  const sig = crypto.createHmac('sha256', key).update('admin|' + exp).digest('base64url');
+  return exp.toString(36) + '.' + sig;
+}
+
+async function postJSONWith(path, body, headers = {}) {
+  const r = await fetch(BASE + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(body),
+  });
+  const d = await r.json().catch(() => null);
+  return { status: r.status, data: d };
+}
 
 let pass = 0;
 let fail = 0;
@@ -164,9 +209,21 @@ const PHONE = '1990000' + String(Date.now()).slice(-4);
   ok('未登录下单被拒绝', anon.status === 401);
   token = saved;
 
-  // 10. 退款后收回阅读权限（避免退了钱还能看）
-  const refund = await api(`/api/orders/${order.id}/refund`, { method: 'POST' });
-  ok('内容订单可以退款', refund.status === 200, refund.data.message || '');
+  // 10. 退款（用户申请 → 后台审核通过）后收回阅读权限
+  const apply = await api(`/api/orders/${order.id}/refund-request`, {
+    method: 'POST',
+    body: JSON.stringify({ reason: '内容不想要了', detail: '测试退款收回权限' }),
+  });
+  ok('内容订单可以提交退款申请', apply.status === 200 && apply.data.refund, apply.data.message || '');
+  const at = await adminToken();
+  const approve = await postJSONWith(
+    '/api/admin/refund/review',
+    { id: apply.data.refund && apply.data.refund.id, action: 'approve', note: '测试通过' },
+    { 'x-admin-token': at }
+  );
+  ok('后台审核通过后退款完成', approve.status === 200 && approve.data.refund && approve.data.refund.status === 'approved', `${approve.status} ${(approve.data && approve.data.message) || ''}`);
+  const directRefund = await api(`/api/orders/${order.id}/refund`, { method: 'POST' });
+  ok('用户不能自己直接退款', directRefund.status === 403, String(directRefund.status));
   let relock = null;
   for (let i = 0; i < 15; i++) {
     boot = await api('/api/bootstrap');

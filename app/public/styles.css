@@ -1949,3 +1949,69 @@ body.dark .fb-input { background: #232734; border-color: #363c4d; color: #e6e9f2
 .avatar-pf img { width: 100%; height: 100%; object-fit: cover; display: block; }
 body.dark .profile-bio { color: #a9b1c6; }
 body.dark .avatar-pf { background: #262b39; color: #a9b4ff; }
+
+/* ---------------- 退款 / 退货申请 ---------------- */
+.tag.tag-gray { background: #f0f1f5; color: #6b7280; }
+
+.reason-chips { display: flex; flex-wrap: wrap; gap: 8px; margin: 2px 0 10px; }
+.reason-chip {
+  padding: 8px 13px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--card);
+  color: #4a5164;
+  font-size: 13px;
+  font-weight: 500;
+  transition: all .15s;
+}
+.reason-chip.on {
+  border-color: #f0b46a;
+  background: #fff7e6;
+  color: #b57708;
+  font-weight: 600;
+}
+.reason-chip:active { transform: scale(.97); }
+
+.refund-tip {
+  margin: 10px 0 14px;
+  padding: 10px 12px;
+  border-radius: 12px;
+  background: #f6f7fb;
+  color: #6b7280;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.refund-note {
+  margin: 12px 0;
+  padding: 12px 13px;
+  border-radius: 12px;
+  background: #fff8e8;
+  border: 1px solid #f6e3bd;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.refund-note b { font-size: 13.5px; color: #a9700a; }
+.refund-note i { font-style: normal; font-size: 12px; color: #8a7a5c; line-height: 1.6; }
+.refund-note.is-bad { background: #fef1f1; border-color: #f6d5d5; }
+.refund-note.is-bad b { color: #c53030; }
+.refund-note.is-bad i { color: #9b6a6a; }
+.refund-note.is-ok { background: #effaf3; border-color: #cdeed9; }
+.refund-note.is-ok b { color: #1a9b52; }
+.refund-note.is-ok i { color: #5b7d68; }
+
+.fb-status.is-bad { background: #fdeaea; color: #c53030; }
+.fb-status.is-off { background: #f0f1f5; color: #6b7280; }
+
+body.dark .tag.tag-gray { background: #2a2f3d; color: #9aa3b8; }
+body.dark .reason-chip { background: #232734; border-color: #363c4d; color: #c6ccdb; }
+body.dark .reason-chip.on { background: #3a2f18; border-color: #5a4620; color: #f5b942; }
+body.dark .refund-tip { background: #232734; color: #9aa3b8; }
+body.dark .refund-note { background: #3a2f18; border-color: #5a4620; }
+body.dark .refund-note b { color: #f5b942; }
+body.dark .refund-note i { color: #c0ae8a; }
+body.dark .refund-note.is-bad { background: #3a2224; border-color: #5c3234; }
+body.dark .refund-note.is-bad b { color: #f28b8b; }
+body.dark .refund-note.is-ok { background: #1e3527; border-color: #2f5540; }
+body.dark .refund-note.is-ok b { color: #74d39c; }

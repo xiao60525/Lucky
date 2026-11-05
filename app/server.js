@@ -800,6 +800,36 @@ function publicOrder(order) {
   };
 }
 
+/** 退款申请：给前端展示的字段（隐去内部 userId） */
+function publicRefund(r) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    orderId: r.orderId,
+    amount: r.amount,
+    reason: r.reason,
+    detail: r.detail,
+    status: r.status,
+    adminNote: r.adminNote || '',
+    createdAt: r.createdAt,
+    handledAt: r.handledAt || null,
+    orderTitle: r.orderTitle || '',
+    channel: r.channel || '',
+    channelName: r.channel ? channelName(r.channel) : '',
+  };
+}
+
+/** 云库函数抛的业务错误 → 给用户看的中文提示 */
+function refundErrorText(msg) {
+  const m = String(msg || '');
+  if (m.includes('order_not_found')) return '订单不存在';
+  if (m.includes('not_owner')) return '这笔订单不属于当前账号';
+  if (m.includes('already_refunded')) return '这笔订单已经退过款了';
+  if (m.includes('order_not_paid')) return '只有已支付的订单可以申请退款';
+  if (m.includes('missing_user')) return '请先登录';
+  return '提交失败：' + m;
+}
+
 /** 用户表 30 秒缓存：后台订单列表附带买家信息用 */
 let userMapCache = { at: 0, map: null };
 async function userMap() {
@@ -1283,6 +1313,15 @@ async function handleApi(req, res, url) {
       const locked = (Boolean(c.membersOnly) || price > 0) && !bootstrapIsMember && !owned;
       return { ...c, desc: locked ? '' : c.desc, locked, unlocked: owned, price };
     });
+    // 我的退款申请（登录才有）：前端据此在订单上显示「审核中 / 已通过 / 已拒绝」
+    let refunds = [];
+    if (uid) {
+      try {
+        refunds = (await store.myRefunds(uid, 20)).map(publicRefund);
+      } catch (e) {
+        console.warn('[bootstrap] 读取退款申请失败:', e.message);
+      }
+    }
     return sendJSON(res, 200, {
       user: { id: db.user.id, nickname: db.user.nickname },
       loggedIn: Boolean(uid),
@@ -1298,6 +1337,7 @@ async function handleApi(req, res, url) {
       products: db.products,
       contents,
       favorites,
+      refunds,
       orders: recentOrders.map(publicOrder),
     });
   }
@@ -2267,21 +2307,67 @@ async function handleApi(req, res, url) {
     return sendJSON(res, 200, { code: 'SUCCESS', message: 'OK' });
   }
 
-  // 退款
+  // 退款：用户侧不再直接退款，改为「提交申请 → 后台审核通过后才退」
   const refundMatch = pathname.match(/^\/api\/orders\/([^/]+)\/refund$/);
   if (refundMatch && method === 'POST') {
-    const order = db.orders.find((o) => o.id === refundMatch[1]);
-    if (!order) return sendJSON(res, 404, { message: '订单不存在' });
-    let result;
-    try {
-      result = await refundOrder(order);
-    } catch (e) {
-      return sendJSON(res, e.status || 502, { message: `退款失败：${e.message}` });
-    }
-    return sendJSON(res, 200, {
-      order: publicOrder(order),
-      balance: result && result.balance != null ? result.balance : db.user.balance,
+    return sendJSON(res, 403, {
+      code: 'REFUND_NEED_REVIEW',
+      message: '退款申请需要商家审核，请在订单详情里提交退款申请',
     });
+  }
+
+  // 用户提交退款 / 退货申请
+  const refundApplyMatch = pathname.match(/^\/api\/orders\/([^/]+)\/refund-request$/);
+  if (refundApplyMatch && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    const order = db.orders.find((o) => o.id === refundApplyMatch[1]);
+    if (!order) return sendJSON(res, 404, { message: '订单不存在' });
+    if (order.userId && order.userId !== uid) return sendJSON(res, 403, { message: '这笔订单不属于当前账号' });
+    if (order.recharge) return sendJSON(res, 409, { message: '充值订单不支持在线退款，请联系商家' });
+    if (order.status === 'refunded') return sendJSON(res, 409, { message: '这笔订单已经退过款了' });
+    if (order.status !== 'paid') return sendJSON(res, 409, { message: '只有已支付的订单可以申请退款' });
+    const body = await readBody(req);
+    const reason = String(body.reason || '').trim();
+    const detail = String(body.detail || '').trim();
+    if (!reason) return sendJSON(res, 400, { message: '请选择退款原因' });
+    if (detail.length > 300) return sendJSON(res, 400, { message: '问题描述最多 300 字' });
+    try {
+      const out = await store.applyRefund(uid, order.id, reason, detail);
+      return sendJSON(res, 200, {
+        refund: publicRefund(out),
+        duplicated: Boolean(out && out.duplicated),
+        message: out && out.duplicated ? '这笔订单已有待审核的退款申请' : '退款申请已提交，等待商家审核',
+      });
+    } catch (e) {
+      return sendJSON(res, 502, { message: refundErrorText(e.message) });
+    }
+  }
+
+  // 我的退款申请列表
+  if (pathname === '/api/refunds' && method === 'GET') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    try {
+      const list = (await store.myRefunds(uid, 50)).map(publicRefund);
+      return sendJSON(res, 200, { refunds: list });
+    } catch (e) {
+      return sendJSON(res, 502, { message: '读取退款申请失败：' + e.message });
+    }
+  }
+
+  // 撤销退款申请（仅待审核状态可撤）
+  const refundCancelMatch = pathname.match(/^\/api\/refunds\/([^/]+)\/cancel$/);
+  if (refundCancelMatch && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    try {
+      const n = await store.cancelRefund(uid, refundCancelMatch[1]);
+      if (!n) return sendJSON(res, 409, { message: '这条申请已处理，不能撤销' });
+      return sendJSON(res, 200, { ok: true });
+    } catch (e) {
+      return sendJSON(res, 502, { message: '撤销失败：' + e.message });
+    }
   }
 
   // 后台：手动同步单笔订单（对账用，强制向支付宝查单）
@@ -2484,6 +2570,13 @@ async function handleApi(req, res, url) {
       } catch (e) {
         console.warn('[admin] 读取操作日志失败:', e.message);
       }
+      // 退款 / 退货申请（用户提交，待审核）
+      let refunds = [];
+      try {
+        refunds = await store.adminRefundList(200);
+      } catch (e) {
+        console.warn('[admin] 读取退款申请失败:', e.message);
+      }
       const umap = await userMap();
 
       /* ---- 经营看板：今天 / 近 7 日 ---- */
@@ -2551,6 +2644,8 @@ async function handleApi(req, res, url) {
           contentCount: contents.length,
           feedbackPending: feedbacks.filter((f) => f.status === 'pending').length,
           feedbackTotal: feedbacks.length,
+          refundPending: refunds.filter((r) => r.status === 'pending').length,
+          refundTotal: refunds.length,
           trend,
         },
         orders: sortOrdersDesc(db.orders).slice(0, 200).map((o) => adminOrder(o, umap)),
@@ -2558,6 +2653,7 @@ async function handleApi(req, res, url) {
         products,
         contents,
         feedbacks,
+        refunds,
         logs,
         site: publicSite(),
         mp: { ready: mpstore.enabled, endpoint: mpstore.endpoint || null },
@@ -2890,10 +2986,67 @@ async function handleApi(req, res, url) {
         return sendJSON(res, e.status || 502, { message: `退款失败：${e.message}` });
       }
       audit('订单退款', `${order.id} · ¥${(order.amount / 100).toFixed(2)} · ${order.title}`);
+      // 如果用户之前提交过退款申请，顺手把它标记为已通过，避免「已退款还挂在待审核」
+      try {
+        const pending = (await store.adminRefundList(200)).find(
+          (r) => r.orderId === order.id && r.status === 'pending'
+        );
+        if (pending) await store.adminRefundMark(pending.id, 'approved', '商家直接退款（未走申请审核）', currentAdminUser());
+      } catch (e) {
+        console.warn('[admin] 同步退款申请状态失败:', e.message);
+      }
       return sendJSON(res, 200, {
         order: publicOrder(order),
         balance: result && result.balance != null ? result.balance : db.user.balance,
       });
+    }
+
+    // 退款审核：通过 = 真的退款；拒绝 = 只记录原因（用户能看到）
+    if (pathname === '/api/admin/refund/review' && method === 'POST') {
+      const body = await readBody(req);
+      const id = String(body.id || '');
+      const action = String(body.action || '').toLowerCase();
+      const note = String(body.note || '').trim().slice(0, 300);
+      if (!id) return sendJSON(res, 400, { message: '缺少申请编号' });
+      if (action !== 'approve' && action !== 'reject') return sendJSON(res, 400, { message: '审核动作不正确' });
+      let list = [];
+      try {
+        list = await store.adminRefundList(500);
+      } catch (e) {
+        return sendJSON(res, 502, { message: '读取退款申请失败：' + e.message });
+      }
+      const item = list.find((r) => r.id === id);
+      if (!item) return sendJSON(res, 404, { message: '申请不存在' });
+      if (item.status !== 'pending') return sendJSON(res, 409, { message: '这条申请已经处理过了' });
+
+      if (action === 'reject') {
+        if (!note) return sendJSON(res, 400, { message: '拒绝时请写一句原因，用户能看到' });
+        try {
+          const row = await store.adminRefundMark(id, 'rejected', note, currentAdminUser());
+          audit('拒绝退款', `${item.orderId} · ¥${(item.amount / 100).toFixed(2)} · ${note}`);
+          return sendJSON(res, 200, { refund: publicRefund(row) });
+        } catch (e) {
+          return sendJSON(res, 502, { message: '保存审核结果失败：' + e.message });
+        }
+      }
+
+      // 通过：先真的退款，成功后落审核结果
+      const order = db.orders.find((o) => o.id === item.orderId);
+      if (!order) return sendJSON(res, 404, { message: '订单不存在（可能已被清理），无法退款' });
+      if (order.status !== 'refunded') {
+        try {
+          await refundOrder(order);
+        } catch (e) {
+          return sendJSON(res, e.status || 502, { message: '退款失败：' + e.message });
+        }
+      }
+      try {
+        const row = await store.adminRefundMark(id, 'approved', note || '审核通过，已退款', currentAdminUser());
+        audit('同意退款', `${item.orderId} · ¥${(item.amount / 100).toFixed(2)} · ${item.orderTitle || ''}`);
+        return sendJSON(res, 200, { refund: publicRefund(row), order: publicOrder(order) });
+      } catch (e) {
+        return sendJSON(res, 502, { message: `订单已退款，但审核状态没存上：${e.message}` });
+      }
     }
 
     // 会员管理：开通 / 续费（天数累加，重复操作安全）

@@ -512,6 +512,94 @@ async function adminExtendOrder(orderId) {
   return { ok: true, orders: state.orders.length, balance: state.account ? state.account.balance : null };
 }
 
+/* ---------------- 退款 / 退货申请 ---------------- */
+
+function refundRow(r) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    orderId: r.orderId || r.order_id || '',
+    userId: r.userId || r.user_id || '',
+    amount: Number(r.amount) || 0,
+    reason: r.reason || '',
+    detail: r.detail || '',
+    status: r.status || 'pending',
+    adminNote: r.adminNote || r.admin_note || '',
+    handler: r.handler || '',
+    createdAt: toMs(r.createdAt || r.created_at),
+    handledAt: toMs(r.handledAt || r.handled_at),
+    orderTitle: r.orderTitle || r.order_title || '',
+    channel: r.channel || '',
+    orderStatus: r.orderStatus || r.order_status || '',
+    nickname: r.nickname || '',
+    phone: r.phone || '',
+  };
+}
+
+/** 用户提交退款申请（同一订单已有待审核申请时返回原申请，duplicated=true） */
+async function applyRefund(userId, orderId, reason, detail) {
+  const row = await call(
+    'app_refund_apply',
+    {
+      p_secret: secret,
+      p_user: String(userId || ''),
+      p_order: String(orderId || ''),
+      p_reason: String(reason || ''),
+      p_detail: String(detail || ''),
+    },
+    '提交退款申请'
+  );
+  const out = refundRow(row);
+  if (out && row && row.duplicated) out.duplicated = true;
+  return out;
+}
+
+/** 用户自己的退款申请列表 */
+async function myRefunds(userId, limit = 30) {
+  const rows = await call(
+    'app_refund_mine',
+    { p_secret: secret, p_user: String(userId || ''), p_limit: Math.max(1, Math.floor(Number(limit) || 30)) },
+    '读取退款申请'
+  );
+  return (Array.isArray(rows) ? rows : []).map(refundRow).filter(Boolean);
+}
+
+/** 用户撤销待审核申请 */
+async function cancelRefund(userId, id) {
+  const r = await call(
+    'app_refund_cancel',
+    { p_secret: secret, p_user: String(userId || ''), p_id: String(id || '') },
+    '撤销退款申请'
+  );
+  return Number(r && r.cancelled) || 0;
+}
+
+/** 后台：全部退款申请 */
+async function adminRefundList(limit = 200) {
+  const rows = await call(
+    'app_admin_refund_list',
+    { p_secret: secret, p_limit: Math.max(1, Math.floor(Number(limit) || 200)) },
+    '读取退款申请'
+  );
+  return (Array.isArray(rows) ? rows : []).map(refundRow).filter(Boolean);
+}
+
+/** 后台：审核通过 / 拒绝 */
+async function adminRefundMark(id, status, note, actor) {
+  const row = await call(
+    'app_admin_refund_mark',
+    {
+      p_secret: secret,
+      p_id: String(id || ''),
+      p_status: String(status || ''),
+      p_note: String(note || ''),
+      p_actor: String(actor || ''),
+    },
+    '审核退款申请'
+  );
+  return refundRow(row);
+}
+
 /* ---------------- 管理员账号密码 ---------------- */
 
 function adminCredRow(row) {
@@ -573,6 +661,11 @@ module.exports = {
   adminLogAdd,
   adminLogList,
   adminLogClear,
+  applyRefund,
+  myRefunds,
+  cancelRefund,
+  adminRefundList,
+  adminRefundMark,
   getAdminCredentials,
   setAdminCredentials,
   purgeStaleOrders,

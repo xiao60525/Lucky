@@ -145,6 +145,48 @@ const userList = [
 let replyBody = null;
 let deleteUrl = null;
 let cleared = false;
+let reviewBody = null;
+let refunds = [
+  {
+    id: 'rf_1',
+    orderId: 'O20261105001',
+    userId: 'u1',
+    amount: 1000,
+    reason: '商品与描述不符',
+    detail: '和图片不一样',
+    status: 'pending',
+    adminNote: '',
+    handler: '',
+    createdAt: now - 1800e3,
+    handledAt: null,
+    orderTitle: '会员月卡',
+    channel: 'alipay_wap',
+    orderStatus: 'paid',
+    nickname: '张三',
+    phone: '13800000001',
+  },
+  {
+    id: 'rf_2',
+    orderId: 'O20261105002',
+    userId: 'u2',
+    amount: 1000,
+    reason: '不想要了',
+    detail: '',
+    status: 'pending',
+    adminNote: '',
+    handler: '',
+    createdAt: now - 900e3,
+    handledAt: null,
+    orderTitle: '会员季卡',
+    channel: 'alipay_wap',
+    orderStatus: 'paid',
+    nickname: '李四',
+    phone: '13800000002',
+  },
+];
+
+w.confirm = () => true;
+w.prompt = () => '不符合退款条件';
 
 w.fetch = async (url, opts = {}) => {
   const u = String(url);
@@ -173,6 +215,8 @@ w.fetch = async (url, opts = {}) => {
         contentCount: 2,
         feedbackPending: 1,
         feedbackTotal: 2,
+        refundPending: refunds.filter((r) => r.status === 'pending').length,
+        refundTotal: refunds.length,
         trend: [],
       },
       orders,
@@ -180,6 +224,7 @@ w.fetch = async (url, opts = {}) => {
       products,
       contents,
       feedbacks,
+      refunds,
       logs,
       site: { name: '测试应用', notice: '', home: {}, hasIcon: false },
       mp: { ready: false },
@@ -205,6 +250,20 @@ w.fetch = async (url, opts = {}) => {
     return json({ removed: 3 });
   }
   if (u.includes('/api/admin/users')) return json({ ready: true, users: userList });
+  if (u.includes('/api/admin/refund/review')) {
+    reviewBody = JSON.parse(opts.body || '{}');
+    const r = refunds.find((x) => x.id === reviewBody.id);
+    if (r && reviewBody.action === 'approve') {
+      r.status = 'approved';
+      r.adminNote = reviewBody.note || '';
+      r.handledAt = Date.now();
+    } else if (r && reviewBody.action === 'reject') {
+      r.status = 'rejected';
+      r.adminNote = reviewBody.note || '';
+      r.handledAt = Date.now();
+    }
+    return json({ refund: r || {} });
+  }
   return json({}, 200);
 };
 
@@ -222,7 +281,11 @@ check('后台已登录并渲染侧边栏', Boolean($('.side-nav')));
 /* ---------- 概览 ---------- */
 check('概览有「内容与反馈」卡片', w.document.body.textContent.includes('累计阅读'));
 check('概览显示待处理反馈', w.document.body.textContent.includes('待处理反馈'));
-check('侧栏反馈角标显示待处理数', ($('.nav-badge') || {}).textContent === '1', ($('.nav-badge') || {}).textContent);
+check(
+  '侧栏反馈角标显示待处理数',
+  (($('.nav-btn[data-tab="feedback"] .nav-badge') || {}).textContent || '') === '1',
+  ($('.nav-btn[data-tab="feedback"] .nav-badge') || {}).textContent
+);
 check(
   '概览可跳到内容页',
   Boolean($('#ovGoContent')) && Boolean($('#ovGoFeedback'))
@@ -324,6 +387,39 @@ await wait(80);
 check('会员页有导出名单按钮', Boolean($('#exportMembers')));
 check('会员行有快捷续30天按钮', Boolean($('[data-mquick="u1"]')));
 check('会员状态显示剩余天数', $('#panel tbody').textContent.includes('会员 · 剩'), ($('#panel tbody') || { textContent: '' }).textContent.replace(/\s+/g, ' ').slice(0, 80));
+
+/* ---------- 退款审核页 ---------- */
+nav('orders');
+await wait(60);
+check('订单表标记退款待审', $('#panel tbody').textContent.includes('退款待审'));
+
+nav('refunds');
+await wait(80);
+check('退款页列出待审核申请', all('#panel tbody tr').length === 2, String(all('#panel tbody tr').length));
+check('退款页显示申请原因', $('#panel').textContent.includes('商品与描述不符'));
+check('退款页有同意/拒绝按钮', Boolean($('[data-rf-ok="rf_1"]')) && Boolean($('[data-rf-no="rf_1"]')));
+check('待审核统计正确', $('#panel').textContent.includes('待审核 · ¥20.00'));
+
+$('[data-rf-ok="rf_1"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+await wait(180);
+check(
+  '同意退款调用审核接口',
+  Boolean(reviewBody) && reviewBody.action === 'approve' && reviewBody.id === 'rf_1',
+  JSON.stringify(reviewBody)
+);
+check('审核通过后状态变为已通过', ($('#panel').textContent || '').includes('已通过') || refunds[0].status === 'approved');
+
+nav('refunds');
+await wait(80);
+check('列表默认只看待审核', all('#panel tbody tr').length === 1, String(all('#panel tbody tr').length));
+$('[data-rf-no="rf_2"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+await wait(180);
+check(
+  '拒绝会带上原因提交',
+  Boolean(reviewBody) && reviewBody.action === 'reject' && reviewBody.note === '不符合退款条件',
+  JSON.stringify(reviewBody)
+);
+check('拒绝后状态变为已拒绝', refunds[1].status === 'rejected');
 
 console.log('\n----------------------------------------');
 console.log(`结果：${pass}/${pass + fails.length} 通过`);

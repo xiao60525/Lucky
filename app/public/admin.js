@@ -120,6 +120,7 @@ async function load() {
 const NAV = [
   ['overview', '📊', '概览'],
   ['orders', '🧾', '订单'],
+  ['refunds', '💸', '退款审核'],
   ['products', '📦', '商品'],
   ['members', '👑', '会员'],
   ['users', '👥', '用户'],
@@ -150,8 +151,9 @@ function render() {
         <nav class="side-nav">${NAV.map(
           ([k, ic, label]) =>
             `<button class="nav-btn ${state.tab === k ? 'on' : ''}" data-tab="${k}"><span class="ic">${ic}</span>${label}${
-              k === 'feedback' && d.stats && d.stats.feedbackPending
-                ? `<span class="nav-badge">${d.stats.feedbackPending}</span>`
+              ((k === 'feedback' && d.stats && d.stats.feedbackPending) ||
+                (k === 'refunds' && d.stats && d.stats.refundPending))
+                ? `<span class="nav-badge">${k === 'refunds' ? d.stats.refundPending : d.stats.feedbackPending}</span>`
                 : ''
             }</button>`
         ).join('')}</nav>
@@ -164,7 +166,7 @@ function render() {
     </div>`;
   document.querySelectorAll('.nav-btn').forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; render(); }));
   $('#logoutBtn').onclick = () => { state.token = ''; sessionStorage.removeItem('admin_token'); render(); };
-  ({ overview: renderOverview, products: renderProducts, members: renderMembers, contents: renderContents, orders: renderOrders, users: renderUsers, site: renderSite, preview: renderPreview, pay: renderPay, settings: renderSettings, feedback: renderFeedback, logs: renderLogs })[state.tab]();
+  ({ overview: renderOverview, products: renderProducts, members: renderMembers, contents: renderContents, orders: renderOrders, refunds: renderRefunds, users: renderUsers, site: renderSite, preview: renderPreview, pay: renderPay, settings: renderSettings, feedback: renderFeedback, logs: renderLogs })[state.tab]();
 }
 
 function renderOverview() {
@@ -246,6 +248,19 @@ function renderOverview() {
     </div>
 
     <div class="card">
+      <h3>退款与售后</h3>
+      <div class="ostat-row">
+        <div class="ostat ${s.refundPending ? 'warn' : ''}"><b>${s.refundPending || 0} 条</b><span>待审核申请</span></div>
+        <div class="ostat"><b>${s.refundTotal || 0} 条</b><span>累计申请</span></div>
+        <div class="ostat"><b>¥${yuan(s.refundSum || 0)}</b><span>累计退款</span></div>
+        <div class="ostat"><b>¥${yuan(s.net || 0)}</b><span>净收入</span></div>
+      </div>
+      <div class="row-actions" style="margin-top:12px">
+        <button class="btn ghost" id="ovGoRefund">去审核</button>
+      </div>
+    </div>
+
+    <div class="card">
       <h3>最近订单</h3>
       ${orderTable(state.data.orders.slice(0, 8))}
     </div>`;
@@ -258,6 +273,8 @@ function renderOverview() {
   const gf = $('#ovGoFeedback');
   if (gc) gc.onclick = () => go('contents');
   if (gf) gf.onclick = () => go('feedback');
+  const gr = $('#ovGoRefund');
+  if (gr) gr.onclick = () => go('refunds');
 }
 
 /** 订单页筛选状态（内存态，切标签页后保留） */
@@ -364,8 +381,14 @@ function renderOrderControls() {
     </div>`;
 }
 
-function orderTable(orders) {
-  const list = filteredOrders(orders);
+/** 订单上的退款进度标记（有待审核申请时高亮） */
+function refundBadgeOf(orderId) {
+  const list = (state.data && state.data.refunds) || [];
+  const rf = list.find((r) => r.orderId === orderId && r.status === 'pending');
+  return rf ? ' <span class="tag tag-gold">退款待审</span>' : '';
+}
+
+function orderTable(orders) {  const list = filteredOrders(orders);
   if (!orders.length) return '<p class="muted">还没有订单</p>';
   if (!list.length) return '<p class="muted">没有符合条件的订单，换个筛选或关键词试试</p>';
   // 分页：每页 20 条，筛选变化时回到第 1 页
@@ -406,7 +429,7 @@ function orderTable(orders) {
       <td style="white-space:nowrap">${orderBuyerText(o)}</td>
       <td style="white-space:nowrap">¥${o.amountText}</td>
       <td class="muted" style="white-space:nowrap">${o.channelName || '-'}</td>
-      <td><span class="tag ${o.status}">${STATUS_TEXT[o.status] || o.status}</span>${leftText(o)}</td>
+      <td><span class="tag ${o.status}">${STATUS_TEXT[o.status] || o.status}</span>${refundBadgeOf(o.id)}${leftText(o)}</td>
       <td class="muted" style="white-space:nowrap">${fmtTime(o.createdAt)}</td>
       <td class="muted" style="white-space:nowrap">${fmtTime(o.paidAt)}</td>
       <td style="font-family:monospace;font-size:11px;max-width:120px;word-break:break-all" title="${esc(o.transactionId || '')}">${
@@ -1235,6 +1258,226 @@ function exportMembersCsv(web) {
   a.click();
   URL.revokeObjectURL(a.href);
   toast(`已导出 ${(web || []).length} 条会员名单`);
+}
+
+/* ---------------- 退款审核 ---------------- */
+
+const REFUND_STATUS_TEXT = {
+  pending: ['待审核', 'tag-gold'],
+  approved: ['已通过', 'paid'],
+  rejected: ['已拒绝', 'off'],
+  cancelled: ['已撤销', 'closed'],
+};
+
+const REFUND_FILTERS = [
+  ['pending', '待审核'],
+  ['approved', '已通过'],
+  ['rejected', '已拒绝'],
+  ['all', '全部'],
+];
+
+function refundStatusTag(s) {
+  const [label, cls] = REFUND_STATUS_TEXT[s] || [s, 'closed'];
+  return `<span class="tag ${cls}">${label}</span>`;
+}
+
+function renderRefunds() {
+  const all = state.data.refunds || [];
+  const pending = all.filter((r) => r.status === 'pending');
+  const approved = all.filter((r) => r.status === 'approved');
+  const rejected = all.filter((r) => r.status === 'rejected');
+  const sum = (list) => list.reduce((s, r) => s + (Number(r.amount) || 0), 0);
+
+  $('#panel').innerHTML = `
+    <div class="card">
+      <h3>退款审核</h3>
+      <p class="muted" style="font-size:12.5px;margin:0 0 12px">
+        用户在「我的订单 → 订单详情」里提交退款 / 退货申请后，先进入这里等待审核。
+        <b>同意</b>会立即按原支付渠道退款（余额支付的退回余额），内容订单同时收回阅读权限；
+        <b>拒绝</b>必须填写原因，用户能在订单里看到并重新申请。
+      </p>
+      <div class="ostat-row">
+        <div class="ostat ${pending.length ? 'warn' : ''}"><b>${pending.length} 条</b><span>待审核 · ¥${yuan(sum(pending))}</span></div>
+        <div class="ostat"><b>${approved.length} 条</b><span>已通过 · ¥${yuan(sum(approved))}</span></div>
+        <div class="ostat"><b>${rejected.length} 条</b><span>已拒绝</span></div>
+        <div class="ostat"><b>${all.length} 条</b><span>累计申请</span></div>
+      </div>
+      <div class="obar">
+        <div class="ochips" id="rfChips"></div>
+        <div class="osearch">
+          <input id="rfSearch" placeholder="搜订单号 / 商品 / 昵称 / 手机号" value="" />
+          <button class="op" id="rfExport">导出 CSV</button>
+        </div>
+      </div>
+      <div id="rfBox"></div>
+    </div>`;
+
+  let rfFilter = pending.length ? 'pending' : 'all';
+  let rfQ = '';
+
+  const counts = () => ({
+    pending: pending.length,
+    approved: approved.length,
+    rejected: rejected.length,
+    all: all.length,
+  });
+
+  const renderChips = () => {
+    const c = counts();
+    const box = $('#rfChips');
+    if (!box) return;
+    box.innerHTML = REFUND_FILTERS.map(
+      ([k, label]) =>
+        `<button class="ochip ${rfFilter === k ? 'on' : ''}" data-rf="${k}">${label}${
+          c[k] ? ` <i>${c[k]}</i>` : ''
+        }</button>`
+    ).join('');
+    box.querySelectorAll('[data-rf]').forEach((b) => {
+      b.onclick = () => {
+        rfFilter = b.dataset.rf;
+        renderChips();
+        renderRows();
+      };
+    });
+  };
+
+  const renderRows = () => {
+    const box = $('#rfBox');
+    if (!box) return;
+    const q = rfQ.trim().toLowerCase();
+    const list = all.filter((r) => {
+      if (rfFilter !== 'all' && r.status !== rfFilter) return false;
+      if (!q) return true;
+      return [r.orderId, r.orderTitle, r.nickname, r.phone, r.reason, r.detail]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(q);
+    });
+    if (!list.length) {
+      box.innerHTML = `<p class="search-none muted">${
+        all.length ? '没有符合条件的申请，换个筛选或关键词试试' : '还没有用户提交退款申请'
+      }</p>`;
+      return;
+    }
+    box.innerHTML = `<div class="otable-wrap"><table>
+      <thead><tr><th>订单 / 商品</th><th>买家</th><th>金额</th><th>原因与说明</th><th>提交时间</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody>${list
+        .map(
+          (r) => `<tr>
+        <td style="max-width:200px;word-break:break-all">
+          <div style="font-family:monospace;font-size:11.5px">${esc(r.orderId)}</div>
+          <div style="font-size:12.5px;margin-top:2px">${esc(r.orderTitle || '（订单已清理）')}</div>
+          ${r.orderStatus ? `<div class="muted" style="font-size:11.5px;margin-top:2px">订单状态：${
+            STATUS_TEXT[r.orderStatus] || r.orderStatus
+          }</div>` : ''}
+        </td>
+        <td style="white-space:nowrap">
+          ${esc(r.nickname || '未设置昵称')}
+          <div class="muted" style="font-size:11.5px">${esc(r.phone || r.userId || '')}</div>
+        </td>
+        <td style="white-space:nowrap">¥${yuan(r.amount)}</td>
+        <td style="max-width:240px">
+          <b style="font-size:12.5px">${esc(r.reason || '未填原因')}</b>
+          ${r.detail ? `<div class="muted" style="font-size:12px;margin-top:3px;white-space:pre-wrap">${esc(r.detail)}</div>` : ''}
+        </td>
+        <td class="muted" style="white-space:nowrap">${fmtTime(r.createdAt)}</td>
+        <td style="min-width:120px">
+          ${refundStatusTag(r.status)}
+          ${
+            r.handledAt
+              ? `<div class="muted" style="font-size:11.5px;margin-top:3px">${fmtTime(r.handledAt)}${
+                  r.handler ? ' · ' + esc(r.handler) : ''
+                }</div>`
+              : ''
+          }
+          ${r.adminNote ? `<div class="muted" style="font-size:11.5px;margin-top:3px">${esc(r.adminNote)}</div>` : ''}
+        </td>
+        <td style="white-space:nowrap">
+          ${
+            r.status === 'pending'
+              ? `<button class="op" data-rf-ok="${esc(r.id)}">同意退款</button>
+                 <button class="op danger" data-rf-no="${esc(r.id)}">拒绝</button>`
+              : '<span class="muted" style="font-size:12px">已处理</span>'
+          }
+        </td>
+      </tr>`
+        )
+        .join('')}</tbody></table></div>
+      <p class="muted" style="font-size:12px;margin:10px 0 0">共 ${list.length} 条${
+        rfFilter === 'all' ? '' : '（当前筛选：' + (REFUND_FILTERS.find(([k]) => k === rfFilter) || [])[1] + '）'
+      }</p>`;
+
+    box.querySelectorAll('[data-rf-ok]').forEach(
+      (b) => (b.onclick = () => reviewRefund(b.dataset.rfOk, 'approve'))
+    );
+    box.querySelectorAll('[data-rf-no]').forEach(
+      (b) => (b.onclick = () => reviewRefund(b.dataset.rfNo, 'reject'))
+    );
+  };
+
+  renderChips();
+  renderRows();
+
+  let rfTimer = null;
+  $('#rfSearch').oninput = (e) => {
+    clearTimeout(rfTimer);
+    rfTimer = setTimeout(() => {
+      rfQ = e.target.value || '';
+      renderRows();
+    }, 200);
+  };
+  $('#rfExport').onclick = () => exportRefundsCsv(all);
+}
+
+/** 同意 / 拒绝退款申请 */
+async function reviewRefund(id, action) {
+  let note = '';
+  if (action === 'reject') {
+    note = (prompt('拒绝原因（会显示给用户，建议写清楚）：', '') || '').trim();
+    if (!note) return toast('请填写拒绝原因');
+  } else if (!confirm('确认同意退款？将立即按原渠道退款，操作不可撤销。')) {
+    return;
+  }
+  try {
+    await api('/api/admin/refund/review', {
+      method: 'POST',
+      body: JSON.stringify({ id, action, note }),
+    });
+    toast(action === 'approve' ? '已同意并完成退款' : '已拒绝该申请');
+    await load();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+function exportRefundsCsv(list) {
+  const head = ['订单号', '商品', '买家昵称', '手机号', '金额(元)', '原因', '说明', '状态', '提交时间', '处理时间', '处理备注'];
+  const escCell = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+  const rows = (list || []).map((r) =>
+    [
+      r.orderId,
+      r.orderTitle,
+      r.nickname,
+      r.phone,
+      (Number(r.amount || 0) / 100).toFixed(2),
+      r.reason,
+      r.detail,
+      (REFUND_STATUS_TEXT[r.status] || [r.status])[0],
+      r.createdAt ? fmtTime(r.createdAt) : '',
+      r.handledAt ? fmtTime(r.handledAt) : '',
+      r.adminNote,
+    ]
+      .map(escCell)
+      .join(',')
+  );
+  const blob = new Blob(['\ufeff' + head.join(',') + '\n' + rows.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '退款申请-' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast(`已导出 ${(list || []).length} 条退款申请`);
 }
 
 /* ---------------- 用户（小程序手机号用户，跨云环境只读） ---------------- */

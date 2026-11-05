@@ -13,6 +13,7 @@
     "test:alipay": "node scripts/test-alipay.mjs && node scripts/test-alipay-ui.mjs",
     "test:ui": "node scripts/test-user-ui.mjs",
     "test:engage": "node scripts/test-engage.mjs && node scripts/test-engage-ui.mjs",
+    "test:refund": "node scripts/test-refund.mjs",
     "test:profile": "node scripts/test-profile.mjs"
   },
   "engines": {
