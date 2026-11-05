@@ -169,12 +169,29 @@ function renderOverview() {
   const todayPaid = orders.filter((o) => (o.status === 'paid' || o.status === 'refunded') && o.paidAt >= t0);
   const todaySum = todayPaid.reduce((sum, o) => sum + o.amount, 0);
   const stat = (cls, ic, k, v) => `<div class="stat ${cls}"><div class="stat-ic">${ic}</div><div class="k">${k}</div><div class="v">${v}</div></div>`;
+
+  // 近 7 日柱状：以最大值为基准算高度，纯 CSS，不引第三方图表库
+  const trend = Array.isArray(s.trend) ? s.trend : [];
+  const maxGmv = Math.max(1, ...trend.map((t) => t.gmv || 0));
+  const barsHTML = trend.length
+    ? `<div class="trend-bars">${trend
+        .map((t) => {
+          const h = Math.max(4, Math.round(((t.gmv || 0) / maxGmv) * 100));
+          return `<div class="trend-col" title="${t.date}：¥${yuan(t.gmv || 0)} / ${t.paid || 0} 笔">
+            <span class="trend-val">${t.gmv ? '¥' + yuan(t.gmv) : ''}</span>
+            <span class="trend-bar" style="height:${h}%"></span>
+            <span class="trend-label">${t.label}</span>
+          </div>`;
+        })
+        .join('')}</div>`
+    : '<p class="muted">还没有足够数据</p>';
+
   $('#panel').innerHTML = `
     <div class="card">
       <h3>经营概览</h3>
       <div class="stats">
-        ${stat('hl-brand', '📅', '今日收入', `<small>¥</small>${yuan(todaySum)}`)}
-        ${stat('hl-brand', '🧾', '今日成交', `${todayPaid.length} <small>笔</small>`)}
+        ${stat('hl-brand', '📅', '今日收入', `<small>¥</small>${yuan(s.todayGmv != null ? s.todayGmv : todaySum)}`)}
+        ${stat('hl-brand', '🧾', '今日成交', `${s.todayPaid != null ? s.todayPaid : todayPaid.length} <small>笔</small>`)}
         ${stat('hl-ok', '💰', '净收入', `<small>¥</small>${yuan(s.net)}`)}
         ${stat('', '📥', '累计收款', `<small>¥</small>${yuan(s.gross)}`)}
         ${stat('hl-bad', '↩️', '累计退款', `<small>¥</small>${yuan(s.refundSum)}`)}
@@ -184,6 +201,28 @@ function renderOverview() {
         ${stat(s.pendingOrders ? 'hl-warn' : '', '⏳', '待支付订单', `${s.pendingOrders} <small>笔</small>`)}
       </div>
     </div>
+
+    <div class="card">
+      <h3>今天</h3>
+      <p class="muted" style="font-size:12.5px;margin:0 0 4px">数据实时统计，含模拟与真实支付。</p>
+      <div class="ostat-row">
+        <div class="ostat"><b>¥${yuan(s.todayGmv || 0)}</b><span>今日成交额</span></div>
+        <div class="ostat"><b>${s.todayOrders || 0} 笔</b><span>今日下单</span></div>
+        <div class="ostat"><b>${s.todayPaid || 0} 笔</b><span>今日支付成功</span></div>
+        <div class="ostat"><b>${s.payRate || 0}%</b><span>今日支付成功率</span></div>
+        <div class="ostat"><b>${s.todayNewUsers || 0} 人</b><span>今日新增用户</span></div>
+        <div class="ostat"><b>${s.memberCount || 0} 人</b><span>会员总数</span></div>
+        <div class="ostat"><b>${s.userCount || 0} 人</b><span>用户总数</span></div>
+        <div class="ostat"><b>¥${yuan(s.weekGmv || 0)}</b><span>近 7 日成交额</span></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>近 7 日成交</h3>
+      ${barsHTML}
+      <p class="muted" style="font-size:12px;margin:10px 0 0">柱高按成交额比例显示，鼠标悬停可看当天金额与笔数。</p>
+    </div>
+
     <div class="card">
       <h3>最近订单</h3>
       ${orderTable(state.data.orders.slice(0, 8))}
@@ -295,6 +334,7 @@ function orderTable(orders) {
             ? `<button class="op" data-sync="${o.id}" title="向支付宝查单，已付款会自动变为已支付">同步</button>`
             : ''
         }
+        ${(o.status === 'created' || o.status === 'pending') ? `<button class="op" data-extend="${o.id}" title="重新给用户 30 分钟支付时间">延长</button>` : ''}
         ${(o.status === 'created' || o.status === 'pending') ? `<button class="op" data-close="${o.id}">关闭</button>` : ''}
       </td>
     </tr>`
@@ -895,6 +935,18 @@ function bindOrderOps() {
   document.querySelectorAll('[data-refund]').forEach((b) => (b.onclick = () => refundOrder(b.dataset.refund)));
   document.querySelectorAll('[data-close]').forEach((b) => (b.onclick = () => closeOrder(b.dataset.close)));
   document.querySelectorAll('[data-sync]').forEach((b) => (b.onclick = () => syncOrder(b.dataset.sync, b)));
+  document.querySelectorAll('[data-extend]').forEach((b) => (b.onclick = () => extendOrder(b.dataset.extend)));
+}
+
+/** 延长支付：把订单创建时间推到当前，用户重新有 30 分钟 */
+async function extendOrder(id) {
+  try {
+    await api('/api/admin/order/extend', { method: 'POST', body: JSON.stringify({ orderId: id }) });
+    toast('已延长，用户可继续支付 30 分钟');
+    await load();
+  } catch (e) {
+    toast(e.message);
+  }
 }
 
 /** 向支付宝查单，已付款则入账（对账用） */
@@ -1007,7 +1059,7 @@ function renderUsers() {
         );
         rows.innerHTML = fl.length
           ? `<table>
-          <thead><tr><th>手机号</th><th>昵称</th><th>来源</th><th>积分</th><th>余额</th><th>注册时间</th><th>最近登录</th><th>订单数</th><th>累计支付</th></tr></thead>
+          <thead><tr><th>手机号</th><th>昵称</th><th>来源</th><th>身份</th><th>余额</th><th>注册时间</th><th>最近登录</th><th>订单数</th><th>状态</th><th>操作</th></tr></thead>
           <tbody>${fl
             .map(
               (u) => `<tr>
@@ -1016,18 +1068,106 @@ function renderUsers() {
               <td><span class="tag ${u.source === 'web' ? 'tag-blue' : 'tag-green'}">${
                 u.source === 'web' ? '网页/APP' : '小程序'
               }</span></td>
-              <td>${u.points || 0}</td>
+              <td>${
+                u.isMember
+                  ? `<span class="tag tag-gold">会员</span><div class="muted" style="font-size:11px">至 ${fmtTime(u.memberExpire)}</div>`
+                  : `<span class="tag">普通</span><div class="muted" style="font-size:11px">${u.points || 0} 积分</div>`
+              }</td>
               <td>¥${yuan(u.balance || 0)}</td>
               <td class="muted" style="white-space:nowrap">${fmtTime(u.createdAt)}</td>
               <td class="muted" style="white-space:nowrap">${fmtTime(u.lastLoginAt)}</td>
               <td>${u.orderCount}</td>
-              <td>¥${yuan(u.paidAmount || 0)}</td>
+              <td>${
+                u.banned
+                  ? `<span class="tag tag-danger">已封禁</span>${u.banReason ? `<div class="muted" style="font-size:11px">${esc(u.banReason)}</div>` : ''}`
+                  : '<span class="muted">正常</span>'
+              }</td>
+              <td style="white-space:nowrap">
+                ${
+                  u.source === 'web'
+                    ? `<button class="op" data-ubal="${u.id}">调余额</button>
+                       <button class="op" data-umember="${u.id}">送会员</button>
+                       <button class="op ${u.banned ? '' : 'danger'}" data-uban="${u.id}" data-banned="${u.banned ? '0' : '1'}">
+                         ${u.banned ? '解封' : '封禁'}
+                       </button>`
+                    : '<span class="muted" style="font-size:11.5px">小程序用户暂只读</span>'
+                }
+              </td>
             </tr>`
             )
             .join('')}</tbody>
         </table>`
           : '<p class="search-none muted">没有匹配的用户，换个筛选条件或关键词试试</p>';
+        bindUserOps();
       };
+
+      /* ---- 用户操作：封禁 / 调余额 / 送会员 ---- */
+      function bindUserOps() {
+        document.querySelectorAll('[data-uban]').forEach((b) => {
+          b.onclick = async () => {
+            const banned = b.dataset.banned === '1';
+            let reason = '';
+            if (banned) {
+              const input = window.prompt('封禁原因（会展示给用户，可留空）', '');
+              if (input === null) return;
+              reason = input.trim();
+            } else if (!window.confirm('确定解封这个账号？')) {
+              return;
+            }
+            b.disabled = true;
+            try {
+              await api('/api/admin/user/ban', {
+                method: 'POST',
+                body: JSON.stringify({ userId: b.dataset.uban, banned, reason }),
+              });
+              toast(banned ? '已封禁，该用户无法登录和下单' : '已解封');
+              renderUsers();
+            } catch (e) {
+              toast(e.message);
+              b.disabled = false;
+            }
+          };
+        });
+
+        document.querySelectorAll('[data-ubal]').forEach((b) => {
+          b.onclick = async () => {
+            const input = window.prompt('调整余额（元，正数加、负数扣）', '10');
+            if (input === null) return;
+            const amount = Number(input);
+            if (!Number.isFinite(amount) || amount === 0) return toast('请输入非 0 的金额');
+            const delta = Math.round(amount * 100);
+            try {
+              const r = await api('/api/admin/user/balance', {
+                method: 'POST',
+                body: JSON.stringify({ userId: b.dataset.ubal, delta, note: '后台调整' }),
+              });
+              toast(`余额已更新：¥${yuan(r.balance)}`);
+              renderUsers();
+            } catch (e) {
+              toast(e.message);
+            }
+          };
+        });
+
+        document.querySelectorAll('[data-umember]').forEach((b) => {
+          b.onclick = async () => {
+            const input = window.prompt('赠送会员天数（如 30）', '30');
+            if (input === null) return;
+            const days = Math.floor(Number(input));
+            if (!days || days <= 0) return toast('请输入大于 0 的天数');
+            try {
+              await api('/api/admin/member/grant', {
+                method: 'POST',
+                body: JSON.stringify({ userId: b.dataset.umember, days, note: '后台赠送' }),
+              });
+              toast(`已赠送 ${days} 天会员`);
+              renderUsers();
+            } catch (e) {
+              toast(e.message);
+            }
+          };
+        });
+      }
       renderUserRows();
       let utimer = null;
       $('#userSearch').oninput = () => {
@@ -1320,18 +1460,78 @@ const HOME_DEFAULTS_ADMIN = {
   support: { wechat: '', phone: '', note: '' },
 };
 
+/** 前台模块开关（key → 后台显示名与说明） */
+const MODULE_META = [
+  ['goods', '商品区', '首页在售商品列表；关掉后首页只剩内容与入口'],
+  ['contents', '内容区', '首页「精选内容」以及底部「内容」页'],
+  ['trust', '服务保障条', '首页商品区上方的 4 格保障条'],
+  ['unpaid', '待支付提醒', '首页顶部的未支付订单提醒条'],
+  ['notice', '公告条', '外观页里填的「首页公告」'],
+  ['search', '商品搜索', '商品区的搜索框与筛选 chips'],
+  ['member', '会员入口', '「我的」页的会员卡片与会员中心入口'],
+  ['recharge', '余额充值', '余额中心里的「充值到余额」按钮'],
+  ['toTop', '回到顶部', '右下角浮动按钮'],
+  ['support', '在线客服', '服务保障条点开后的客服联系方式'],
+];
+
+const THEME_PRESETS = [
+  ['默认紫', '#5a5cf0', '#8b5cf6'],
+  ['活力橙', '#f97316', '#fb923c'],
+  ['商务蓝', '#2563eb', '#38bdf8'],
+  ['中国红', '#e11d48', '#f43f5e'],
+  ['青绿', '#0d9488', '#22c55e'],
+  ['深灰', '#334155', '#64748b'],
+];
+
+const ENTRY_ACT_META = [
+  ['goods', '跳到商品区'],
+  ['content', '跳到内容页'],
+  ['member', '打开会员中心'],
+  ['support', '打开客服'],
+  ['link', '打开链接'],
+];
+
 function siteHomeCfg(site) {
   const h = (site && site.home) || {};
+  const mods = h.modules && typeof h.modules === 'object' ? h.modules : {};
+  const modules = {};
+  MODULE_META.forEach(([k]) => {
+    modules[k] = mods[k] !== false;
+  });
+  const theme = h.theme && typeof h.theme === 'object' ? h.theme : {};
+  const tabs = h.tabs && typeof h.tabs === 'object' ? h.tabs : {};
+  const banner = h.banner && typeof h.banner === 'object' ? h.banner : {};
   return {
     trustOn: h.trustOn !== false,
     trust: Array.isArray(h.trust) && h.trust.length ? h.trust : HOME_DEFAULTS_ADMIN.trust,
     goodsTitle: h.goodsTitle || HOME_DEFAULTS_ADMIN.goodsTitle,
     contentTitle: h.contentTitle || HOME_DEFAULTS_ADMIN.contentTitle,
+    homeTitle: h.homeTitle || '',
     support: {
       wechat: (h.support && h.support.wechat) || '',
       phone: (h.support && h.support.phone) || '',
       note: (h.support && h.support.note) || '',
     },
+    modules,
+    theme: {
+      accent: theme.accent || '#5a5cf0',
+      accent2: theme.accent2 || theme.accent || '#8b5cf6',
+    },
+    tabs: {
+      home: tabs.home || '首页',
+      content: tabs.content || '内容',
+      mine: tabs.mine || '我的',
+      contentOn: tabs.contentOn !== false,
+    },
+    banner: {
+      on: banner.on === true,
+      text: banner.text || '',
+      sub: banner.sub || '',
+      btn: banner.btn || '',
+      link: banner.link || '',
+      bg: banner.bg || '#5a5cf0',
+    },
+    entries: Array.isArray(h.entries) ? h.entries : [],
   };
 }
 
@@ -1435,6 +1635,91 @@ function renderSite() {
     </div>
 
     <div class="card">
+      <h3>首页模块开关</h3>
+      <p class="muted" style="font-size:12.5px;margin:0 0 12px">
+        关掉的模块在用户手机上直接不显示，不需要改代码。改完点最上面的「保存并生效」。
+      </p>
+      <div class="form-grid">
+        <div class="full">
+          <label>首页大标题（可选，最多 20 字，留空用副标题）</label>
+          <input id="h-hometitle" maxlength="20" value="${esc(h.homeTitle || '')}" placeholder="如 好物精选，一件也发货" />
+        </div>
+      </div>
+      <div class="mod-grid">
+        ${MODULE_META.map(
+          ([key, label, desc]) => `<label class="switch-row">
+            <div><b>${esc(label)}</b><p class="muted" style="font-size:12px;margin:2px 0 0">${esc(desc)}</p></div>
+            <input type="checkbox" class="mod-on" data-mod="${key}" ${h.modules[key] !== false ? 'checked' : ''} />
+          </label>`
+        ).join('')}
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>主题色</h3>
+      <p class="muted" style="font-size:12.5px;margin:0 0 12px">
+        主色决定按钮、高亮、价格等颜色；辅助色用于渐变。选一个预设或自己调。
+      </p>
+      <div class="theme-presets">
+        ${THEME_PRESETS.map(
+          ([label, a, b]) =>
+            `<button class="theme-dot" data-act="theme-preset" data-a="${a}" data-b="${b}" title="${esc(label)}">
+              <span style="background:linear-gradient(135deg,${a},${b})"></span>${esc(label)}
+            </button>`
+        ).join('')}
+      </div>
+      <div class="form-grid" style="margin-top:12px">
+        <div><label>主色</label><input type="color" id="h-accent" value="${esc(h.theme.accent)}" /></div>
+        <div><label>辅助色</label><input type="color" id="h-accent2" value="${esc(h.theme.accent2)}" /></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>底部导航</h3>
+      <p class="muted" style="font-size:12.5px;margin:0 0 12px">
+        可以改三个 tab 的文案（各最多 4 字）；关掉「内容」页后，底部只剩首页和我的。
+      </p>
+      <div class="form-grid">
+        <div><label>第一个 tab</label><input id="h-tab-home" maxlength="4" value="${esc(h.tabs.home)}" /></div>
+        <div><label>第二个 tab</label><input id="h-tab-content" maxlength="4" value="${esc(h.tabs.content)}" /></div>
+        <div><label>第三个 tab</label><input id="h-tab-mine" maxlength="4" value="${esc(h.tabs.mine)}" /></div>
+      </div>
+      <label class="switch-row">
+        <div><b>显示「内容」页</b><p class="muted" style="font-size:12px;margin:2px 0 0">关掉后内容只在首页展示前 4 条</p></div>
+        <input type="checkbox" id="h-contenton" ${h.tabs.contentOn !== false ? 'checked' : ''} />
+      </label>
+    </div>
+
+    <div class="card">
+      <h3>首页横幅</h3>
+      <p class="muted" style="font-size:12.5px;margin:0 0 12px">
+        首页顶部一块带色横幅，适合做活动推广。文案留空则不显示。
+      </p>
+      <label class="switch-row">
+        <div><b>显示横幅</b><p class="muted" style="font-size:12px;margin:2px 0 0">关掉后首页不出现这块</p></div>
+        <input type="checkbox" id="b-on" ${h.banner.on ? 'checked' : ''} />
+      </label>
+      <div class="form-grid" style="margin-top:10px">
+        <div class="full"><label>主文案（最多 40 字）</label><input id="b-text" maxlength="40" value="${esc(h.banner.text)}" placeholder="如 双 11 全场 8 折，仅剩 3 天" /></div>
+        <div class="full"><label>副文案（可选，最多 60 字）</label><input id="b-sub" maxlength="60" value="${esc(h.banner.sub)}" placeholder="如 下单再送 60 金币，可与会员优惠叠加" /></div>
+        <div><label>按钮文字（可选，最多 8 字）</label><input id="b-btn" maxlength="8" value="${esc(h.banner.btn)}" placeholder="如 去看看" /></div>
+        <div><label>横幅底色</label><input type="color" id="b-bg" value="${esc(h.banner.bg)}" /></div>
+        <div class="full"><label>跳转地址（可选，站内填 /path，站外填 https://…）</label><input id="b-link" maxlength="300" value="${esc(h.banner.link)}" placeholder="如 /#goods 或 https://example.com" /></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>快捷入口</h3>
+      <p class="muted" style="font-size:12.5px;margin:0 0 12px">
+        最多 8 个，显示在首页横幅下面。图标填一个 emoji，标题最多 6 字。
+      </p>
+      <div id="entryBox"></div>
+      <div class="row-actions">
+        <button class="btn ghost" id="addEntryBtn">+ 添加入口</button>
+      </div>
+    </div>
+
+    <div class="card">
       <h3>手机端效果预览</h3>
       <div class="mock-app">
         <div class="mock-top">
@@ -1475,6 +1760,62 @@ function renderSite() {
     toast('已选择恢复默认图标，记得点保存');
   };
   $('#saveSiteBtn').onclick = saveSite;
+
+  /* ---- 快捷入口编辑器：增删都在本地数组里做，保存时一起提交 ---- */
+  const readEntries = () =>
+    [...document.querySelectorAll('#entryBox .entry-edit')].map((row) => ({
+      icon: (row.querySelector('.e-icon').value || '').trim(),
+      title: (row.querySelector('.e-title').value || '').trim(),
+      act: row.querySelector('.e-act').value,
+      value: (row.querySelector('.e-value').value || '').trim(),
+      on: row.querySelector('.e-on').checked,
+    }));
+
+  const renderEntryRows = (list) => {
+    const box = $('#entryBox');
+    if (!box) return;
+    if (!list.length) {
+      box.innerHTML = '<p class="muted" style="font-size:12.5px;margin:0 0 10px">还没有入口，点下面的按钮添加一个。</p>';
+      return;
+    }
+    box.innerHTML = list
+      .map(
+        (e, i) => `<div class="entry-edit">
+          <input class="e-icon" maxlength="2" value="${esc(e.icon || '')}" placeholder="🎁" aria-label="图标" />
+          <input class="e-title" maxlength="6" value="${esc(e.title || '')}" placeholder="标题" aria-label="标题" />
+          <select class="e-act" aria-label="跳转">
+            ${ENTRY_ACT_META.map(([k, l]) => `<option value="${k}" ${e.act === k ? 'selected' : ''}>${esc(l)}</option>`).join('')}
+          </select>
+          <input class="e-value" maxlength="200" value="${esc(e.value || '')}" placeholder="链接（仅「打开链接」需要）" aria-label="链接" />
+          <label class="t-on-wrap"><input type="checkbox" class="e-on" ${e.on !== false ? 'checked' : ''} /> 显示</label>
+          <button class="op danger" data-act="entry-del" data-i="${i}">删除</button>
+        </div>`
+      )
+      .join('');
+  };
+  renderEntryRows(h.entries);
+
+  $('#addEntryBtn').onclick = () => {
+    const list = readEntries();
+    if (list.length >= 8) return toast('最多 8 个快捷入口');
+    list.push({ icon: '🎁', title: '', act: 'goods', value: '', on: true });
+    renderEntryRows(list);
+  };
+  $('#entryBox').addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-act="entry-del"]');
+    if (!btn) return;
+    const list = readEntries();
+    list.splice(Number(btn.dataset.i), 1);
+    renderEntryRows(list);
+  });
+
+  /* ---- 主题色预设 ---- */
+  document.querySelectorAll('.theme-dot').forEach((b) => {
+    b.onclick = () => {
+      $('#h-accent').value = b.dataset.a;
+      $('#h-accent2').value = b.dataset.b;
+    };
+  });
   $('#reloadSiteBtn').onclick = () => {
     siteDraft.icon = null;
     siteDraft.thumb = null;
@@ -1561,12 +1902,45 @@ async function saveSite() {
     trust,
     goodsTitle: ($('#h-goodstitle').value || '').trim(),
     contentTitle: ($('#h-contenttitle').value || '').trim(),
+    homeTitle: ($('#h-hometitle') ? $('#h-hometitle').value : '').trim(),
     support: {
       wechat: ($('#h-wechat').value || '').trim(),
       phone: ($('#h-phone').value || '').trim(),
       note: ($('#h-note').value || '').trim(),
     },
+    modules: {},
+    theme: {
+      accent: ($('#h-accent') ? $('#h-accent').value : '#5a5cf0').trim(),
+      accent2: ($('#h-accent2') ? $('#h-accent2').value : '#8b5cf6').trim(),
+    },
+    tabs: {
+      home: ($('#h-tab-home') ? $('#h-tab-home').value : '首页').trim(),
+      content: ($('#h-tab-content') ? $('#h-tab-content').value : '内容').trim(),
+      mine: ($('#h-tab-mine') ? $('#h-tab-mine').value : '我的').trim(),
+      contentOn: !$('#h-contenton') || $('#h-contenton').checked,
+    },
+    banner: {
+      on: Boolean($('#b-on') && $('#b-on').checked),
+      text: ($('#b-text') ? $('#b-text').value : '').trim(),
+      sub: ($('#b-sub') ? $('#b-sub').value : '').trim(),
+      btn: ($('#b-btn') ? $('#b-btn').value : '').trim(),
+      link: ($('#b-link') ? $('#b-link').value : '').trim(),
+      bg: ($('#b-bg') ? $('#b-bg').value : '#5a5cf0').trim(),
+    },
+    entries: [...document.querySelectorAll('#entryBox .entry-edit')]
+      .map((row) => ({
+        icon: (row.querySelector('.e-icon').value || '').trim(),
+        title: (row.querySelector('.e-title').value || '').trim(),
+        act: row.querySelector('.e-act').value,
+        value: (row.querySelector('.e-value').value || '').trim(),
+        on: row.querySelector('.e-on').checked,
+      }))
+      .filter((e) => e.title),
   };
+  // 模块开关：只收已知 key，缺省视为开
+  document.querySelectorAll('#panel .mod-on').forEach((cb) => {
+    payload.home.modules[cb.dataset.mod] = cb.checked;
+  });
   if (siteDraft.icon) {
     payload.icon = siteDraft.icon;
     if (siteDraft.thumb) payload.iconThumb = siteDraft.thumb;
@@ -1625,6 +1999,8 @@ function renderPreview() {
           <div class="pv-tips">
             <b>前端内容在这里设置</b>
             <p>· 名称 / 副标题 / 公告 / 开关 → 下方快捷设置或「外观」页<br/>
+               · 首页模块显隐、主题色、底部导航文案 →「外观」页<br/>
+               · 首页横幅、快捷入口宫格 →「外观」页<br/>
                · 首页内容卡片（精选内容、内容页）→「首页内容」页<br/>
                · 商品与价格 →「商品」页<br/>
                · 图标上传 / 服务保障条 / 客服联系方式 →「外观」页</p>

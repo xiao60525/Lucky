@@ -114,6 +114,8 @@ function normalizeProfile(row) {
     cycleStatus: row.cycle_status || '',
     createdAt: row.created_at ? new Date(row.created_at).getTime() : null,
     lastLoginAt: row.last_login_at ? new Date(row.last_login_at).getTime() : null,
+    banned: row.banned === true,
+    banReason: row.ban_reason || '',
   };
 }
 

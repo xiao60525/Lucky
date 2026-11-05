@@ -367,6 +367,20 @@ async function purgeStaleOrders(minutes = 30) {
   return Number(n) || 0;
 }
 
+/** 后台：封禁 / 解封用户 */
+async function adminSetUserBan(userId, banned, reason = '') {
+  return call(
+    'app_admin_user_ban',
+    { p_secret: secret, p_id: userId, p_banned: Boolean(banned), p_reason: String(reason || '') },
+    '封禁用户'
+  );
+}
+
+/** 后台：延长未支付订单的支付时限（把 created_at 推到 now） */
+async function adminExtendOrder(orderId) {
+  return call('app_admin_order_extend', { p_secret: secret, p_id: orderId, p_minutes: 30 }, '延长支付');
+}
+
 /** 健康检查：确认云端连通、密钥有效 */async function ping() {
   const state = await getState();
   return { ok: true, orders: state.orders.length, balance: state.account ? state.account.balance : null };
@@ -424,4 +438,6 @@ module.exports = {
   getAdminCredentials,
   setAdminCredentials,
   purgeStaleOrders,
+  adminSetUserBan,
+  adminExtendOrder,
 };

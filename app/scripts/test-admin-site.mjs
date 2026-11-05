@@ -43,6 +43,14 @@ const site = {
     goodsTitle: '精选好物',
     contentTitle: '推荐阅读',
     support: { wechat: 'kefu-test', phone: '13800000000', note: '工作日 9-18 点' },
+    modules: { goods: true, contents: false, trust: true, unpaid: true, notice: true, search: true, member: true, recharge: false, toTop: true, support: true },
+    theme: { accent: '#f97316', accent2: '#fb923c' },
+    tabs: { home: '主页', content: '文章', mine: '我的', contentOn: true },
+    banner: { on: true, text: '双 11 全场 8 折', sub: '下单送金币', btn: '去看看', link: 'https://example.com', bg: '#f97316' },
+    entries: [
+      { icon: '🎁', title: '优惠活动', act: 'goods', value: '', on: true },
+      { icon: '🔗', title: '官网', act: 'link', value: 'https://example.com', on: true },
+    ],
   },
 };
 
@@ -75,6 +83,15 @@ w.fetch = async (url, opts = {}) => {
   if (u.includes('/api/admin/site/save')) {
     savedBody = JSON.parse(opts.body || '{}');
     return json({ site: { ...site, home: savedBody.home || site.home }, mp: { synced: false, message: '未接入' } });
+  }
+  if (u.includes('/api/admin/users')) {
+    return json({
+      ready: true,
+      users: [
+        { id: 'u1', phone: '13800000001', nickname: '正常用户', source: 'web', isMember: true, memberExpire: Date.now() + 86400e3, balance: 1200, orderCount: 2, banned: false, createdAt: Date.now() - 86400e3 },
+        { id: 'u2', phone: '13800000002', nickname: '被封用户', source: 'web', isMember: false, memberExpire: null, balance: 0, orderCount: 0, banned: true, banReason: '恶意下单', createdAt: Date.now() - 3600e3 },
+      ],
+    });
   }
   if (u.includes('/api/admin/content/save')) {
     savedContent = JSON.parse(opts.body || '{}');
@@ -111,6 +128,22 @@ check('板块标题回填', $('#h-goodstitle').value === '精选好物' && $('#h
 check('客服信息回填', $('#h-wechat').value === 'kefu-test' && $('#h-phone').value === '13800000000', $('#h-wechat').value);
 check('保障条总开关存在且勾选', Boolean($('#h-truston')) && $('#h-truston').checked);
 
+// 新增：模块开关 / 主题色 / 底部导航 / 横幅 / 快捷入口
+check('有模块开关区', all('#panel .mod-on').length === 10, String(all('#panel .mod-on').length));
+check('模块开关回填正确', $('#panel .mod-on[data-mod="contents"]').checked === false && $('.mod-on[data-mod="goods"]').checked === true);
+check('主题色回填', $('#h-accent').value === '#f97316' && $('#h-accent2').value === '#fb923c', $('#h-accent').value);
+check('底部导航文案回填', $('#h-tab-home').value === '主页' && $('#h-tab-content').value === '文章', $('#h-tab-home').value);
+check('横幅配置回填', $('#b-text').value === '双 11 全场 8 折' && $('#b-on').checked === true && $('#b-bg').value === '#f97316', $('#b-text').value);
+check('快捷入口编辑器有 2 行', all('#entryBox .entry-edit').length === 2, String(all('#entryBox .entry-edit').length));
+
+// 加一个入口、删一个入口，验证编辑器可用
+$('#addEntryBtn').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+check('可添加快捷入口', all('#entryBox .entry-edit').length === 3, String(all('#entryBox .entry-edit').length));
+all('#entryBox .entry-edit')[2].querySelector('.e-title').value = '客服';
+all('#entryBox .entry-edit')[2].querySelector('.e-act').value = 'support';
+all('#entryBox [data-act="entry-del"]')[1].dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+check('可删除快捷入口', all('#entryBox .entry-edit').length === 2, String(all('#entryBox .entry-edit').length));
+
 // 改内容后保存，检查提交给接口的 home 结构
 $('#h-goodstitle').value = '热门商品';
 $('#h-contenttitle').value = '最新资讯';
@@ -123,6 +156,23 @@ check('保存请求已发出', Boolean(savedBody), savedBody ? Object.keys(saved
 check('提交的首页标题正确', savedBody && savedBody.home.goodsTitle === '热门商品' && savedBody.home.contentTitle === '最新资讯', savedBody && savedBody.home.goodsTitle);
 check('标题留空的保障条被过滤', savedBody && savedBody.home.trust.length === 2, savedBody && String(savedBody.home.trust.length));
 check('提交的客服微信正确', savedBody && savedBody.home.support.wechat === 'kefu002', savedBody && savedBody.home.support.wechat);
+check(
+  '提交的模块开关正确',
+  savedBody && savedBody.home.modules && savedBody.home.modules.contents === false && savedBody.home.modules.goods === true,
+  savedBody && JSON.stringify(savedBody.home.modules)
+);
+check('提交的主题色正确', savedBody && savedBody.home.theme.accent === '#f97316', savedBody && savedBody.home.theme.accent);
+check('提交的导航文案正确', savedBody && savedBody.home.tabs.home === '主页', savedBody && savedBody.home.tabs.home);
+check(
+  '提交的横幅正确',
+  savedBody && savedBody.home.banner.text === '双 11 全场 8 折' && savedBody.home.banner.bg === '#f97316',
+  savedBody && savedBody.home.banner.text
+);
+check(
+  '提交的快捷入口正确',
+  savedBody && savedBody.home.entries.length === 2 && savedBody.home.entries.some((e) => e.title === '客服' && e.act === 'support'),
+  savedBody && JSON.stringify(savedBody.home.entries)
+);
 
 // 商品页：销量列
 nav('products');
@@ -151,6 +201,17 @@ check('价格不影响可见范围字段', Boolean(savedContent) && savedContent
 nav('orders');
 await new Promise((r) => setTimeout(r, 60));
 check('订单页显示未支付剩余时间', /剩余 \d+:\d{2}/.test($('#panel').textContent), ($('#panel').textContent.match(/剩余 [\d:]+/) || [''])[0]);
+check('未支付订单有「延长」按钮', Boolean($('#panel [data-extend="O-new"]')));
+check('已支付订单没有延长按钮', !$('#panel [data-extend="O-paid"]'));
+
+// 用户页：状态列 + 封禁/调余额/送会员
+nav('users');
+await new Promise((r) => setTimeout(r, 200));
+check('用户表有状态列', all('#panel th').map((t) => t.textContent.trim()).includes('状态'), all('#panel th').map((t) => t.textContent.trim()).join(','));
+check('封禁用户显示已封禁标签', $('#panel').textContent.includes('已封禁') && $('#panel').textContent.includes('恶意下单'), '');
+check('正常用户有封禁按钮', Boolean($('#panel [data-uban="u1"]')) && $('#panel [data-uban="u1"]').textContent.trim() === '封禁');
+check('封禁用户按钮变成解封', Boolean($('#panel [data-uban="u2"]')) && $('#panel [data-uban="u2"]').textContent.trim() === '解封');
+check('用户行有调余额与送会员', Boolean($('#panel [data-ubal="u1"]')) && Boolean($('#panel [data-umember="u1"]')));
 
 console.log(`\n结果：${pass}/${pass + fails.length} 通过`);
 if (fails.length) {

@@ -228,11 +228,42 @@ function applySite() {
   const brandEl = $('#topbarBrand');
   if (brandEl) brandEl.title = name;
 
+  // 后台配置的主题色：写进根变量，按钮/高亮/渐变跟着变
+  const h = homeCfg();
+  const root = document.documentElement;
+  if (root && root.style) {
+    root.style.setProperty('--accent', h.theme.accent);
+    root.style.setProperty('--accent-2', h.theme.accent2);
+  }
+
+  // 底部导航文案与显隐（内容页可以在后台整块关掉）
+  applyTabs(h.tabs);
+
+  // 回到顶部按钮也可以在后台关掉
+  const toTopBtn = document.getElementById('toTop');
+  if (toTopBtn) toTopBtn.style.display = h.modules.toTop ? '' : 'none';
+
   // favicon / 主屏图标：只有在后台设了自定义图标时才覆盖，否则保留服务端默认
   const href = withShare(s.iconUrl || '/api/brand/icon');
   const icon = $('#appIcon');
   if (icon) icon.href = href;
   applyIosApp();
+}
+
+/** 底部导航：后台可改文案、可隐藏「内容」页 */
+function applyTabs(tabs) {
+  const cfg = tabs || HOME_FALLBACK.tabs;
+  const bar = document.getElementById('tabbar');
+  if (!bar) return;
+  const labels = { home: cfg.home, content: cfg.content, mine: cfg.mine };
+  bar.querySelectorAll('.tab').forEach((t) => {
+    const key = t.dataset.tab;
+    const span = t.querySelector('span');
+    if (span && labels[key]) span.textContent = labels[key];
+    if (key === 'content') t.hidden = cfg.contentOn === false;
+  });
+  // 内容页被关掉时，停留在内容页要自动回首页
+  if (cfg.contentOn === false && state.tab === 'content') state.tab = 'home';
 }
 
 /* ---------------- iOS App（添加到主屏幕） ---------------- */
@@ -455,14 +486,19 @@ function goodsSectionHTML() {
         `<button class="gchip ${state.goodsFilter === k ? 'on' : ''}" data-act="goods-filter" data-f="${k}">${f.label}</button>`
     )
     .join('');
+  const searchOn = homeCfg().modules.search;
   return `
     <div class="section-head"><h2>${esc(homeCfg().goodsTitle)}</h2><span id="goodsMeta">${goods.length} 件</span></div>
-    <div class="search-bar">
+    ${
+      searchOn
+        ? `<div class="search-bar">
       <span class="search-icon" aria-hidden="true">🔍</span>
       <input id="goodsSearch" type="search" placeholder="搜索商品名称或描述" value="${esc(state.goodsQuery)}" autocomplete="off" />
       <button class="search-clear" id="goodsClear" data-act="goods-clear" aria-label="清空搜索" ${state.goodsQuery ? '' : 'hidden'}>✕</button>
     </div>
-    <div class="gchips">${chips}</div>
+    <div class="gchips">${chips}</div>`
+        : ''
+    }
     <div class="goods-grid" id="goodsBox">${visibleGoods().map(goodsCardHTML).join('')}</div>`;
 }
 
@@ -496,7 +532,25 @@ const HOME_FALLBACK = {
   ],
   goodsTitle: '在售商品',
   contentTitle: '精选内容',
+  homeTitle: '',
   support: { wechat: '', phone: '', note: '' },
+  // 后台可控制的前端项（缺省都按「显示 / 默认色 / 默认文案」处理）
+  modules: {
+    goods: true,
+    contents: true,
+    trust: true,
+    unpaid: true,
+    notice: true,
+    search: true,
+    member: true,
+    recharge: true,
+    toTop: true,
+    support: true,
+  },
+  theme: { accent: '#5a5cf0', accent2: '#8b5cf6' },
+  tabs: { home: '首页', content: '内容', mine: '我的', contentOn: true },
+  banner: { on: false, text: '', sub: '', btn: '', link: '', bg: '#5a5cf0' },
+  entries: [],
 };
 
 /** 后台没配或字段缺失时回退到默认，保证首页不会出现空白块 */
@@ -505,16 +559,45 @@ function homeCfg() {
   const trust =
     Array.isArray(h.trust) && h.trust.length ? h.trust.filter((t) => t && t.title && t.on !== false) : HOME_FALLBACK.trust;
   const support = h.support && typeof h.support === 'object' ? h.support : {};
+  const mods = h.modules && typeof h.modules === 'object' ? h.modules : {};
+  const modules = {};
+  Object.keys(HOME_FALLBACK.modules).forEach((k) => {
+    modules[k] = mods[k] !== false;
+  });
+  const theme = h.theme && typeof h.theme === 'object' ? h.theme : {};
+  const tabs = h.tabs && typeof h.tabs === 'object' ? h.tabs : {};
+  const banner = h.banner && typeof h.banner === 'object' ? h.banner : {};
   return {
-    trustOn: h.trustOn !== false,
+    trustOn: h.trustOn !== false && modules.trust,
     trust,
     goodsTitle: h.goodsTitle || HOME_FALLBACK.goodsTitle,
+    homeTitle: h.homeTitle || '',
     contentTitle: h.contentTitle || HOME_FALLBACK.contentTitle,
     support: {
       wechat: support.wechat || '',
       phone: support.phone || '',
       note: support.note || '',
     },
+    modules,
+    theme: {
+      accent: theme.accent || HOME_FALLBACK.theme.accent,
+      accent2: theme.accent2 || theme.accent || HOME_FALLBACK.theme.accent2,
+    },
+    tabs: {
+      home: tabs.home || HOME_FALLBACK.tabs.home,
+      content: tabs.content || HOME_FALLBACK.tabs.content,
+      mine: tabs.mine || HOME_FALLBACK.tabs.mine,
+      contentOn: tabs.contentOn !== false && modules.contents,
+    },
+    banner: {
+      on: banner.on === true && Boolean(banner.text) && modules.notice !== false,
+      text: banner.text || '',
+      sub: banner.sub || '',
+      btn: banner.btn || '',
+      link: banner.link || '',
+      bg: banner.bg || HOME_FALLBACK.banner.bg,
+    },
+    entries: Array.isArray(h.entries) ? h.entries.filter((e) => e && e.title && e.on !== false) : [],
   };
 }
 
@@ -579,7 +662,8 @@ function renderHome() {
   const s = state.site || {};
   const v = state.viewer;
   const paidCount = state.orders.filter((o) => o.status === 'paid').length;
-  const title = s.tagline ? esc(s.tagline) : '选一件商品，走一遍完整支付';
+  const homeTitle = homeCfg().homeTitle;
+  const title = homeTitle ? esc(homeTitle) : s.tagline ? esc(s.tagline) : '选一件商品，走一遍完整支付';
   const channelName = state.channels.wechat
     ? '微信支付'
     : state.channels.alipay
@@ -587,9 +671,10 @@ function renderHome() {
       : state.channels.alipayQr
         ? '支付宝扫码'
         : '模拟收银台';
-  const noticeHTML = s.notice
-    ? `<div class="notice-bar"><span class="notice-icon">📢</span><span class="notice-text">${esc(s.notice)}</span></div>`
-    : '';
+  const noticeHTML =
+    s.notice && homeCfg().modules.notice
+      ? `<div class="notice-bar"><span class="notice-icon">📢</span><span class="notice-text">${esc(s.notice)}</span></div>`
+      : '';
   const contents = state.contents || [];
   const goods = state.products || [];
 
@@ -613,13 +698,18 @@ function renderHome() {
       </div>
     </div>
     ${noticeHTML}
-    ${unpaidBannerHTML()}
+    ${bannerHTML()}
+    ${homeCfg().modules.unpaid ? unpaidBannerHTML() : ''}
 
-    ${trustRowHTML()}
+    ${homeCfg().modules.trust ? trustRowHTML() : ''}
 
-    ${goodsSectionHTML()}
+    ${entriesHTML()}
 
-    <div class="section-head">
+    ${homeCfg().modules.goods ? goodsSectionHTML() : ''}
+
+    ${
+      homeCfg().modules.contents
+        ? `<div class="section-head">
       <h2>${esc(homeCfg().contentTitle)}</h2>
       <span>${contents.length ? contents.length + ' 条' : '待添加'}</span>
     </div>
@@ -638,8 +728,55 @@ function renderHome() {
                <p>在后台「首页内容」里加几条，这里就会显示</p>
              </div>
            </div>`
+    }`
+        : ''
     }
   `;
+}
+
+/** 后台配的跳转地址：外部链接新窗口打开，站内路径直接走 */
+function goLink(link) {
+  const url = String(link || '').trim();
+  if (!url) return toast('还没设置跳转地址');
+  if (/^https?:\/\//i.test(url)) {
+    window.open(url, '_blank', 'noopener');
+    return;
+  }
+  location.href = withShare(url.startsWith('/') ? url : '/' + url);
+}
+
+/* ---------------- 后台可配的首页横幅 / 快捷入口 ---------------- */
+
+/** 首页横幅：后台填了文案并打开开关才显示 */
+function bannerHTML() {
+  const b = homeCfg().banner;
+  if (!b.on) return '';
+  const style = `background:${esc(b.bg)}`;
+  const inner = `
+    <span class="banner-main">
+      <b>${esc(b.text)}</b>
+      ${b.sub ? `<i>${esc(b.sub)}</i>` : ''}
+    </span>
+    ${b.btn ? `<span class="banner-btn">${esc(b.btn)}</span>` : ''}`;
+  const cls = 'home-banner' + (b.link ? ' is-link' : '');
+  if (b.link) {
+    return `<button class="${cls}" style="${style}" data-act="home-banner">${inner}</button>`;
+  }
+  return `<div class="${cls}" style="${style}">${inner}</div>`;
+}
+
+/** 快捷入口宫格：后台添加什么就显示什么 */
+function entriesHTML() {
+  const list = homeCfg().entries;
+  if (!list.length) return '';
+  return `<div class="entry-grid">${list
+    .map(
+      (e, i) => `<button class="entry-item" data-act="home-entry" data-i="${i}">
+        <span class="entry-icon">${esc(e.icon || '🔗')}</span>
+        <span class="entry-title">${esc(e.title)}</span>
+      </button>`
+    )
+    .join('')}</div>`;
 }
 
 /* ---------------- 渲染：内容 ---------------- */
@@ -983,6 +1120,12 @@ function memberBannerHTML(v) {
 /** 会员中心弹层：展示会员商品 + 自动续费开关 */
 function memberSheet() {
   const v = state.viewer;
+  // 未登录（比如从首页快捷入口点进来）：先去登录，别硬渲染会员信息
+  if (!v) {
+    state.tab = 'mine';
+    render();
+    return toast('登录后可开通会员');
+  }
   const active = isMemberActive(v);
   const goods = state.products.filter((p) => Number(p.memberDays) > 0);
   const renewOn = Boolean(v.autoRenew);
@@ -1132,7 +1275,7 @@ function balanceSheet() {
       <b>¥${((state.viewer.balance || 0) / 100).toFixed(2)}</b>
       <i>余额可用于下单支付、会员自动续费</i>
     </div>
-    <button class="btn-primary" data-act="recharge" style="margin-top:12px">充值到余额</button>
+    ${homeCfg().modules.recharge ? '<button class="btn-primary" data-act="recharge" style="margin-top:12px">充值到余额</button>' : ''}
     <div class="bal-log-head">余额流水</div>
     <div id="balLogs"><p class="sheet-sub">加载中…</p></div>
     <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>
@@ -1248,7 +1391,7 @@ function renderUserCenter() {  const v = state.viewer;
       </div>
     </div>
 
-    ${memberBannerHTML(v)}
+    ${homeCfg().modules.member ? memberBannerHTML(v) : ''}
 
     <div class="section-head">
       <h2>收货地址</h2>
@@ -2208,6 +2351,28 @@ view.addEventListener('click', async (e) => {
   if (act === 'share-qr') return shareQrSheet();
 
   if (act === 'open-member') return memberSheet();
+  if (act === 'home-banner') {
+    return goLink(homeCfg().banner.link);
+  }
+  if (act === 'home-entry') {
+    const e = homeCfg().entries[Number(el.dataset.i)];
+    if (!e) return;
+    if (e.act === 'content') {
+      state.tab = homeCfg().tabs.contentOn ? 'content' : 'home';
+      return render();
+    }
+    if (e.act === 'member') return memberSheet();
+    if (e.act === 'support') return supportSheet();
+    if (e.act === 'link') return goLink(e.value);
+    // goods：回到首页并定位到商品区
+    state.tab = 'home';
+    state.goodsFilter = 'all';
+    state.goodsQuery = '';
+    render();
+    const box = view.querySelector('#goodsBox');
+    if (box) box.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    return;
+  }
   if (act === 'open-content') {
     return contentSheet(el.dataset.id);
   }

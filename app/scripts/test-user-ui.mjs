@@ -72,6 +72,17 @@ const BOOTSTRAP = {
       goodsTitle: '精选好物',
       contentTitle: '推荐阅读',
       support: { wechat: 'kefu-test', phone: '13800000000', note: '工作日 9-18 点' },
+      // 后台可控制的前端项（模块开关 / 主题 / 导航 / 横幅 / 快捷入口）
+      modules: { goods: true, contents: true, trust: true, unpaid: true, notice: true, search: true, member: true, recharge: true, toTop: true, support: true },
+      theme: { accent: '#f97316', accent2: '#fb923c' },
+      tabs: { home: '首页', content: '内容', mine: '我的', contentOn: true },
+      banner: { on: true, text: '双 11 全场 8 折', sub: '下单再送 60 金币', btn: '去看看', link: 'https://example.com/promo', bg: '#f97316' },
+      entries: [
+        { icon: '🎁', title: '优惠活动', act: 'goods', value: '', on: true },
+        { icon: '👑', title: '开通会员', act: 'member', value: '', on: true },
+        { icon: '💬', title: '联系客服', act: 'support', value: '', on: true },
+        { icon: '🔗', title: '外链', act: 'link', value: 'https://example.com', on: true },
+      ],
     },
   },
   products: [
@@ -248,6 +259,14 @@ check(
 );
 check('板块标题用后台配置的文案', text('.section-head h2').includes('精选好物'), text('.section-head h2'));
 
+// 后台配置的横幅 / 快捷入口 / 主题色
+check('首页横幅显示后台文案', text('.home-banner').includes('双 11 全场 8 折'), text('.home-banner').replace(/\s+/g, ' ').slice(0, 40));
+check('首页横幅有副文案与按钮', text('.home-banner').includes('下单再送 60 金币') && text('.home-banner').includes('去看看'));
+check('快捷入口按后台配置渲染', window.document.querySelectorAll('.entry-item').length === 4, String(window.document.querySelectorAll('.entry-item').length));
+check('快捷入口文案正确', text('.entry-grid').includes('优惠活动') && text('.entry-grid').includes('联系客服'));
+const themeAccent = window.document.documentElement.style.getPropertyValue('--accent');
+check('后台主题色已生效', themeAccent === '#f97316', themeAccent || '(空)');
+
 // 配了客服微信 → 保障条可点开客服弹层
 $('.trust-item[data-act="support"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(50);
@@ -260,6 +279,16 @@ await wait(40);
 check('复制客服号有反馈', text('#toast').includes('已复制'), text('#toast'));
 closeSheetForTest();
 await wait(40);
+
+// 快捷入口可点：第三个是「联系客服」
+const entrySupport = [...window.document.querySelectorAll('.entry-item')][2];
+if (entrySupport) {
+  entrySupport.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(60);
+  check('快捷入口能打开对应功能', Boolean($('.sheet .sup-row')), text('.sheet h3'));
+  closeSheetForTest();
+  await wait(40);
+}
 check('首页有商品搜索框', Boolean($('#goodsSearch')));
 check(
   '首页有商品筛选 chips',

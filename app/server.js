@@ -39,8 +39,14 @@ const alipayClient = Alipay.fromEnv();
 let alipayWapProbe = { ok: null, at: 0, code: null };
 async function probeAlipayWap(force = false) {
   if (!alipayClient) return false;
-  const fresh = alipayWapProbe.ok !== null && Date.now() - alipayWapProbe.at < 10 * 60 * 1000;
+  const known = alipayWapProbe.ok !== null;
+  const fresh = known && Date.now() - alipayWapProbe.at < 10 * 60 * 1000;
   if (!force && fresh) return alipayWapProbe.ok;
+  // 首次探测还没回来：先按「可用」下发，别让刚启动那几秒的前台少一个支付渠道
+  if (!force && !known) {
+    probeAlipayWap(true).catch(() => {});
+    return true;
+  }
   try {
     const url = alipayClient.buildPagePayUrl({ outTradeNo: 'PROBE' + Date.now(), totalAmountFen: 1, subject: '签约探测', wap: true });
     const r = await fetch(url, {
@@ -189,6 +195,32 @@ const ORDER_TTL_MS = ORDER_TTL_MINUTES * 60 * 1000;
 
 function isUnpaidStatus(status) {
   return status === 'created' || status === 'pending';
+}
+
+/**
+ * 封禁状态缓存（60 秒）：下单等高频接口不必每次都查库，
+ * 后台封禁后最多 1 分钟内全面生效。
+ */
+const banCache = new Map(); // uid -> { banned, reason, at }
+const BAN_TTL_MS = 60 * 1000;
+
+async function banInfo(uid) {
+  if (!uid || !users.enabled) return { banned: false, reason: '' };
+  const hit = banCache.get(uid);
+  if (hit && Date.now() - hit.at < BAN_TTL_MS) return hit;
+  let info = { banned: false, reason: '', at: Date.now() };
+  try {
+    const me = await users.getUser(uid);
+    if (me && me.profile) info = { banned: me.profile.banned === true, reason: me.profile.banReason || '', at: Date.now() };
+  } catch {
+    /* 读不到就当没封，不阻断正常下单 */
+  }
+  banCache.set(uid, info);
+  return info;
+}
+
+function clearBanCache(uid) {
+  if (uid) banCache.delete(uid);
 }
 
 /** 未支付且已超时（这类订单一律当废弃处理） */
@@ -383,10 +415,27 @@ const HOME_DEFAULTS = {
   ],
   goodsTitle: '在售商品',
   contentTitle: '精选内容',
+  homeTitle: '',
   support: { wechat: '', phone: '', note: '' },
 };
 
 const TRUST_MAX = 4;
+
+/* ---------------- 前台可控项（模块开关 / 主题 / 导航 / 横幅 / 快捷入口） ---------------- */
+
+/** 首页可显示/隐藏的模块，默认全开；后台关掉后前端直接不渲染 */
+const MODULE_KEYS = ['goods', 'contents', 'trust', 'unpaid', 'notice', 'search', 'member', 'recharge', 'toTop', 'support'];
+const THEME_DEFAULT = { accent: '#5a5cf0', accent2: '#8b5cf6' };
+const TAB_DEFAULT = { home: '首页', content: '内容', mine: '我的', contentOn: true };
+const BANNER_DEFAULT = { on: false, text: '', sub: '', btn: '', link: '', bg: '#5a5cf0' };
+const ENTRY_ACTS = ['goods', 'content', 'member', 'support', 'link'];
+const ENTRY_MAX = 8;
+
+/** 只接受 #rrggbb，其它一律回落到默认值，避免把奇怪字符串写进 style */
+function safeHex(v, fallback) {
+  const s = String(v || '').trim();
+  return /^#[0-9a-fA-F]{6}$/.test(s) ? s.toLowerCase() : fallback;
+}
 
 /** 把库里的 home 和默认值合并，并裁掉非法内容 —— 前端直接拿来渲染，不再判空 */
 function normalizeHome(raw) {
@@ -411,16 +460,76 @@ function normalizeHome(raw) {
   }
 
   const support = src.support && typeof src.support === 'object' ? src.support : {};
+
+  // 模块开关：只认已知 key，缺省为开
+  const rawMods = src.modules && typeof src.modules === 'object' ? src.modules : {};
+  const modules = {};
+  MODULE_KEYS.forEach((k) => {
+    modules[k] = rawMods[k] !== false;
+  });
+
+  // 主题色
+  const rawTheme = src.theme && typeof src.theme === 'object' ? src.theme : {};
+  const theme = {
+    accent: safeHex(rawTheme.accent, THEME_DEFAULT.accent),
+    accent2: safeHex(rawTheme.accent2, THEME_DEFAULT.accent2),
+  };
+
+  // 底部导航文案 + 内容页显隐
+  const rawTabs = src.tabs && typeof src.tabs === 'object' ? src.tabs : {};
+  const tabs = {
+    home: String(rawTabs.home || '').trim().slice(0, 4) || TAB_DEFAULT.home,
+    content: String(rawTabs.content || '').trim().slice(0, 4) || TAB_DEFAULT.content,
+    mine: String(rawTabs.mine || '').trim().slice(0, 4) || TAB_DEFAULT.mine,
+    contentOn: rawTabs.contentOn !== false,
+  };
+
+  // 首页横幅
+  const rawBanner = src.banner && typeof src.banner === 'object' ? src.banner : {};
+  const banner = {
+    on: rawBanner.on === true,
+    text: String(rawBanner.text || '').trim().slice(0, 40),
+    sub: String(rawBanner.sub || '').trim().slice(0, 60),
+    btn: String(rawBanner.btn || '').trim().slice(0, 8),
+    link: String(rawBanner.link || '').trim().slice(0, 300),
+    bg: safeHex(rawBanner.bg, BANNER_DEFAULT.bg),
+  };
+  if (!banner.text) banner.on = false; // 没文案就不显示，避免空块
+
+  // 快捷入口宫格
+  const entries = [];
+  if (Array.isArray(src.entries)) {
+    src.entries.slice(0, ENTRY_MAX).forEach((item) => {
+      if (!item || typeof item !== 'object') return;
+      const title = String(item.title || '').trim().slice(0, 6);
+      if (!title) return;
+      const act = ENTRY_ACTS.includes(item.act) ? item.act : 'goods';
+      entries.push({
+        icon: String(item.icon || '🔗').trim().slice(0, 4) || '🔗',
+        title,
+        act,
+        value: String(item.value || '').trim().slice(0, 200),
+        on: item.on !== false,
+      });
+    });
+  }
+
   return {
     trustOn: src.trustOn !== false, // 总开关：关掉后首页不显示服务保障条
     trust,
     goodsTitle: String(src.goodsTitle || '').trim().slice(0, 10) || HOME_DEFAULTS.goodsTitle,
     contentTitle: String(src.contentTitle || '').trim().slice(0, 10) || HOME_DEFAULTS.contentTitle,
+    homeTitle: String(src.homeTitle || '').trim().slice(0, 10) || HOME_DEFAULTS.homeTitle,
     support: {
       wechat: String(support.wechat || '').trim().slice(0, 40),
       phone: String(support.phone || '').trim().slice(0, 40),
       note: String(support.note || '').trim().slice(0, 120),
     },
+    modules,
+    theme,
+    tabs,
+    banner,
+    entries,
   };
 }
 
@@ -1171,6 +1280,13 @@ async function handleApi(req, res, url) {
     if (!phone || !password) return sendJSON(res, 400, { message: '请输入手机号和密码' });
     try {
       const out = await users.login({ phone, password });
+      // 被封禁的账号：密码对了也不给登录，直接告诉他原因
+      if (out.profile && out.profile.banned) {
+        return sendJSON(res, 403, {
+          code: 'BANNED',
+          message: '该账号已被停用' + (out.profile.banReason ? `：${out.profile.banReason}` : '') + '，如有疑问请联系客服',
+        });
+      }
       setSessionCookie(res, out.token);
       return sendJSON(res, 200, { token: out.token, viewer: await publicViewer(out.profile.id) });
     } catch (e) {
@@ -1491,6 +1607,13 @@ async function handleApi(req, res, url) {
   if (pathname === '/api/orders' && method === 'POST') {
     const uid = currentUserId(req);
     if (!uid) return sendJSON(res, 401, { message: '请先登录后再下单' });
+    const ban = await banInfo(uid);
+    if (ban.banned) {
+      return sendJSON(res, 403, {
+        code: 'BANNED',
+        message: '该账号已被停用' + (ban.reason ? `：${ban.reason}` : '') + '，暂时无法下单',
+      });
+    }
     purgeExpiredOrdersLocal(); // 顺手清掉自己缓存里已超时的未支付单
     const body = await readBody(req);
 
@@ -2196,6 +2319,47 @@ async function handleApi(req, res, url) {
         contents = contents.map((c) => ({ ...c, unlockCount: 0 }));
       }
       const umap = await userMap();
+
+      /* ---- 经营看板：今天 / 近 7 日 ---- */
+      const DAY_MS = 86400000;
+      const startOfDay = (ts) => {
+        const d = new Date(ts);
+        d.setHours(0, 0, 0, 0);
+        return d.getTime();
+      };
+      const today0 = startOfDay(Date.now());
+      const trend = [];
+      for (let i = 6; i >= 0; i--) {
+        const from = today0 - i * DAY_MS;
+        const to = from + DAY_MS;
+        const dayOrders = db.orders.filter((o) => o.createdAt >= from && o.createdAt < to);
+        const dayPaid = dayOrders.filter((o) => o.status === 'paid' || o.status === 'refunded');
+        const d = new Date(from);
+        trend.push({
+          date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+          label: `${d.getMonth() + 1}/${d.getDate()}`,
+          orders: dayOrders.length,
+          paid: dayPaid.length,
+          gmv: dayPaid.reduce((s, o) => s + o.amount, 0),
+          users: 0,
+        });
+      }
+      let userRows = [];
+      try {
+        userRows = await users.listUsers();
+      } catch (e) {
+        console.warn('[admin] 读取用户列表失败:', e.message);
+      }
+      const memberCount = userRows.filter((u) => u.member_expire && new Date(u.member_expire).getTime() > Date.now()).length;
+      const todayTrend = trend[trend.length - 1];
+      trend.forEach((row) => {
+        row.users = userRows.filter((u) => u.created_at && startOfDay(new Date(u.created_at).getTime()) === new Date(row.date).getTime()).length;
+      });
+      const todayOrders = db.orders.filter((o) => o.createdAt >= today0);
+      const todayPaid = todayOrders.filter((o) => o.status === 'paid' || o.status === 'refunded');
+      const weekOrders = db.orders.filter((o) => o.createdAt >= today0 - 6 * DAY_MS);
+      const weekPaid = weekOrders.filter((o) => o.status === 'paid' || o.status === 'refunded');
+
       return sendJSON(res, 200, {
         stats: {
           orders: db.orders.length,
@@ -2205,6 +2369,18 @@ async function handleApi(req, res, url) {
           refundSum, // 累计退款
           net: gross - refundSum, // 净收入
           balance: db.user.balance,
+          // 看板
+          todayOrders: todayOrders.length,
+          todayPaid: todayPaid.length,
+          todayGmv: todayPaid.reduce((s, o) => s + o.amount, 0),
+          todayNewUsers: todayTrend ? todayTrend.users : 0,
+          weekOrders: weekOrders.length,
+          weekGmv: weekPaid.reduce((s, o) => s + o.amount, 0),
+          memberCount,
+          userCount: userRows.length,
+          payRate: todayOrders.length ? Math.round((todayPaid.length / todayOrders.length) * 100) : 0,
+          unlockCount: contents.reduce((s, c) => s + (Number(c.unlockCount) || 0), 0),
+          trend,
         },
         orders: db.orders.slice(-200).reverse().map((o) => adminOrder(o, umap)),
         orderTtlMinutes: ORDER_TTL_MINUTES, // 后台按这个数算「剩余支付时间」
@@ -2254,6 +2430,8 @@ async function handleApi(req, res, url) {
           lastLoginAt: u.last_login_at ? new Date(u.last_login_at).getTime() : null,
           orderCount: Number(u.order_count || 0),
           paidAmount: 0,
+          banned: u.banned === true,
+          banReason: u.ban_reason || '',
         }));
       } catch (e) {
         webError = e.message || '读取网页用户失败';
@@ -2604,6 +2782,55 @@ async function handleApi(req, res, url) {
       return sendJSON(res, 200, { order: publicOrder(order) });
     }
 
+    // 封禁 / 解封用户（封禁后无法登录、无法下单）
+    if (pathname === '/api/admin/user/ban' && method === 'POST') {
+      const body = await readBody(req);
+      const userId = String(body.userId || '').trim();
+      if (!userId) return sendJSON(res, 400, { message: '缺少 userId' });
+      try {
+        const out = await store.adminSetUserBan(userId, Boolean(body.banned), String(body.reason || ''));
+        clearBanCache(userId);
+        console.log(`[admin] 用户 ${userId} ${body.banned ? '已封禁' : '已解封'}`);
+        return sendJSON(res, 200, { ok: true, user: out });
+      } catch (e) {
+        return sendJSON(res, 502, { message: '操作失败：' + e.message });
+      }
+    }
+
+    // 后台调整余额（正数加、负数扣）
+    if (pathname === '/api/admin/user/balance' && method === 'POST') {
+      const body = await readBody(req);
+      const userId = String(body.userId || '').trim();
+      const delta = Math.round(Number(body.delta) || 0);
+      if (!userId) return sendJSON(res, 400, { message: '缺少 userId' });
+      if (!delta) return sendJSON(res, 400, { message: '调整金额不能为 0' });
+      if (Math.abs(delta) > 10000000) return sendJSON(res, 400, { message: '单次调整不能超过 10 万元' });
+      try {
+        const balance = await users.adjustUserBalance(userId, delta, 'admin', String(body.note || '后台调整'));
+        console.log(`[admin] 用户 ${userId} 余额 ${delta > 0 ? '+' : ''}${delta} 分`);
+        return sendJSON(res, 200, { ok: true, balance });
+      } catch (e) {
+        return sendJSON(res, 502, { message: '调整失败：' + e.message });
+      }
+    }
+
+    // 延长未支付订单的支付时限
+    if (pathname === '/api/admin/order/extend' && method === 'POST') {
+      const body = await readBody(req);
+      const order = db.orders.find((o) => o.id === body.orderId);
+      if (!order) return sendJSON(res, 404, { message: '订单不存在' });
+      if (order.status !== 'created' && order.status !== 'pending') {
+        return sendJSON(res, 409, { message: '只有未支付订单可以延长' });
+      }
+      try {
+        await store.adminExtendOrder(order.id);
+      } catch (e) {
+        return sendJSON(res, 502, { message: '延长失败：' + e.message });
+      }
+      order.createdAt = Date.now();
+      return sendJSON(res, 200, { order: publicOrder(order) });
+    }
+
     return sendJSON(res, 404, { message: '接口不存在' });
   }
 
@@ -2712,13 +2939,22 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
-  console.log(`\n  手机应用骨架已启动`);
-  console.log(`  本地访问: http://localhost:${PORT}`);
-  console.log(`  支付渠道: ${PROVIDER}（PAY_PROVIDER 可切换）`);
-  initCloud();
-  startPendingSyncSweeper(); // 兜底：每分钟把「已付但状态没变」的支付宝订单补记入账
-  startMemberAutoRenewSweeper(); // 会员自动续费：每 30 分钟扫一遍到期用户
-  startOrderJanitor(); // 未支付订单 30 分钟自动删除
-  console.log('');
-});
+/**
+ * 先等云库首次加载完成再监听端口：
+ * 否则服务刚起来那几秒的请求会打到未初始化的状态上（products 为空 → 500）。
+ * 首次加载失败不影响启动，后续由 initCloud 内部重试。
+ */
+async function startServer() {
+  await initCloud();
+  server.listen(PORT, () => {
+    console.log(`\n  手机应用骨架已启动`);
+    console.log(`  本地访问: http://localhost:${PORT}`);
+    console.log(`  支付渠道: ${PROVIDER}（PAY_PROVIDER 可切换）`);
+    startPendingSyncSweeper(); // 兜底：每分钟把「已付但状态没变」的支付宝订单补记入账
+    startMemberAutoRenewSweeper(); // 会员自动续费：每 30 分钟扫一遍到期用户
+    startOrderJanitor(); // 未支付订单 30 分钟自动删除
+    console.log('');
+  });
+}
+
+startServer();
