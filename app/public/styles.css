@@ -1917,3 +1917,35 @@ body.dark .fb-item { background: #222735; border-color: #363c4d; }
 body.dark .fb-reply { background: #1e2740; color: #cdd6ee; }
 body.dark .fb-text,
 body.dark .fb-input { background: #232734; border-color: #363c4d; color: #e6e9f2; }
+
+/* ---------------- 个人资料编辑 ---------------- */
+.profile-bio {
+  font-size: 12.5px;
+  color: #5b6275;
+  line-height: 1.5;
+  margin-top: 3px;
+  word-break: break-word;
+}
+.pf-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+.avatar-pf {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #eef1ff;
+  color: var(--accent);
+  font-size: 22px;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+.avatar-pf img { width: 100%; height: 100%; object-fit: cover; display: block; }
+body.dark .profile-bio { color: #a9b1c6; }
+body.dark .avatar-pf { background: #262b39; color: #a9b4ff; }

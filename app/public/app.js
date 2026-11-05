@@ -1555,8 +1555,11 @@ function renderUserCenter() {  const v = state.viewer;
         <div class="profile-body">
           <div class="profile-name">
             ${esc(v.nickname)}
-            <button class="mini-btn" data-act="edit-nickname">修改</button>
+            <button class="mini-btn" data-act="edit-profile">编辑资料</button>
           </div>
+          <div class="profile-bio">${
+            v.bio ? esc(v.bio) : '<span style="opacity:.55">还没有个性签名，点编辑资料写一句</span>'
+          }</div>
           <div class="profile-sub">${esc(v.phoneMasked)} · ID ${esc(v.id.slice(0, 10))}</div>
         </div>
       </div>
@@ -1753,6 +1756,47 @@ function shareQrSheet() {
     <p class="qr-tip">用手机相机或微信扫一扫，即可打开并安装到桌面</p>
     <button class="btn-primary" data-act="share-copy">复制链接</button>
     <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>
+  `);
+}
+
+/** 编辑资料：头像 / 昵称 / 签名 / 手机号 / 密码 一处搞定 */
+function profileSheet() {
+  const v = state.viewer;
+  if (!v) return toast('登录后可以编辑资料');
+  openSheet(`
+    <h3 class="sheet-title">编辑资料</h3>
+    <div class="pf-head">
+      ${avatarHTML(v, 'avatar-pf')}
+      <button class="mini-btn" data-act="edit-avatar">换头像</button>
+    </div>
+    <label class="field"><span>昵称</span><input id="pfNick" maxlength="16" value="${esc(v.nickname)}" placeholder="最多 16 个字" /></label>
+    <label class="field"><span>个性签名</span><input id="pfBio" maxlength="40" value="${esc(v.bio || '')}" placeholder="一句话介绍自己（最多 40 字）" /></label>
+    <button class="set-row" data-act="open-phone" style="margin-top:4px">
+      <span>手机号</span>
+      <i style="font-size:12px;color:var(--muted)">${esc(v.phoneMasked)}</i>
+      <i>›</i>
+    </button>
+    <button class="set-row" data-act="change-password">
+      <span>登录密码</span>
+      <i style="font-size:12px;color:var(--muted)">修改</i>
+      <i>›</i>
+    </button>
+    <button class="btn-primary" data-act="save-profile" style="margin-top:14px">保存</button>
+    <button class="btn-ghost" data-act="close" style="margin-top:10px">取消</button>
+  `);
+}
+
+/** 换绑手机号：需要登录密码验证（无短信通道） */
+function phoneSheet() {
+  const v = state.viewer;
+  if (!v) return toast('登录后可以换绑手机号');
+  openSheet(`
+    <h3 class="sheet-title">换绑手机号</h3>
+    <p class="sheet-sub">当前 ${esc(v.phoneMasked)}。换绑后请用新手机号 + 原密码登录。</p>
+    <label class="field"><span>新手机号</span><input id="phNew" inputmode="numeric" maxlength="11" placeholder="11 位手机号" /></label>
+    <label class="field"><span>登录密码</span><input id="phPwd" type="password" maxlength="32" placeholder="用于验证身份" /></label>
+    <button class="btn-primary" data-act="save-phone" style="margin-top:14px">确认换绑</button>
+    <button class="btn-ghost" data-act="close" style="margin-top:10px">取消</button>
   `);
 }
 
@@ -2650,6 +2694,7 @@ view.addEventListener('click', async (e) => {
   if (act === 'login') return doAuth(false);
   if (act === 'register') return doAuth(true);
   if (act === 'logout') return logout();
+  if (act === 'edit-profile') return profileSheet();
   if (act === 'edit-nickname') return nicknameSheet();
   if (act === 'edit-avatar') return avatarSheet();
   if (act === 'go-mine' || act === 'go-login') {
@@ -2960,6 +3005,49 @@ sheetEl.addEventListener('click', async (e) => {
     } catch (err) {
       toast(err.message);
     }
+  }
+
+  if (act === 'save-profile') {
+    const nickname = (($('#pfNick') || {}).value || '').trim();
+    const bio = (($('#pfBio') || {}).value || '').trim();
+    if (!nickname) return toast('昵称不能为空');
+    try {
+      const { viewer } = await api('/api/auth/profile', {
+        method: 'POST',
+        body: JSON.stringify({ nickname, bio }),
+      });
+      state.viewer = viewer;
+      state.viewer.orders = state.orders;
+      closeSheet();
+      toast('资料已更新');
+      render();
+    } catch (err) {
+      toast(err.message);
+    }
+    return;
+  }
+
+  if (act === 'open-phone') return phoneSheet();
+
+  if (act === 'save-phone') {
+    const phone = (($('#phNew') || {}).value || '').replace(/\D/g, '');
+    const password = (($('#phPwd') || {}).value || '').trim();
+    if (!/^1[3-9]\d{9}$/.test(phone)) return toast('请输入正确的 11 位手机号');
+    if (!password) return toast('请输入登录密码');
+    try {
+      const { viewer } = await api('/api/auth/phone', {
+        method: 'POST',
+        body: JSON.stringify({ phone, password }),
+      });
+      state.viewer = viewer;
+      state.viewer.orders = state.orders;
+      closeSheet();
+      toast('手机号已换绑，下次用新号登录');
+      render();
+    } catch (err) {
+      toast(err.message);
+    }
+    return;
   }
 
   if (act === 'save-address') {

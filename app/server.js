@@ -388,6 +388,7 @@ async function publicViewer(userId) {
   return {
     id: p.id,
     nickname: p.nickname,
+    bio: p.bio || '',
     phone: p.phone,
     phoneMasked: maskPhone(p.phone),
     initial: String(p.nickname || '用').trim().slice(0, 1),
@@ -1461,6 +1462,10 @@ async function handleApi(req, res, url) {
       if (!nickname) return sendJSON(res, 400, { message: '昵称不能为空' });
       patch.nickname = nickname;
     }
+    if (body.bio !== undefined) {
+      // 个性签名：最多 40 字，允许清空
+      patch.bio = String(body.bio || '').trim().slice(0, 40);
+    }
     if (body.address !== undefined) {
       const a = body.address || {};
       patch.address = {
@@ -1576,6 +1581,25 @@ async function handleApi(req, res, url) {
     } catch (e) {
       const status = e.code === 'BAD_PASSWORD' ? 400 : 502;
       return sendJSON(res, status, { message: e.message || '修改密码失败' });
+    }
+  }
+
+  // 换绑手机号：需要登录密码验证（无短信通道，用密码验身）
+  if (pathname === '/api/auth/phone' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '未登录' });
+    if (!users.enabled) return sendJSON(res, 501, { message: '未接入用户云库' });
+    const body = await readBody(req);
+    const phone = String(body.phone || '').replace(/\D/g, '');
+    const password = String(body.password || '');
+    if (!/^1[3-9]\d{9}$/.test(phone)) return sendJSON(res, 400, { message: '请输入正确的 11 位手机号' });
+    if (!password) return sendJSON(res, 400, { message: '请输入登录密码' });
+    try {
+      await users.changePhone(uid, phone, password);
+      return sendJSON(res, 200, { ok: true, viewer: await publicViewer(uid) });
+    } catch (e) {
+      const status = ['BAD_PASSWORD', 'PHONE_TAKEN', 'BAD_PHONE'].includes(e.code) ? 400 : 502;
+      return sendJSON(res, status, { message: e.message || '换绑失败' });
     }
   }
 

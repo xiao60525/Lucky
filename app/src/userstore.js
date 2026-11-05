@@ -103,6 +103,7 @@ function normalizeProfile(row) {
     id: row.id,
     phone: row.phone,
     nickname: row.nickname || '用户',
+    bio: row.bio || '',
     points: row.points || 0,
     address: row.address && typeof row.address === 'object' ? row.address : {},
     avatar: row.avatar || null,
@@ -303,6 +304,38 @@ async function listBalanceLogs(userId, limit = 100) {
   return Array.isArray(data) ? data : [];
 }
 
+/** 换绑手机号：先用登录密码验身，再改 phone（唯一性由云库函数保证） */
+async function changePhone(userId, newPhone, password) {
+  const data = await call('app_user_get', { p_secret: secret, p_id: userId }, '读取');
+  const row = await call('app_user_auth', { p_secret: secret, p_phone: data.profile.phone }, '校验');
+  if (!row || !verifyPassword(password, row.password_hash)) {
+    const err = new Error('登录密码不正确');
+    err.code = 'BAD_PASSWORD';
+    throw err;
+  }
+  try {
+    const out = await call(
+      'app_user_phone_update',
+      { p_secret: secret, p_user: userId, p_phone: String(newPhone || '') },
+      '换绑手机号'
+    );
+    return normalizeProfile(out);
+  } catch (e) {
+    const msg = String(e.message || '');
+    if (msg.includes('phone_taken')) {
+      const err = new Error('这个手机号已经被别的账号使用');
+      err.code = 'PHONE_TAKEN';
+      throw err;
+    }
+    if (msg.includes('bad_phone')) {
+      const err = new Error('手机号格式不正确');
+      err.code = 'BAD_PHONE';
+      throw err;
+    }
+    throw e;
+  }
+}
+
 /** 改密码：先验旧密码 */
 async function changePassword(userId, oldPassword, newPassword) {
   const data = await call('app_user_get', { p_secret: secret, p_id: userId }, '读取');
@@ -343,6 +376,7 @@ module.exports = {
   isMember,
   updateProfile,
   changePassword,
+  changePhone,
   listUsers,
   signToken,
   readToken,

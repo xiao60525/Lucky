@@ -139,6 +139,12 @@ function fakeFetch(url, opts = {}) {
     return json({ viewer: VIEWER });
   }
   if (path === '/api/auth/password') return json({ ok: true });
+  if (path === '/api/auth/phone') {
+    const body = JSON.parse(opts.body || '{}');
+    VIEWER.phone = body.phone;
+    VIEWER.phoneMasked = String(body.phone || '').replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2');
+    return json({ ok: true, viewer: VIEWER });
+  }
   if (path === '/api/balance/logs')
     return json({
       logs: [
@@ -469,7 +475,44 @@ check(
   Boolean($('[data-act="open-favorites"]')) && Boolean($('[data-act="feedback-new"]')) && Boolean($('[data-act="feedback-mine"]'))
 );
 
+// 4a2. 编辑资料：昵称 / 个性签名 / 换绑手机号
+check('我的页有编辑资料入口', Boolean($('[data-act="edit-profile"]')));
+$('[data-act="edit-profile"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(50);
+check('资料弹层有昵称与签名输入', Boolean($('#pfNick')) && Boolean($('#pfBio')));
+check(
+  '资料弹层有换手机号与改密码入口',
+  Boolean($('.sheet [data-act="open-phone"]')) && Boolean($('.sheet [data-act="change-password"]'))
+);
+$('#pfNick').value = '新昵称';
+$('#pfBio').value = '我的新签名';
+$('[data-act="save-profile"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(90);
+check(
+  '保存资料调用接口并带上昵称与签名',
+  calls.some((c) => c.path === '/api/auth/profile' && c.body && c.body.nickname === '新昵称' && c.body.bio === '我的新签名')
+);
+check('保存后我的页显示新昵称', text('.profile-name').includes('新昵称'), text('.profile-name'));
+check('保存后我的页显示新签名', text('.profile-bio').includes('我的新签名'), text('.profile-bio'));
+
+$('[data-act="edit-profile"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(50);
+$('.sheet [data-act="open-phone"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(50);
+check('换绑弹层有新手机号与密码输入', Boolean($('#phNew')) && Boolean($('#phPwd')));
+$('#phNew').value = '13900001111';
+$('#phPwd').value = 'test1234';
+$('[data-act="save-phone"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(90);
+check(
+  '换绑手机号调用接口',
+  calls.some((c) => c.path === '/api/auth/phone' && c.body && c.body.phone === '13900001111')
+);
+check('换绑后我的页显示新手机号', text('.profile-sub').includes('139****1111'), text('.profile-sub'));
+
 // 4b. 「支付中」订单：点进去直接进支付界面，且复用同一笔订单付款
+$('[data-act="open-orders"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
 const pendingRow = [...window.document.querySelectorAll('.sheet .order-row')].find((r) => r.dataset.id === 'O2');
 check('待支付订单有「继续支付」提示', Boolean(pendingRow) && pendingRow.textContent.includes('继续支付'), pendingRow ? pendingRow.textContent.replace(/\s+/g, ' ').trim() : '');
 check('待支付筛选包含支付中订单', text('.sheet .mchips').includes('待支付 1'), text('.sheet .mchips'));
@@ -515,13 +558,13 @@ check('二维码图片地址含 t 参数', qrSrc.includes('/api/qr?t=') && qrSrc
 $('.sheet [data-act="close"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(60);
 
-// 7. 改昵称
-$('[data-act="edit-nickname"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+// 7. 改昵称（走「编辑资料」弹层）
+$('[data-act="edit-profile"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(40);
-check('改昵称弹层输入框有当前值', ($('#nickInput') || {}).value === '测试用户');
-$('#nickInput').value = '新名字';
-$('[data-act="save-nickname"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-await wait(80);
+check('资料弹层回填当前昵称', ($('#pfNick') || {}).value === '新昵称', ($('#pfNick') || {}).value || '');
+$('#pfNick').value = '新名字';
+$('[data-act="save-profile"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(90);
 check('昵称已更新到页面', text('.profile-name').includes('新名字'), text('.profile-name'));
 
 // 7b. 设置中心：分组设置项 + 深色模式开关
