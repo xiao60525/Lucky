@@ -11,7 +11,8 @@
     "alipay:keys": "node scripts/alipay-keys.js",
     "alipay:doctor": "node scripts/alipay-doctor.mjs",
     "test:alipay": "node scripts/test-alipay.mjs && node scripts/test-alipay-ui.mjs",
-    "test:ui": "node scripts/test-user-ui.mjs"
+    "test:ui": "node scripts/test-user-ui.mjs",
+    "test:engage": "node scripts/test-engage.mjs && node scripts/test-engage-ui.mjs"
   },
   "engines": {
     "node": ">=18"
