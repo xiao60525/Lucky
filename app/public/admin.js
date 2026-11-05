@@ -261,7 +261,8 @@ function renderOverview() {
 }
 
 /** 订单页筛选状态（内存态，切标签页后保留） */
-const orderFilter = { status: 'all', q: '' };
+const orderFilter = { status: 'all', q: '', days: 'all', channel: 'all', page: 1 };
+const ORDER_PAGE_SIZE = 20;
 
 function orderBuyerText(o) {
   if (!o.buyer) return '<span class="muted">游客/老订单</span>';
@@ -272,8 +273,21 @@ function orderBuyerText(o) {
 
 function filteredOrders(orders) {
   const q = orderFilter.q.trim().toLowerCase();
+  const now = Date.now();
+  const dayMs = 86400000;
+  const sinceMap = { today: new Date().setHours(0, 0, 0, 0), d7: now - 7 * dayMs, d30: now - 30 * dayMs };
+  const since = sinceMap[orderFilter.days];
   return orders.filter((o) => {
     if (orderFilter.status !== 'all' && o.status !== orderFilter.status) return false;
+    if (since && (o.createdAt || 0) < since) return false;
+    if (orderFilter.channel !== 'all') {
+      const ch = String(o.channel || '').toLowerCase();
+      if (orderFilter.channel === 'other') {
+        if (/^alipay|^wechat|wxpay|^balance|^mock/.test(ch)) return false;
+      } else if (!ch.startsWith(orderFilter.channel)) {
+        return false;
+      }
+    }
     if (!q) return true;
     const hay = [o.id, o.title, o.transactionId, o.buyer && o.buyer.phone, o.buyer && o.buyer.nickname]
       .filter(Boolean)
@@ -291,12 +305,15 @@ function renderOrderStats(orders) {
   const todayPaid = paidLike.filter((o) => o.paidAt >= t0);
   const todaySum = todayPaid.reduce((s, o) => s + o.amount, 0);
   const pending = orders.filter((o) => o.status === 'created' || o.status === 'pending').length;
+  const todayRefund = orders.filter((o) => o.status === 'refunded' && o.refundedAt && o.refundedAt >= t0);
+  const refundSum = todayRefund.reduce((s, o) => s + o.amount, 0);
   const item = (label, val, cls) => `<div class="ostat ${cls || ''}"><b>${val}</b><span>${label}</span></div>`;
   return `
     <div class="ostat-row">
       ${item('今日收入', '¥' + yuan(todaySum))}
       ${item('今日成交', todayPaid.length + ' 笔')}
       ${item('待支付', pending + ' 笔', pending ? 'warn' : '')}
+      ${item('今日退款', todayRefund.length ? `${todayRefund.length} 笔 · ¥${yuan(refundSum)}` : '0 笔', todayRefund.length ? 'warn' : '')}
       ${item('订单总数', orders.length + ' 笔')}
     </div>`;
 }
@@ -317,6 +334,23 @@ function renderOrderControls() {
       return `<button class="ochip ${orderFilter.status === k ? 'on' : ''}" data-of="${k}">${label}${n ? ` <i>${n}</i>` : ''}</button>`;
     })
     .join('');
+  const dayChips = [
+    ['all', '全部时间'],
+    ['today', '今天'],
+    ['d7', '近 7 天'],
+    ['d30', '近 30 天'],
+  ]
+    .map(([k, label]) => `<button class="ochip ${orderFilter.days === k ? 'on' : ''}" data-od="${k}">${label}</button>`)
+    .join('');
+  const channelChips = [
+    ['all', '全部渠道'],
+    ['alipay', '支付宝'],
+    ['wechat', '微信'],
+    ['balance', '余额'],
+    ['other', '其他'],
+  ]
+    .map(([k, label]) => `<button class="ochip ${orderFilter.channel === k ? 'on' : ''}" data-oc="${k}">${label}</button>`)
+    .join('');
   return `
     <div class="obar">
       <div class="ochips">${tabs}</div>
@@ -324,6 +358,9 @@ function renderOrderControls() {
         <input id="orderSearch" placeholder="搜订单号 / 手机号 / 昵称 / 商品 / 交易号" value="${esc(orderFilter.q)}" />
         <button class="op" id="orderExport">导出 CSV</button>
       </div>
+    </div>
+    <div class="obar" style="border-top:none;padding-top:0">
+      <div class="ochips">${dayChips}<span class="ochip-sep"></span>${channelChips}</div>
     </div>`;
 }
 
@@ -331,6 +368,23 @@ function orderTable(orders) {
   const list = filteredOrders(orders);
   if (!orders.length) return '<p class="muted">还没有订单</p>';
   if (!list.length) return '<p class="muted">没有符合条件的订单，换个筛选或关键词试试</p>';
+  // 分页：每页 20 条，筛选变化时回到第 1 页
+  const pages = Math.max(1, Math.ceil(list.length / ORDER_PAGE_SIZE));
+  if (orderFilter.page > pages) orderFilter.page = pages;
+  const pageList = list.slice((orderFilter.page - 1) * ORDER_PAGE_SIZE, orderFilter.page * ORDER_PAGE_SIZE);
+  const pager = `
+    ${
+      pages > 1
+        ? `<div class="opager">
+            <button class="op" data-opg="prev" ${orderFilter.page <= 1 ? 'disabled' : ''}>上一页</button>
+            <span class="muted" style="font-size:12.5px">第 ${orderFilter.page} / ${pages} 页</span>
+            <button class="op" data-opg="next" ${orderFilter.page >= pages ? 'disabled' : ''}>下一页</button>
+          </div>`
+        : ''
+    }
+    <p class="muted" style="font-size:12px;margin:10px 0 0">共 ${list.length} 条${
+      pages > 1 ? `（当前显示第 ${(orderFilter.page - 1) * ORDER_PAGE_SIZE + 1} ~ ${Math.min(orderFilter.page * ORDER_PAGE_SIZE, list.length)} 条）` : ''
+    }（库中最多展示最近 200 条）</p>`;
   const ttlMs = ((state.data && state.data.orderTtlMinutes) || 30) * 60 * 1000;
   /** 未支付订单的剩余时间：和前台倒计时、服务端自动删除保持一致 */
   const leftText = (o) => {
@@ -342,7 +396,7 @@ function orderTable(orders) {
     return `<div class="muted" style="font-size:11px">剩余 ${m}:${String(sec).padStart(2, '0')}</div>`;
   };
   return `<div class="otable-wrap"><table><thead><tr><th>订单号</th><th>商品</th><th>买家</th><th>金额</th><th>渠道</th><th>状态</th><th>下单时间</th><th>支付时间</th><th>第三方交易号</th><th>操作</th></tr></thead>
-    <tbody>${list
+    <tbody>${pageList
       .map(
         (o) => `<tr>
       <td style="font-family:monospace;font-size:12px;max-width:150px;word-break:break-all">
@@ -371,7 +425,7 @@ function orderTable(orders) {
     </tr>`
       )
       .join('')}</tbody></table></div>
-    <p class="muted" style="font-size:12px;margin:10px 0 0">共 ${list.length} 条（库中最多展示最近 200 条）</p>`;
+    ${pager}`;
 }
 
 function exportOrdersCsv(orders) {
@@ -496,10 +550,14 @@ function renderProducts() {
             (pfilter === 'only' && p.memberOnly) ||
             (pfilter === 'member' && Number(p.memberDays) > 0))
       );
-      // 销量：已支付订单按商品聚合（前台详情页也会显示「已售 N」）
+      // 销量 / 销售额：已支付订单按商品聚合（前台详情页也会显示「已售 N」）
       const soldMap = {};
+      const revenueMap = {};
       (state.data.orders || []).forEach((o) => {
-        if (o.status === 'paid' && o.productId) soldMap[o.productId] = (soldMap[o.productId] || 0) + 1;
+        if (o.status === 'paid' && o.productId) {
+          soldMap[o.productId] = (soldMap[o.productId] || 0) + 1;
+          revenueMap[o.productId] = (revenueMap[o.productId] || 0) + Number(o.amount || 0);
+        }
       });
       box.innerHTML = fl.length
         ? `<table><thead><tr><th>图片</th><th>ID</th><th>名称</th><th>价格</th><th>会员</th><th>销量</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${fl
@@ -521,11 +579,13 @@ function renderProducts() {
                 .filter(Boolean)
                 .join(' ') || '<span class="muted">—</span>'
             }</td>
-            <td class="muted">${soldMap[p.id] ? `已售 ${soldMap[p.id]}` : '—'}</td>
+            <td class="muted">${soldMap[p.id] ? `已售 ${soldMap[p.id]}<div style="font-size:11.5px">¥${yuan(revenueMap[p.id] || 0)}</div>` : '—'}</td>
             <td class="muted">${p.sort}</td>
             <td>${p.active ? '<span class="tag paid">上架</span>' : '<span class="tag off">下架</span>'}</td>
             <td style="white-space:nowrap">
+              <button class="op ${p.active ? 'danger' : ''}" data-ptoggle="${esc(p.id)}">${p.active ? '下架' : '上架'}</button>
               <button class="op" data-pedit="${esc(p.id)}">编辑</button>
+              <button class="op" data-pcopy="${esc(p.id)}">复制</button>
               <button class="op danger" data-del="${esc(p.id)}">删除</button>
             </td>
           </tr>`
@@ -535,6 +595,18 @@ function renderProducts() {
       box.querySelectorAll('[data-pedit]').forEach(
         (b) => (b.onclick = () => fillForm(ps.find((x) => x.id === b.dataset.pedit)))
       );
+      box.querySelectorAll('[data-ptoggle]').forEach(
+        (b) => (b.onclick = () => toggleProduct(ps.find((x) => x.id === b.dataset.ptoggle)))
+      );
+      box.querySelectorAll('[data-pcopy]').forEach((b) => {
+        b.onclick = () => {
+          const p = ps.find((x) => x.id === b.dataset.pcopy);
+          if (!p) return;
+          fillForm({ ...p, id: '' });
+          $('#formTitle').textContent = '新增商品（复制自「' + p.title + '」）';
+          if ($('#formTitle').scrollIntoView) $('#formTitle').scrollIntoView({ behavior: 'smooth', block: 'start' });
+        };
+      });
       box.querySelectorAll('[data-del]').forEach((b) => (b.onclick = () => delProduct(b.dataset.del)));
     };
     renderProductRows();
@@ -642,6 +714,32 @@ async function delProduct(id) {
   try {
     await api('/api/admin/product/delete', { method: 'POST', body: JSON.stringify({ id }) });
     toast('已删除');
+    await load();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+/** 行内快捷上架 / 下架：不改图、不动其他字段，只翻转 active */
+async function toggleProduct(p) {
+  if (!p) return;
+  try {
+    await api('/api/admin/product/save', {
+      method: 'POST',
+      body: JSON.stringify({
+        id: p.id,
+        title: p.title,
+        desc: p.desc || '',
+        amount: p.amount,
+        tag: p.tag || '',
+        sort: p.sort,
+        active: !p.active,
+        memberDays: Number(p.memberDays) || 0,
+        memberOnly: Boolean(p.memberOnly),
+        memberPrice: Number(p.memberPrice) || 0,
+      }),
+    });
+    toast(p.active ? `「${p.title}」已下架，手机端不再显示` : `「${p.title}」已上架`);
     await load();
   } catch (e) {
     toast(e.message);
@@ -964,7 +1062,34 @@ function renderOrders() {
   document.querySelectorAll('[data-of]').forEach((b) => {
     b.onclick = () => {
       orderFilter.status = b.dataset.of;
+      orderFilter.page = 1;
       renderOrders();
+    };
+  });
+  // 日期 / 渠道筛选
+  document.querySelectorAll('[data-od]').forEach((b) => {
+    b.onclick = () => {
+      orderFilter.days = b.dataset.od;
+      orderFilter.page = 1;
+      renderOrders();
+    };
+  });
+  document.querySelectorAll('[data-oc]').forEach((b) => {
+    b.onclick = () => {
+      orderFilter.channel = b.dataset.oc;
+      orderFilter.page = 1;
+      renderOrders();
+    };
+  });
+  // 分页
+  document.querySelectorAll('[data-opg]').forEach((b) => {
+    b.onclick = () => {
+      if (b.disabled) return;
+      orderFilter.page += b.dataset.opg === 'next' ? 1 : -1;
+      const box2 = $('#orderTableBox');
+      if (box2) box2.innerHTML = orderTable(state.data.orders || []);
+      bindOrderOps();
+      bindCopy();
     };
   });
   // 关键词搜索（防抖，只重绘表格区域避免输入框失焦）
@@ -975,6 +1100,7 @@ function renderOrders() {
       clearTimeout(timer);
       timer = setTimeout(() => {
         orderFilter.q = box.value;
+        orderFilter.page = 1;
         const box2 = $('#orderTableBox');
         if (box2) box2.innerHTML = orderTable(state.data.orders || []);
         bindOrderOps();
@@ -1084,6 +1210,33 @@ async function closeOrder(id) {
   }
 }
 
+/** 导出会员名单 CSV（含普通用户，带会员状态列，Excel 打开不乱码） */
+function exportMembersCsv(web) {
+  const head = ['手机号', '昵称', '会员状态', '到期时间', '自动续费', '余额(元)', '订单数', '注册时间'];
+  const escCell = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
+  const rows = (web || []).map((u) =>
+    [
+      u.phone || '',
+      u.nickname || '',
+      u.isMember ? '生效中' : u.memberExpire && u.memberExpire < Date.now() ? '已过期' : '从未开通',
+      u.memberExpire ? fmtTime(u.memberExpire) : '',
+      u.autoRenew ? '是' : '否',
+      (Number(u.balance || 0) / 100).toFixed(2),
+      u.orderCount || 0,
+      u.createdAt ? fmtTime(u.createdAt) : '',
+    ]
+      .map(escCell)
+      .join(',')
+  );
+  const blob = new Blob(['\ufeff' + head.join(',') + '\n' + rows.join('\n')], { type: 'text/csv;charset=utf-8' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = '会员名单-' + new Date().toISOString().slice(0, 10) + '.csv';
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast(`已导出 ${(web || []).length} 条会员名单`);
+}
+
 /* ---------------- 用户（小程序手机号用户，跨云环境只读） ---------------- */
 
 function renderUsers() {
@@ -1113,6 +1266,9 @@ function renderUsers() {
       const mpCount = list.filter((u) => u.source === 'mp').length;
       let usrc = 'all';
       let umember = 'all';
+      let usort = 'new';
+      let upage = 1;
+      const USER_PAGE_SIZE = 20;
       const userChips = () => {
         const srcCounts = { all: list.length, web: webCount, mp: mpCount };
         const memCounts = {
@@ -1135,21 +1291,53 @@ function renderUsers() {
       box.innerHTML = `
         <p class="muted" style="font-size:12.5px;margin:0 0 10px">共 ${list.length} 位用户（网页版 ${webCount} · 小程序 ${mpCount}），累计支付 ¥${yuan(paidSum)}</p>
         <div class="ochips">${userChips()}</div>
-        <div class="search-box"><input id="userSearch" placeholder="🔍 搜手机号 / 昵称" /></div>
+        <div class="search-box" style="display:flex;gap:10px;align-items:center">
+          <input id="userSearch" placeholder="🔍 搜手机号 / 昵称" style="flex:1 1 auto" />
+          <select id="userSort" style="flex:0 0 auto;padding:8px 10px;border:1px solid #dde2ec;border-radius:10px;font-family:inherit;font-size:13px">
+            <option value="new">最近注册</option>
+            <option value="login">最近登录</option>
+            <option value="paid">累计消费</option>
+            <option value="orders">订单数</option>
+          </select>
+        </div>
         <div id="userRows"></div>`;
       const renderUserRows = () => {
         const rows = $('#userRows');
         if (!rows) return;
         const q = ($('#userSearch').value || '').trim().toLowerCase();
-        const fl = list.filter(
+        const fl0 = list.filter(
           (u) =>
             (!q || `${u.phone || ''} ${u.nickname || ''}`.toLowerCase().includes(q)) &&
             (usrc === 'all' || u.source === usrc) &&
             (umember === 'all' || (umember === 'member' ? u.isMember : !u.isMember))
         );
+        // 排序 + 分页
+        const sorters = {
+          new: (a, b) => (b.createdAt || 0) - (a.createdAt || 0),
+          login: (a, b) => (b.lastLoginAt || 0) - (a.lastLoginAt || 0),
+          paid: (a, b) => (b.paidAmount || 0) - (a.paidAmount || 0),
+          orders: (a, b) => (b.orderCount || 0) - (a.orderCount || 0),
+        };
+        fl0.sort(sorters[usort] || sorters.new);
+        const upages = Math.max(1, Math.ceil(fl0.length / USER_PAGE_SIZE));
+        if (upage > upages) upage = upages;
+        const fl = fl0.slice((upage - 1) * USER_PAGE_SIZE, upage * USER_PAGE_SIZE);
+        const upager = `
+          ${
+            upages > 1
+              ? `<div class="opager">
+                  <button class="op" data-upg="prev" ${upage <= 1 ? 'disabled' : ''}>上一页</button>
+                  <span class="muted" style="font-size:12.5px">第 ${upage} / ${upages} 页</span>
+                  <button class="op" data-upg="next" ${upage >= upages ? 'disabled' : ''}>下一页</button>
+                </div>`
+              : ''
+          }
+          <p class="muted" style="font-size:12px;margin:10px 0 0">共 ${fl0.length} 位用户${
+            upages > 1 ? `（当前显示第 ${(upage - 1) * USER_PAGE_SIZE + 1} ~ ${Math.min(upage * USER_PAGE_SIZE, fl0.length)} 位）` : ''
+          }</p>`;
         rows.innerHTML = fl.length
           ? `<table>
-          <thead><tr><th>手机号</th><th>昵称</th><th>来源</th><th>身份</th><th>余额</th><th>注册时间</th><th>最近登录</th><th>订单数</th><th>状态</th><th>操作</th></tr></thead>
+          <thead><tr><th>手机号</th><th>昵称</th><th>来源</th><th>身份</th><th>余额</th><th>累计消费</th><th>注册时间</th><th>最近登录</th><th>订单数</th><th>状态</th><th>操作</th></tr></thead>
           <tbody>${fl
             .map(
               (u) => `<tr>
@@ -1164,6 +1352,7 @@ function renderUsers() {
                   : `<span class="tag">普通</span><div class="muted" style="font-size:11px">${u.points || 0} 积分</div>`
               }</td>
               <td>¥${yuan(u.balance || 0)}</td>
+              <td>${u.paidAmount ? `<b>¥${yuan(u.paidAmount)}</b>` : '<span class="muted">—</span>'}</td>
               <td class="muted" style="white-space:nowrap">${fmtTime(u.createdAt)}</td>
               <td class="muted" style="white-space:nowrap">${fmtTime(u.lastLoginAt)}</td>
               <td>${u.orderCount}</td>
@@ -1186,8 +1375,15 @@ function renderUsers() {
             </tr>`
             )
             .join('')}</tbody>
-        </table>`
+        </table>${upager}`
           : '<p class="search-none muted">没有匹配的用户，换个筛选条件或关键词试试</p>';
+        rows.querySelectorAll('[data-upg]').forEach((b) => {
+          b.onclick = () => {
+            if (b.disabled) return;
+            upage += b.dataset.upg === 'next' ? 1 : -1;
+            renderUserRows();
+          };
+        });
         bindUserOps();
       };
 
@@ -1262,13 +1458,22 @@ function renderUsers() {
       let utimer = null;
       $('#userSearch').oninput = () => {
         clearTimeout(utimer);
-        utimer = setTimeout(renderUserRows, 200);
+        utimer = setTimeout(() => {
+          upage = 1;
+          renderUserRows();
+        }, 200);
+      };
+      $('#userSort').onchange = () => {
+        usort = $('#userSort').value;
+        upage = 1;
+        renderUserRows();
       };
       box.querySelectorAll('[data-uf]').forEach((b) => {
         b.onclick = () => {
           const [group, k] = b.dataset.uf.split(':');
           if (group === 'src') usrc = k;
           else umember = k;
+          upage = 1;
           box.querySelectorAll(`[data-uf^="${group}:"]`).forEach((x) => x.classList.toggle('on', x === b));
           renderUserRows();
         };
@@ -1337,7 +1542,10 @@ function memberLogRow(l) {
 function renderMembers() {
   $('#panel').innerHTML = `
     <div class="card">
-      <h3>会员管理</h3>
+      <div class="card-head">
+        <h3>会员管理</h3>
+        <button class="op" id="exportMembers">导出名单</button>
+      </div>
       <p class="muted" style="font-size:12.5px;margin:0 0 12px">
         用户在手机端购买「会员商品」后自动开通；开启「自动续费」的用户到期前 24 小时自动从余额扣款续费，余额不足会记录失败并跳过。
         「来源」列显示会员是<b>客户自购 / 自动续费 / 后台赠送</b>；点「记录」可查看该用户全部会员流水。
@@ -1405,6 +1613,9 @@ function renderMembers() {
             : '<p class="muted">还没有网页版注册用户。</p>'
         }`;
 
+      const em = $('#exportMembers');
+      if (em) em.onclick = () => exportMembersCsv(web);
+
       const renderMemberRows = () => {
         const rows = $('#memberRows');
         if (!rows) return;
@@ -1429,6 +1640,7 @@ function renderMembers() {
                 <td>¥${yuan(u.balance || 0)}</td>
                 <td>${u.orderCount || 0}</td>
                 <td style="white-space:nowrap">
+                  <button class="op" data-mquick="${u.id}" data-name="${esc(u.nickname || u.phone)}" title="直接加 30 天，累加到当前到期时间">续30天</button>
                   <button class="op" data-mgrant="${u.id}" data-name="${esc(u.nickname || u.phone)}">开通/续费</button>
                   <button class="op" data-mlog="${u.id}" data-name="${esc(u.nickname || u.phone)}">记录</button>
                   ${u.isMember ? `<button class="op danger" data-mrevoke="${u.id}" data-name="${esc(u.nickname || u.phone)}">取消</button>` : ''}
@@ -1461,8 +1673,22 @@ function renderMembers() {
           };
         });
 
-        rows.querySelectorAll('[data-mgrant]').forEach((b) => {
+        rows.querySelectorAll('[data-mquick]').forEach((b) => {
           b.onclick = async () => {
+            if (!confirm(`给「${b.dataset.name}」直接续 30 天会员？（累加到当前到期时间）`)) return;
+            try {
+              const r = await api('/api/admin/member/grant', {
+                method: 'POST',
+                body: JSON.stringify({ userId: b.dataset.mquick, days: 30, note: '后台快捷续期 30 天' }),
+              });
+              toast('已续期，到期 ' + (r.expire ? fmtTime(new Date(r.expire).getTime()) : '成功'));
+              renderMembers();
+            } catch (e) {
+              toast(e.message);
+            }
+          };
+        });
+        rows.querySelectorAll('[data-mgrant]').forEach((b) => {          b.onclick = async () => {
             const input = prompt(`给「${b.dataset.name}」开通/续费多少天会员？\n（30=月卡 90=季卡 365=年卡，会累加到当前到期时间）`, '30');
             if (input === null) return;
             const days = parseInt(input, 10);

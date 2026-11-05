@@ -2554,6 +2554,13 @@ async function handleApi(req, res, url) {
       // 两个来源合并：网页版 / PWA 用户（本应用云库）+ 小程序用户（独立云环境）
       let webUsers = [];
       let webError = null;
+      // 网页用户的累计消费：从本库已支付订单按用户聚合（refunded 不计入）
+      const paidByUser = {};
+      for (const o of db.orders) {
+        if (o.status === 'paid' && o.userId) {
+          paidByUser[o.userId] = (paidByUser[o.userId] || 0) + Number(o.amount || 0);
+        }
+      }
       try {
         webUsers = (await users.listUsers()).map((u) => ({
           id: u.id,
@@ -2571,7 +2578,7 @@ async function handleApi(req, res, url) {
           createdAt: u.created_at ? new Date(u.created_at).getTime() : null,
           lastLoginAt: u.last_login_at ? new Date(u.last_login_at).getTime() : null,
           orderCount: Number(u.order_count || 0),
-          paidAmount: 0,
+          paidAmount: paidByUser[u.id] || 0,
           banned: u.banned === true,
           banReason: u.ban_reason || '',
         }));

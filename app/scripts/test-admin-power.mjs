@@ -129,6 +129,11 @@ try {
       }
     }
 
+    // 3.5 用户列表带累计消费字段（服务端从已支付订单聚合）
+    const ul = await api('/api/admin/users', { headers: AH });
+    const testUser = ((ul.data && ul.data.users) || []).find((u) => u.id === uid);
+    ok('用户列表返回累计消费字段', Boolean(testUser && typeof testUser.paidAmount === 'number'), testUser ? String(testUser.paidAmount) : '未找到用户');
+
     // 4. 看板
     const ov = await api('/api/admin/overview', { headers: AH });
     const stats = ov.data && ov.data.stats;

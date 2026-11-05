@@ -91,6 +91,57 @@ const contents = [
   },
 ];
 
+const products = [
+  {
+    id: 'p1',
+    title: '会员月卡',
+    desc: '',
+    amount: 1000,
+    tag: '热卖',
+    sort: 1,
+    active: true,
+    memberDays: 30,
+    memberOnly: false,
+    memberPrice: 0,
+    image: '',
+  },
+];
+const orders = [
+  {
+    id: 'O20261105001',
+    title: '会员月卡',
+    amount: 1000,
+    amountText: '10.00',
+    status: 'paid',
+    channel: 'alipay_wap',
+    channelName: '支付宝',
+    userId: 'u1',
+    productId: 'p1',
+    buyer: { nickname: '张三', phone: '13800000001' },
+    createdAt: now - 3600e3,
+    paidAt: now - 3500e3,
+    transactionId: 'TRX123',
+  },
+];
+const userList = [
+  {
+    id: 'u1',
+    phone: '13800000001',
+    nickname: '张三',
+    balance: 500,
+    isMember: true,
+    memberExpire: now + 20 * 86400e3,
+    autoRenew: false,
+    source: 'web',
+    createdAt: now - 30 * 86400e3,
+    lastLoginAt: now - 3600e3,
+    orderCount: 1,
+    paidAmount: 1000,
+    banned: false,
+    banReason: '',
+  },
+];
+
 let replyBody = null;
 let deleteUrl = null;
 let cleared = false;
@@ -124,9 +175,9 @@ w.fetch = async (url, opts = {}) => {
         feedbackTotal: 2,
         trend: [],
       },
-      orders: [],
+      orders,
       orderTtlMinutes: 30,
-      products: [],
+      products,
       contents,
       feedbacks,
       logs,
@@ -153,7 +204,7 @@ w.fetch = async (url, opts = {}) => {
     cleared = true;
     return json({ removed: 3 });
   }
-  if (u.includes('/api/admin/users')) return json({ ready: true, users: [] });
+  if (u.includes('/api/admin/users')) return json({ ready: true, users: userList });
   return json({}, 200);
 };
 
@@ -229,6 +280,50 @@ check('未分类内容显示占位', $('#panel tbody').textContent.includes('未
 all('[data-cedit="c1"]')[0].dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
 await wait(40);
 check('编辑时回填分类', $('#c-category').value === '行业资讯', $('#c-category').value);
+
+/* ---------- 订单页：日期/渠道筛选、今日退款、分页控件 ---------- */
+nav('orders');
+await wait(60);
+check('订单页有日期筛选', all('[data-od]').length === 4, String(all('[data-od]').length));
+check('订单页有渠道筛选', all('[data-oc]').length === 5, String(all('[data-oc]').length));
+check('订单统计含今日退款', $('#panel .ostat-row').textContent.includes('今日退款'));
+check('订单表格显示 1 条已支付订单', $('#panel tbody').textContent.includes('O20261105001'));
+check('订单表格显示操作按钮', Boolean($('[data-refund="O20261105001"]')));
+// 渠道筛选到微信：应该没有匹配
+all('[data-oc]').find((b) => b.dataset.oc === 'wechat').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+await wait(40);
+check('按渠道筛选微信后为空', $('#panel').textContent.includes('没有符合条件的订单'));
+all('[data-oc]').find((b) => b.dataset.oc === 'alipay').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+await wait(40);
+check('切回支付宝又能看到订单', $('#panel tbody').textContent.includes('O20261105001'));
+
+/* ---------- 商品页：行内上下架 / 复制 / 销售额 ---------- */
+nav('products');
+await wait(60);
+check('商品行有快捷上下架按钮', Boolean($('[data-ptoggle="p1"]')) && $('[data-ptoggle="p1"]').textContent === '下架');
+check('商品行有复制按钮', Boolean($('[data-pcopy="p1"]')));
+check('商品显示销售额', $('#panel tbody').textContent.includes('已售 1') && $('#panel tbody').textContent.includes('¥10.00'));
+$('[data-pcopy="p1"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+await wait(40);
+check('复制后表单变为新增且 ID 为空', $('#formTitle').textContent.includes('复制') && $('#f-id').value === '');
+
+/* ---------- 用户页：排序 / 累计消费 / 分页 ---------- */
+nav('users');
+await wait(80);
+check('用户页有排序下拉', Boolean($('#userSort')));
+check('用户表有累计消费列', $('#panel thead').textContent.includes('累计消费'));
+check('用户行显示累计消费金额', $('#panel tbody').textContent.includes('¥10.00'));
+$('#userSort').value = 'paid';
+$('#userSort').dispatchEvent(new w.Event('change', { bubbles: true }));
+await wait(40);
+check('按消费排序后用户仍在列表', $('#panel tbody').textContent.includes('张三'));
+
+/* ---------- 会员页：快捷续期 / 导出 ---------- */
+nav('members');
+await wait(80);
+check('会员页有导出名单按钮', Boolean($('#exportMembers')));
+check('会员行有快捷续30天按钮', Boolean($('[data-mquick="u1"]')));
+check('会员状态显示剩余天数', $('#panel tbody').textContent.includes('会员 · 剩'), ($('#panel tbody') || { textContent: '' }).textContent.replace(/\s+/g, ' ').slice(0, 80));
 
 console.log('\n----------------------------------------');
 console.log(`结果：${pass}/${pass + fails.length} 通过`);
