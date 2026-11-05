@@ -126,6 +126,10 @@ try {
         );
         const again = await postJSON('/api/admin/order/extend', { orderId }, AH);
         ok('已支付/无效订单不能延长', again.status === 200 || again.status === 409, `${again.status}`);
+        // 新下的单应排在第一条（后台订单按时间从近到远）
+        const ovSort = await api('/api/admin/overview', { headers: AH });
+        const first = ovSort.data && ovSort.data.orders && ovSort.data.orders[0];
+        ok('订单按时间从近到远', Boolean(first && first.id === orderId), first ? first.id : '无订单');
       }
     }
 

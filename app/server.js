@@ -237,6 +237,13 @@ function isOrderExpired(order, now = Date.now()) {
   return Boolean(order) && isUnpaidStatus(order.status) && now - (order.createdAt || 0) > ORDER_TTL_MS;
 }
 
+/** 订单按时间从近到远（最新在前）；同时间按下单顺序倒序，保证稳定 */
+function sortOrdersDesc(list) {
+  return (list || [])
+    .slice()
+    .sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0) || String(b.id || '').localeCompare(String(a.id || '')));
+}
+
 /** 内存里先剔除超时未支付订单，返回剔除条数（数组原地修改，避免其他引用失效） */
 function purgeExpiredOrdersLocal(now = Date.now()) {
   const keep = [];
@@ -1230,7 +1237,7 @@ async function handleApi(req, res, url) {
       } catch (e) {
         console.error('[bootstrap] 读取用户余额失败:', e.message);
       }
-      recentOrders = db.orders.filter((o) => o.userId === uid).slice(-20).reverse();
+      recentOrders = sortOrdersDesc(db.orders.filter((o) => o.userId === uid)).slice(0, 20);
     }
     const alipayWap = alipayClient ? await probeAlipayWap() : false;
     // 会员状态（用于会员专享内容的门禁）：游客一律视为非会员
@@ -1861,7 +1868,7 @@ async function handleApi(req, res, url) {
     purgeExpiredOrdersLocal();
     const uid = currentUserId(req);
     const list = uid ? db.orders.filter((o) => o.userId === uid) : db.orders.filter((o) => !o.userId);
-    return sendJSON(res, 200, { orders: list.slice(-50).reverse().map(publicOrder) });
+    return sendJSON(res, 200, { orders: sortOrdersDesc(list).slice(0, 50).map(publicOrder) });
   }
 
   // 订单详情 / 收银台轮询
@@ -2522,7 +2529,7 @@ async function handleApi(req, res, url) {
           feedbackTotal: feedbacks.length,
           trend,
         },
-        orders: db.orders.slice(-200).reverse().map((o) => adminOrder(o, umap)),
+        orders: sortOrdersDesc(db.orders).slice(0, 200).map((o) => adminOrder(o, umap)),
         orderTtlMinutes: ORDER_TTL_MINUTES, // 后台按这个数算「剩余支付时间」
         products,
         contents,
@@ -3085,9 +3092,7 @@ async function handleApi(req, res, url) {
       }
       const rows = [['订单号', '商品', '金额(元)', '状态', '用户ID', '手机号', '渠道', '创建时间', '支付时间', '退款时间', '交易号']];
       const umap = await userMap();
-      db.orders
-        .slice()
-        .reverse()
+      sortOrdersDesc(db.orders)
         .forEach((o) => {
           const buyer = (o.userId && umap[o.userId]) || {};
           rows.push([
