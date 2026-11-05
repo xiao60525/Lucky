@@ -125,6 +125,20 @@ function fakeFetch(url, opts = {}) {
   if (path === '/api/bootstrap')
     return json({ ...BOOTSTRAP, orders: token ? VIEWER.orders : [], refunds: token ? VIEWER.refunds || [] : [] });
   if (path === '/api/orders' && method === 'GET') return json({ orders: token ? VIEWER.orders : [] });
+  // 只存在于服务端的订单：验证「本地列表里没有也能补拉详情」
+  if (path === '/api/orders/O_REMOTE' && method === 'GET' && token)
+    return json({
+      order: {
+        id: 'O_REMOTE',
+        title: '历史订单（仅服务端有）',
+        amount: 990,
+        status: 'paid',
+        channel: 'balance',
+        channelName: '余额支付',
+        createdAt: Date.now() - 86400000,
+        paidAt: Date.now() - 86300000,
+      },
+    });
   if (path === '/api/refunds' && method === 'GET') return json({ refunds: VIEWER.refunds || [] });
   if (path === '/api/orders/O1/refund-request' && method === 'POST') {
     const rf = {
@@ -660,6 +674,33 @@ if (paidRow) {
 } else {
   check('订单列表里有已支付订单', false, '未找到 O1');
 }
+
+// 9b-2. 列表里的「申请退款」快捷入口 + 本地找不到订单时补拉详情
+await goMine();
+await wait(40);
+$('[data-act="open-orders"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+const quickRow = [...window.document.querySelectorAll('.sheet .order-row')].find((r) => r.dataset.id === 'O1');
+const quickCta = quickRow ? quickRow.querySelector('.order-cta.is-refund') : null;
+check('已支付订单在列表上有申请退款入口', Boolean(quickCta), quickCta ? quickCta.textContent.trim() : '未找到');
+if (quickCta) {
+  quickCta.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(40);
+  check('点列表上的申请退款直接开退款弹层', text('.sheet h3') === '申请退款 / 退货', text('.sheet h3'));
+  closeSheetForTest();
+  await wait(30);
+}
+// 订单不在本地列表里（比如被刷新掉了）：点一下应该向服务端补拉，而不是没反应
+const sheetEl = $('#sheet');
+sheetEl.insertAdjacentHTML(
+  'afterbegin',
+  '<button class="order-row" data-act="order" data-id="O_REMOTE"><span class="order-main"><span class="order-title">历史订单</span></span></button>'
+);
+$('[data-act="order"][data-id="O_REMOTE"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(80);
+check('本地没有的订单会补拉详情', text('.sheet h3') === '订单详情' && text('.sheet').includes('历史订单（仅服务端有）'), text('.sheet').slice(0, 40));
+closeSheetForTest();
+await wait(30);
 
 // 9c. 退款 / 退货：用户申请 → 等后台审核 → 可撤销
 await goMine();

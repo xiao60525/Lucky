@@ -1940,6 +1940,10 @@ async function handleApi(req, res, url) {
   if (detailMatch && method === 'GET') {
     const order = db.orders.find((o) => o.id === detailMatch[1]);
     if (!order) return sendJSON(res, 404, { message: '订单不存在' });
+    // 只能看自己的订单（后台令牌不受限），避免拿到订单号就能查别人买了什么
+    if (order.userId && currentUserId(req) !== order.userId && !checkAdmin(req)) {
+      return sendJSON(res, 403, { message: '无权查看这笔订单，请重新登录后重试' });
+    }
     if (isOrderExpired(order)) {
       purgeExpiredOrdersLocal();
       await purgeExpiredOrders().catch(() => {});

@@ -596,6 +596,11 @@ body.dark .pw-main i { color: #b9a173; }
   font-weight: 600;
   color: #2f6bff;
 }
+/* 已支付订单：列表里直接给「申请退款」入口（不用先进详情） */
+.order-cta.is-refund {
+  color: #f05252;
+  padding: 2px 0;
+}
 /* 弹层里的橙色提示条 */
 .keep-note {
   font-size: 12.5px;

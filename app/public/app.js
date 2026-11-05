@@ -168,6 +168,12 @@ function toast(msg) {
 
 function openSheet(html) {
   sheetEl.innerHTML = `<div class="sheet-handle"></div>${html}`;
+  // 换内容后回到顶部：否则从很长的订单列表点进详情，会停在中间看起来像「没打开」
+  try {
+    sheetEl.scrollTop = 0;
+  } catch (e) {
+    /* ignore */
+  }
   requestAnimationFrame(() => {
     maskEl.classList.add('show');
     sheetEl.classList.add('show');
@@ -973,8 +979,28 @@ function mmss(ms) {
 
 /** 这笔订单的退款申请（优先返回待审核的那条，否则返回最近一条） */
 function refundOfOrder(orderId) {
-  const list = (state.refunds || []).filter((r) => r.orderId === orderId);
+  const key = String(orderId == null ? '' : orderId);
+  const list = (state.refunds || []).filter((r) => String(r.orderId) === key);
   return list.find((r) => r.status === 'pending') || list[0] || null;
+}
+
+/**
+ * 按 id 找订单：订单号在接口里可能是数字也可能是字符串，
+ * 列表 / 用户信息 / 当前弹层三处都找一遍，避免「点了没反应」。
+ */
+function findOrder(id) {
+  const key = String(id == null ? '' : id);
+  if (!key) return null;
+  const pools = [
+    Array.isArray(state.orders) ? state.orders : [],
+    (state.viewer && Array.isArray(state.viewer.orders) && state.viewer.orders) || [],
+    sheetState.order ? [sheetState.order] : [],
+  ];
+  for (const pool of pools) {
+    const hit = pool.find((o) => o && String(o.id) === key);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 const REFUND_REASONS = ['不想要了', '商品与描述不符', '重复购买', '服务未使用', '其他原因'];
@@ -1000,6 +1026,11 @@ function mineOrderRow(o) {
         : '';
   // 没付完的订单给一个明确入口，点整行就直接进支付界面
   const cta = isUnpaid(o) ? `<span class="order-cta">继续支付 ›</span>` : '';
+  // 已支付且没有审核中的申请：列表上直接给「申请退款」，不用先进详情
+  const refundCta =
+    o.status === 'paid' && !(rf && rf.status === 'pending')
+      ? `<span class="order-cta is-refund" data-act="refund" data-id="${esc(o.id)}">申请退款 ›</span>`
+      : '';
   // 未支付订单带倒计时：到点服务端就删了，先让用户看见剩余时间
   const left = orderDeadline(o) - Date.now();
   const countdown = isUnpaid(o)
@@ -1016,6 +1047,7 @@ function mineOrderRow(o) {
         <span class="status ${esc(o.status)}">${STATUS_TEXT[o.status] || o.status}</span>
         ${countdown}
         ${cta}
+        ${refundCta}
       </span>
     </button>`;
 }
@@ -1516,7 +1548,7 @@ function ordersSheet() {
     .reduce((s, o) => s + (Number(o.amount) || 0), 0);
   openSheet(`
     <h3>我的订单</h3>
-    <p class="sheet-sub">共 ${orders.length} 条${paidSum ? ` · 累计消费 ¥${yuan(paidSum)}` : ''}，点订单可查看详情或继续支付</p>
+    <p class="sheet-sub">共 ${orders.length} 条${paidSum ? ` · 累计消费 ${yuan(paidSum)}` : ''}，点订单可查看详情或继续支付</p>
     <div class="card" style="margin-top:10px" id="ordersBox">${mineOrderList(orders)}</div>
     <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>
   `);
@@ -2408,7 +2440,7 @@ function qrSheet(order, qrUrl, channel) {
 /** 订单入列表：已存在就替换，避免继续支付后出现两行相同订单 */
 function upsertOrder(order) {
   if (!order || !order.id || orderExpired(order)) return;
-  const idx = state.orders.findIndex((o) => o.id === order.id);
+  const idx = state.orders.findIndex((o) => String(o.id) === String(order.id));
   if (idx > -1) state.orders[idx] = { ...state.orders[idx], ...order };
   else state.orders.unshift(order);
   if (state.viewer) state.viewer.orders = state.orders;
@@ -2544,6 +2576,7 @@ function orderSheet(order) {
           <i>商家审核通过后原路退回，审核期间不用重复提交</i>
         </div>
         <button class="btn-ghost" data-act="cancel-refund" data-id="${esc(rf.id)}" style="color:#f05252">撤销申请</button>
+        <button class="btn-ghost" data-act="open-refunds" style="margin-top:10px">查看售后进度</button>
         <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>`;
     } else {
       actions = `
@@ -2556,11 +2589,25 @@ function orderSheet(order) {
               ? `<div class="refund-note is-ok"><b>退款已通过</b><i>${esc(rf.adminNote || '款项已原路退回')}</i></div>`
               : ''
         }
-        <button class="btn-ghost" data-act="refund" data-id="${order.id}" style="color:#f05252">申请退款 / 退货</button>
+        <button class="btn-ghost" data-act="refund" data-id="${esc(order.id)}" style="color:#f05252">申请退款 / 退货</button>
+        <button class="btn-ghost" data-act="open-refunds" style="margin-top:10px">退款与售后记录</button>
         <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>`;
     }
   } else {
-    actions = `<button class="btn-primary" data-act="close">知道了</button>`;
+    // 已退款 / 已关闭：给一句明确结论，避免用户以为「点不开」
+    const rf = refundOfOrder(order.id);
+    const note =
+      order.status === 'refunded'
+        ? `<div class="refund-note is-ok"><b>已退款</b><i>${
+            order.refundedAt ? '退款时间 ' + timeText(order.refundedAt) : '款项已原路退回'
+          }</i>${rf && rf.adminNote ? `<i>${esc(rf.adminNote)}</i>` : ''}</div>`
+        : order.status === 'closed'
+          ? '<div class="refund-note"><b>订单已关闭</b><i>这笔订单没有完成支付，无需退款</i></div>'
+          : '';
+    actions = `
+      ${note}
+      <button class="btn-primary" data-act="close">知道了</button>
+      <button class="btn-ghost" data-act="open-refunds" style="margin-top:10px">退款与售后记录</button>`;
   }
 
   openSheet(`
@@ -2726,16 +2773,43 @@ function continuePaySheet(order) {
 
 /** 点订单行：没付完的直接进支付界面，其他看详情 */
 function openOrder(order) {
-  if (!order) return;
+  if (!order) return false;
   if (orderExpired(order)) {
-    state.orders = state.orders.filter((o) => o.id !== order.id);
+    state.orders = state.orders.filter((o) => String(o.id) !== String(order.id));
     closeSheet();
     render();
     toast(`订单超过 ${Math.round(ORDER_TTL_MS / 60000)} 分钟未支付，已自动关闭`);
-    return;
+    return true;
   }
   if (isUnpaid(order)) continuePaySheet(order);
   else orderSheet(order);
+  return true;
+}
+
+/**
+ * 点订单的唯一入口：本地找不到就向服务端补一次，
+ * 任何一步失败都给明确提示，不再出现「点了没反应」。
+ */
+async function openOrderById(id) {
+  const key = String(id == null ? '' : id);
+  if (!key) {
+    toast('没拿到订单号，下拉刷新后再试');
+    return false;
+  }
+  const local = findOrder(key);
+  if (local) return openOrder(local);
+  try {
+    const { order } = await api(`/api/orders/${encodeURIComponent(key)}`);
+    if (order) {
+      upsertOrder(order);
+      return openOrder(order);
+    }
+  } catch (e) {
+    toast(e.status === 404 ? '这笔订单已关闭或不存在了' : e.message || '订单详情加载失败，请下拉刷新后重试');
+    return false;
+  }
+  toast('订单详情加载失败，请下拉刷新后重试');
+  return false;
 }
 
 /* ---------------- 事件 ---------------- */
@@ -2748,6 +2822,14 @@ document.querySelectorAll('.tab').forEach((t) => {
 });
 
 maskEl.addEventListener('click', closeSheet);
+
+// 兜底：异步处理里抛异常时给一句可见提示，避免用户点了却「没反应」
+window.addEventListener('unhandledrejection', (e) => {
+  const err = e && e.reason;
+  if (err) console.error('[app] 未处理的异常:', err);
+  const msg = (err && (err.message || err.msg)) || '操作失败，请稍后重试';
+  toast(String(msg).slice(0, 40));
+});
 
 // 商品搜索：边输入边过滤，只重绘网格，输入框不会丢焦点
 view.addEventListener('input', (e) => {
@@ -2972,9 +3054,8 @@ view.addEventListener('click', async (e) => {
   if (act === 'open-orders') return ordersSheet();
 
   if (act === 'order') {
-    const o = state.orders.find((x) => x.id === el.dataset.id);
-    // 列表里点「支付中 / 待支付」的订单，直接跳到支付界面
-    if (o) openOrder(o);
+    // 列表里点「支付中 / 待支付」的订单，直接跳到支付界面；其余看详情
+    openOrderById(el.dataset.id);
   }
 });
 
@@ -3064,8 +3145,7 @@ sheetEl.addEventListener('click', async (e) => {
   }
 
   if (act === 'order') {
-    const o = state.orders.find((x) => x.id === el.dataset.id);
-    if (o) openOrder(o);
+    openOrderById(el.dataset.id);
     return;
   }
 
@@ -3242,15 +3322,8 @@ sheetEl.addEventListener('click', async (e) => {
     }
   }
 
-  if (act === 'order') {
-    const o = state.orders.find((x) => x.id === el.dataset.id);
-    closeSheet();
-    if (o) setTimeout(() => orderSheet(o), 260);
-  }
-
   if (act === 'order-detail') {
-    const o = state.orders.find((x) => x.id === el.dataset.id) || sheetState.order;
-    if (o) orderSheet(o);
+    await openOrderById(el.dataset.id || (sheetState.order && sheetState.order.id));
     return;
   }
 
@@ -3322,8 +3395,8 @@ sheetEl.addEventListener('click', async (e) => {
   }
 
   if (act === 'refund') {
-    const order = sheetState.order || (state.orders || []).find((o) => o.id === el.dataset.id);
-    if (!order) return toast('订单不存在');
+    const order = findOrder(el.dataset.id) || sheetState.order;
+    if (!order || !order.id) return toast('订单不存在或已关闭，请刷新后重试');
     return refundSheet(order);
   }
 
