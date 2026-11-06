@@ -121,6 +121,7 @@ const NAV = [
   ['overview', '📊', '概览'],
   ['orders', '🧾', '订单'],
   ['refunds', '💸', '退款审核'],
+  ['reviews', '⭐', '评价管理'],
   ['products', '📦', '商品'],
   ['members', '👑', '会员'],
   ['users', '👥', '用户'],
@@ -166,7 +167,7 @@ function render() {
     </div>`;
   document.querySelectorAll('.nav-btn').forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; render(); }));
   $('#logoutBtn').onclick = () => { state.token = ''; sessionStorage.removeItem('admin_token'); render(); };
-  ({ overview: renderOverview, products: renderProducts, members: renderMembers, contents: renderContents, orders: renderOrders, refunds: renderRefunds, users: renderUsers, site: renderSite, preview: renderPreview, pay: renderPay, settings: renderSettings, feedback: renderFeedback, logs: renderLogs })[state.tab]();
+  ({ overview: renderOverview, products: renderProducts, members: renderMembers, contents: renderContents, orders: renderOrders, refunds: renderRefunds, reviews: renderReviews, users: renderUsers, site: renderSite, preview: renderPreview, pay: renderPay, settings: renderSettings, feedback: renderFeedback, logs: renderLogs })[state.tab]();
 }
 
 function renderOverview() {
@@ -3083,3 +3084,169 @@ function renderLogs() {
 
 if (state.token) load();
 else renderLogin();
+
+/* ---------------- 评价管理 ---------------- */
+
+let reviewCache = null;
+
+const starText = (n) => '★'.repeat(Math.max(0, Math.min(5, Number(n) || 0))) + '☆'.repeat(5 - Math.max(0, Math.min(5, Number(n) || 0)));
+
+async function renderReviews() {
+  $('#panel').innerHTML = `
+    <div class="card">
+      <h3>评价管理</h3>
+      <p class="muted" style="font-size:12.5px;margin:0 0 12px">
+        用户确认收货后可对订单里的商品打星评价（一张订单每个商品限评一次，昵称脱敏展示）。
+        违规评价可以<b>隐藏</b>（需填原因，留档备查，用户仍能在「我的评价」里看到自己的状态），也可以随时<b>恢复</b>。
+      </p>
+      <div class="obar">
+        <div class="ochips" id="rvChips"></div>
+        <div class="osearch"><input id="rvSearch" placeholder="搜商品 / 订单号 / 昵称 / 评价内容" /></div>
+      </div>
+      <div id="rvBox"><p class="muted">加载中…</p></div>
+    </div>`;
+
+  if (!reviewCache) {
+    try {
+      reviewCache = (await api('/api/admin/reviews')).reviews || [];
+    } catch (e) {
+      $('#rvBox').innerHTML = `<p class="muted">读取评价失败：${esc(e.message)}</p>`;
+      return;
+    }
+  }
+
+  const RV_FILTERS = [
+    ['visible', '展示中'],
+    ['hidden', '已隐藏'],
+    ['all', '全部'],
+  ];
+  let rvFilter = 'all';
+  let rvQ = '';
+
+  const renderChips = () => {
+    const box = $('#rvChips');
+    if (!box) return;
+    const c = {
+      visible: reviewCache.filter((r) => !r.hidden).length,
+      hidden: reviewCache.filter((r) => r.hidden).length,
+      all: reviewCache.length,
+    };
+    box.innerHTML = RV_FILTERS.map(
+      ([k, label]) => `<button class="ochip ${rvFilter === k ? 'on' : ''}" data-rv="${k}">${label}${c[k] ? ` <i>${c[k]}</i>` : ''}</button>`
+    ).join('');
+    box.querySelectorAll('[data-rv]').forEach((b) => {
+      b.onclick = () => {
+        rvFilter = b.dataset.rv;
+        renderChips();
+        renderRows();
+      };
+    });
+  };
+
+  const renderRows = () => {
+    const box = $('#rvBox');
+    if (!box) return;
+    const q = rvQ.trim().toLowerCase();
+    const list = reviewCache.filter((r) => {
+      if (rvFilter === 'visible' && r.hidden) return false;
+      if (rvFilter === 'hidden' && !r.hidden) return false;
+      if (!q) return true;
+      return [r.productTitle, r.productId, r.orderId, r.nickname, r.phone, r.content]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(q);
+    });
+    if (!list.length) {
+      box.innerHTML = `<p class="search-none muted">${
+        reviewCache.length ? '没有符合条件的评价，换个筛选或关键词试试' : '还没有用户评价'
+      }</p>`;
+      return;
+    }
+    box.innerHTML = `<div class="otable-wrap"><table>
+      <thead><tr><th>商品 / 订单</th><th>买家</th><th>星级</th><th>评价内容</th><th>时间</th><th>状态</th><th>操作</th></tr></thead>
+      <tbody>${list
+        .map(
+          (r) => `<tr>
+        <td style="max-width:200px;word-break:break-all">
+          <div style="font-size:12.5px">${esc(r.productTitle || r.productId || '（商品已删除）')}</div>
+          <div style="font-family:monospace;font-size:11.5px;margin-top:2px">${esc(r.orderId)}</div>
+          ${r.orderTitle ? `<div class="muted" style="font-size:11.5px;margin-top:2px">${esc(r.orderTitle)}</div>` : ''}
+        </td>
+        <td style="white-space:nowrap">
+          ${esc(r.nickname || '未设置昵称')}
+          <div class="muted" style="font-size:11.5px">${esc(r.phone || r.userId || '')}</div>
+        </td>
+        <td style="white-space:nowrap"><span style="color:#f7a723">${starText(r.rating)}</span> <b>${r.rating}</b></td>
+        <td style="max-width:260px"><span style="font-size:12.5px;white-space:pre-wrap">${esc(r.content || '（没有文字）')}</span></td>
+        <td class="muted" style="white-space:nowrap">${fmtTime(r.createdAt)}</td>
+        <td style="min-width:110px">
+          ${
+            r.hidden
+              ? '<span class="tag off">已隐藏</span>'
+              : '<span class="tag paid">展示中</span>'
+          }
+          ${
+            r.hidden
+              ? `<div class="muted" style="font-size:11.5px;margin-top:3px">${esc(r.hiddenReason || '未填原因')}${
+                  r.handler ? ' · ' + esc(r.handler) : ''
+                }</div>`
+              : ''
+          }
+        </td>
+        <td style="white-space:nowrap">
+          ${
+            r.hidden
+              ? `<button class="op" data-rv-show="${esc(r.id)}">恢复展示</button>`
+              : `<button class="op danger" data-rv-hide="${esc(r.id)}">隐藏</button>`
+          }
+        </td>
+      </tr>`
+        )
+        .join('')}</tbody></table></div>
+      <p class="muted" style="font-size:12px;margin:10px 0 0">共 ${list.length} 条${
+        rvFilter === 'all' ? '' : '（当前筛选：' + (RV_FILTERS.find(([k]) => k === rvFilter) || [])[1] + '）'
+      }</p>`;
+
+    box.querySelectorAll('[data-rv-hide]').forEach((b) => (b.onclick = () => hideReview(b.dataset.rvHide, true)));
+    box.querySelectorAll('[data-rv-show]').forEach((b) => (b.onclick = () => hideReview(b.dataset.rvShow, false)));
+  };
+
+  renderChips();
+  renderRows();
+
+  let rvTimer = null;
+  $('#rvSearch').oninput = (e) => {
+    clearTimeout(rvTimer);
+    rvTimer = setTimeout(() => {
+      rvQ = e.target.value || '';
+      renderRows();
+    }, 200);
+  };
+}
+
+/** 隐藏 / 恢复评价；隐藏时必须填原因 */
+async function hideReview(id, hidden) {
+  let reason = '';
+  if (hidden) {
+    reason = (prompt('隐藏原因（留档备查，必填）：') || '').trim();
+    if (!reason) return toast('已取消：隐藏评价需要填写原因');
+  } else if (!confirm('恢复这条评价对外展示？')) {
+    return;
+  }
+  try {
+    const res = await api('/api/admin/reviews/hide', {
+      method: 'POST',
+      body: JSON.stringify({ id, hidden, reason }),
+    });
+    const row = res && res.review;
+    if (row) {
+      const i = reviewCache.findIndex((r) => r.id === id);
+      if (i >= 0) reviewCache[i] = row;
+    }
+    toast(hidden ? '已隐藏该评价' : '已恢复展示');
+    renderReviews();
+  } catch (e) {
+    toast(e.message);
+  }
+}

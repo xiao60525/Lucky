@@ -65,6 +65,7 @@ function fromRow(row) {
     shipCompany: row.ship_company || '',
     shipNo: row.ship_no || '',
     shippedAt: toMs(row.shipped_at),
+    receivedAt: toMs(row.received_at),
     createdAt: toMs(row.created_at),
     paidAt: toMs(row.paid_at),
     refundedAt: toMs(row.refunded_at),
@@ -133,6 +134,8 @@ async function updateOrder(order) {
   if (order.shipCompany !== undefined) patch.ship_company = order.shipCompany;
   if (order.shipNo !== undefined) patch.ship_no = order.shipNo;
   if (order.shippedAt) patch.shipped_at = order.shippedAt;
+  // 确认收货：receivedAt 传毫秒时间戳
+  if (order.receivedAt) patch.received_at = order.receivedAt;
 
   const row = await call(
     'app_update_order',
@@ -517,6 +520,110 @@ async function adminExtendOrder(orderId) {
   return call('app_admin_order_extend', { p_secret: secret, p_id: orderId, p_minutes: 30 }, '延长支付');
 }
 
+/* ---------------- 评价 ---------------- */
+
+function reviewRow(r) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    orderId: r.orderId || r.order_id || '',
+    userId: r.userId || r.user_id || '',
+    productId: r.productId || r.product_id || '',
+    rating: Number(r.rating) || 0,
+    content: r.content || '',
+    hidden: r.hidden === true,
+    hiddenReason: r.hiddenReason || r.hidden_reason || '',
+    handler: r.handler || '',
+    createdAt: toMs(r.createdAt || r.created_at),
+    orderTitle: r.orderTitle || r.order_title || '',
+    productTitle: r.productTitle || r.product_title || '',
+    nickname: r.nickname || '',
+    phone: r.phone || '',
+  };
+}
+
+/** 用户提交评价（同一订单同一商品重复评价返回 duplicated=true） */
+async function addReview({ userId, orderId, productId, rating, content }) {
+  const row = await call(
+    'app_add_review',
+    {
+      p_secret: secret,
+      p_review: {
+        user_id: String(userId || ''),
+        order_id: String(orderId || ''),
+        product_id: String(productId || ''),
+        rating: Math.max(1, Math.min(5, Math.floor(Number(rating) || 0))),
+        content: String(content || ''),
+      },
+    },
+    '提交评价'
+  );
+  const out = reviewRow(row);
+  if (out && row && row.duplicated) out.duplicated = true;
+  return out;
+}
+
+/** 某商品的可见评价（游客可看） */
+async function listReviews(productId, limit = 10, offset = 0) {
+  const rows = await call(
+    'app_list_reviews',
+    {
+      p_secret: secret,
+      p_product_id: String(productId || ''),
+      p_limit: Math.max(1, Math.floor(Number(limit) || 10)),
+      p_offset: Math.max(0, Math.floor(Number(offset) || 0)),
+    },
+    '读取评价'
+  );
+  return (Array.isArray(rows) ? rows : []).map(reviewRow).filter(Boolean);
+}
+
+/** 全站评分统计：[{productId, avg, count}] */
+async function reviewsStats() {
+  const rows = await call('app_reviews_stats', { p_secret: secret }, '读取评分统计');
+  return (Array.isArray(rows) ? rows : []).map((r) => ({
+    productId: r.productId,
+    avg: Number(r.avg) || 0,
+    count: Number(r.count) || 0,
+  }));
+}
+
+/** 我的评价（含被隐藏的） */
+async function myReviews(userId, limit = 50) {
+  const rows = await call(
+    'app_my_reviews',
+    { p_secret: secret, p_user: String(userId || ''), p_limit: Math.max(1, Math.floor(Number(limit) || 50)) },
+    '读取我的评价'
+  );
+  return (Array.isArray(rows) ? rows : []).map(reviewRow).filter(Boolean);
+}
+
+/** 后台：全部评价 */
+async function adminReviewList(limit = 200) {
+  const rows = await call(
+    'app_admin_review_list',
+    { p_secret: secret, p_limit: Math.max(1, Math.floor(Number(limit) || 200)) },
+    '读取评价'
+  );
+  return (Array.isArray(rows) ? rows : []).map(reviewRow).filter(Boolean);
+}
+
+/** 后台：隐藏 / 恢复评价 */
+async function adminReviewHide(id, hidden, reason, actor) {
+  const row = await call(
+    'app_admin_review_hide',
+    {
+      p_secret: secret,
+      p_id: String(id || ''),
+      p_hidden: Boolean(hidden),
+      p_reason: String(reason || ''),
+      p_actor: String(actor || ''),
+    },
+    '处理评价'
+  );
+  return reviewRow(row);
+}
+
 /** 健康检查：确认云端连通、密钥有效 */async function ping() {
   const state = await getState();
   return { ok: true, orders: state.orders.length, balance: state.account ? state.account.balance : null };
@@ -681,4 +788,10 @@ module.exports = {
   purgeStaleOrders,
   adminSetUserBan,
   adminExtendOrder,
+  addReview,
+  listReviews,
+  reviewsStats,
+  myReviews,
+  adminReviewList,
+  adminReviewHide,
 };

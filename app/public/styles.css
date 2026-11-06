@@ -2444,3 +2444,51 @@ body.dark .cart-del { background: #2a2f3c; color: #9aa1b2; }
 body.dark .cart-bar { background: rgba(26, 29, 38, 0.96); border-color: #2a2f3c; }
 body.dark .co-list { background: #23283a; }
 body.dark .cart-hint { background: #3a2f1d; color: #f0b45f; }
+
+/* ==================================================================
+   20261106a：确认收货 + 满意度评价
+================================================================== */
+
+.tag.tag-green { color: #07964c; background: rgba(7, 193, 96, 0.12); }
+
+/* 星星选择器 */
+.star-picker { display: flex; align-items: center; gap: 4px; margin: 12px 0 4px; }
+.star-btn {
+  appearance: none; border: 0; background: none; padding: 2px;
+  font-size: 26px; line-height: 1; color: #d9dde7; cursor: pointer;
+  transition: transform 0.12s ease, color 0.12s ease;
+}
+.star-btn.on { color: #f7a723; }
+.star-btn:active { transform: scale(1.15); }
+.star-label { margin-left: 8px; font-size: 12.5px; color: var(--muted); }
+
+/* 订单详情里的评价区 */
+.review-list { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; }
+.review-entry {
+  display: flex; justify-content: space-between; align-items: center; gap: 10px;
+  padding: 8px 12px; border: 1px solid var(--line); border-radius: 10px;
+  font-size: 13px;
+}
+.review-entry .k { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.review-entry .v { color: var(--muted); white-space: nowrap; }
+.review-stars { color: #f7a723; letter-spacing: 1px; }
+
+/* 商品详情：用户评价 */
+.gs-reviews { margin-top: 16px; }
+.gs-rate { margin-left: 8px; font-size: 12.5px; color: #f7a723; font-weight: 600; }
+.gs-rate-n { margin-left: 6px; font-size: 12px; color: var(--muted); font-weight: 400; }
+.gs-review {
+  padding: 10px 0; border-bottom: 1px solid var(--line);
+}
+.gs-review:last-child { border-bottom: 0; }
+.gs-review-top { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 13px; }
+.gs-review-top b { font-weight: 600; color: var(--text); }
+.gs-review-text { margin: 6px 0 0; font-size: 13px; line-height: 1.6; color: var(--text); }
+.gs-review-text.muted { color: var(--muted); }
+.gs-review-time { display: block; margin-top: 4px; font-size: 11.5px; color: var(--muted); font-style: normal; }
+
+body.dark .star-btn { color: #3a4050; }
+body.dark .star-btn.on { color: #f7a723; }
+body.dark .review-entry { border-color: #2a2f3c; }
+body.dark .gs-review { border-color: #2a2f3c; }
+body.dark .tag.tag-green { color: #5ee39b; background: rgba(7, 193, 96, 0.16); }

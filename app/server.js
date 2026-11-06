@@ -831,10 +831,11 @@ function publicOrder(order) {
     paidAt: order.paidAt || null,
     refundedAt: order.refundedAt || null,
     transactionId: order.transactionId || null,
-    // 物流：shipNo 有值即「已发货」，前端据此显示单号/复制/查询
+    // 物流：shipNo 有值即「已发货」，前端据此显示单号/复制/查询；receivedAt 为用户确认收货时间
     shipCompany: order.shipCompany || '',
     shipNo: order.shipNo || '',
     shippedAt: order.shippedAt || null,
+    receivedAt: order.receivedAt || null,
   };
 }
 
@@ -1384,6 +1385,20 @@ async function handleApi(req, res, url) {
       });
     });
     const productsWithSales = db.products.map((p) => ({ ...p, sales: salesMap[p.id] || 0 }));
+    // 商品评分（全站可见评价的平均分/条数）：读不到不阻塞启动数据
+    let reviewStats = {};
+    try {
+      for (const s of await store.reviewsStats()) {
+        reviewStats[s.productId] = { avg: s.avg, count: s.count };
+      }
+    } catch (e) {
+      console.warn('[bootstrap] 读取评分统计失败:', e.message);
+    }
+    for (const p of productsWithSales) {
+      const s = reviewStats[p.id];
+      p.rating = s ? s.avg : 0;
+      p.reviewCount = s ? s.count : 0;
+    }
     return sendJSON(res, 200, {
       user: { id: db.user.id, nickname: db.user.nickname },
       loggedIn: Boolean(uid),
@@ -2518,6 +2533,127 @@ async function handleApi(req, res, url) {
     }
   }
 
+  /* ---------------- 确认收货 ---------------- */
+
+  // 用户确认收货：paid 订单记录 receivedAt（不改变 status，所有已支付判断不受影响）
+  const receiveMatch = pathname.match(/^\/api\/orders\/([^/]+)\/receive$/);
+  if (receiveMatch && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    const order = db.orders.find((o) => o.id === receiveMatch[1]);
+    if (!order) return sendJSON(res, 404, { message: '订单不存在' });
+    if (order.userId && order.userId !== uid) return sendJSON(res, 403, { message: '这笔订单不属于当前账号' });
+    if (order.status !== 'paid') return sendJSON(res, 409, { message: '只有已支付的订单可以确认收货' });
+    if (order.receivedAt) return sendJSON(res, 200, { order: publicOrder(order), duplicate: true });
+    order.receivedAt = Date.now();
+    try {
+      await persistOrder(order);
+    } catch (e) {
+      order.receivedAt = null;
+      return sendJSON(res, 502, { message: '保存失败：' + e.message });
+    }
+    return sendJSON(res, 200, { order: publicOrder(order) });
+  }
+
+  /* ---------------- 评价 ---------------- */
+
+  /** 评价对外字段（隐去内部 userId；管理员列表自带买家昵称/手机号） */
+  function publicReview(r) {
+    if (!r) return null;
+    return {
+      id: r.id,
+      orderId: r.orderId,
+      productId: r.productId,
+      rating: r.rating,
+      content: r.content,
+      hidden: Boolean(r.hidden),
+      hiddenReason: r.hiddenReason || '',
+      createdAt: r.createdAt,
+      orderTitle: r.orderTitle || '',
+      productTitle: r.productTitle || '',
+      nickname: r.nickname || '',
+      phone: r.phone || '',
+    };
+  }
+
+  /** 云库函数抛的业务错误 → 中文提示 */
+  function reviewErrorText(msg) {
+    const m = String(msg || '');
+    if (m.includes('order_not_found')) return '订单不存在';
+    if (m.includes('not_owner')) return '这笔订单不属于当前账号';
+    if (m.includes('order_not_paid')) return '只有已支付的订单可以评价';
+    if (m.includes('missing_user')) return '请先登录';
+    if (m.includes('missing_product')) return '请选择要评价的商品';
+    if (m.includes('bad_rating')) return '评分需要在 1~5 星之间';
+    return '提交失败：' + m;
+  }
+
+  // 提交评价：登录 + 本人订单 + 已支付 + 已确认收货 + 商品必须在订单里
+  if (pathname === '/api/reviews' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录后再评价' });
+    const body = await readBody(req);
+    const order = db.orders.find((o) => o.id === body.orderId);
+    if (!order) return sendJSON(res, 404, { message: '订单不存在' });
+    if (order.userId && order.userId !== uid) return sendJSON(res, 403, { message: '这笔订单不属于当前账号' });
+    if (order.status !== 'paid') return sendJSON(res, 409, { message: '只有已支付的订单可以评价' });
+    if (!order.receivedAt) return sendJSON(res, 409, { message: '请先确认收货，再评价这笔订单' });
+    // 购物车订单逐个商品评；单件订单可省 productId
+    const orderProducts = (order.items && order.items.length
+      ? order.items.map((it) => String(it.productId))
+      : [String(order.productId)]
+    ).filter(Boolean);
+    const productId = String(body.productId || orderProducts[0] || '');
+    if (!productId) return sendJSON(res, 400, { message: '请选择要评价的商品' });
+    if (!orderProducts.includes(productId)) {
+      return sendJSON(res, 400, { message: '只能评价这笔订单里购买的商品' });
+    }
+    const rating = Math.floor(Number(body.rating) || 0);
+    if (rating < 1 || rating > 5) return sendJSON(res, 400, { message: '评分需要在 1~5 星之间' });
+    const content = String(body.content || '').trim();
+    if (content.length > 500) return sendJSON(res, 400, { message: '评价内容最多 500 字' });
+    try {
+      const row = await store.addReview({ userId: uid, orderId: order.id, productId, rating, content });
+      return sendJSON(res, 201, {
+        review: publicReview(row),
+        duplicated: Boolean(row && row.duplicated),
+        message: row && row.duplicated ? '这个商品你已经评价过了' : '评价提交成功，感谢反馈',
+      });
+    } catch (e) {
+      return sendJSON(res, 502, { message: reviewErrorText(e.message) });
+    }
+  }
+
+  // 某商品的可见评价（游客可看）：带平均分与条数
+  if (pathname === '/api/reviews' && method === 'GET') {
+    const productId = String(req._url.searchParams.get('productId') || '');
+    if (!productId) return sendJSON(res, 400, { message: '缺少 productId' });
+    const limit = Math.min(50, Math.max(1, Number(req._url.searchParams.get('limit')) || 10));
+    const offset = Math.max(0, Number(req._url.searchParams.get('offset')) || 0);
+    try {
+      const [list, stats] = await Promise.all([store.listReviews(productId, limit, offset), store.reviewsStats()]);
+      const s = stats.find((x) => x.productId === productId);
+      return sendJSON(res, 200, {
+        reviews: list.map(publicReview),
+        rating: s ? s.avg : 0,
+        count: s ? s.count : 0,
+      });
+    } catch (e) {
+      return sendJSON(res, 502, { message: '读取评价失败：' + e.message });
+    }
+  }
+
+  // 我的评价（含被后台隐藏的，用户能看到自己的状态）
+  if (pathname === '/api/reviews/mine' && method === 'GET') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    try {
+      return sendJSON(res, 200, { reviews: (await store.myReviews(uid, 50)).map(publicReview) });
+    } catch (e) {
+      return sendJSON(res, 502, { message: '读取评价失败：' + e.message });
+    }
+  }
+
   // 后台：手动同步单笔订单（对账用，强制向支付宝查单）
   const adminSyncMatch = pathname.match(/^\/api\/admin\/orders\/([^/]+)\/sync$/);
   if (adminSyncMatch && method === 'POST') {
@@ -3194,6 +3330,35 @@ async function handleApi(req, res, url) {
         return sendJSON(res, 200, { refund: publicRefund(row), order: publicOrder(order) });
       } catch (e) {
         return sendJSON(res, 502, { message: `订单已退款，但审核状态没存上：${e.message}` });
+      }
+    }
+
+    /* ---------------- 评价管理（后台） ---------------- */
+
+    // 全部评价（带买家昵称/手机号、商品标题）
+    if (pathname === '/api/admin/reviews' && method === 'GET') {
+      try {
+        return sendJSON(res, 200, { reviews: (await store.adminReviewList(200)).map(publicReview) });
+      } catch (e) {
+        return sendJSON(res, 502, { message: '读取评价失败：' + e.message });
+      }
+    }
+
+    // 隐藏 / 恢复评价（隐藏保留记录，违规内容不再对外展示）
+    if (pathname === '/api/admin/reviews/hide' && method === 'POST') {
+      const body = await readBody(req);
+      const id = String(body.id || '').trim();
+      const hidden = body.hidden !== false; // 缺省按隐藏处理，显式传 false 才恢复
+      const reason = String(body.reason || '').trim().slice(0, 200);
+      if (!id) return sendJSON(res, 400, { message: '缺少评价编号' });
+      if (hidden && !reason) return sendJSON(res, 400, { message: '隐藏评价时请填写原因（留档备查）' });
+      try {
+        const row = await store.adminReviewHide(id, hidden, reason, currentAdminUser());
+        if (!row) return sendJSON(res, 404, { message: '评价不存在' });
+        audit(hidden ? '隐藏评价' : '恢复评价', `${id.slice(0, 14)} · ${reason || '无说明'}`);
+        return sendJSON(res, 200, { review: publicReview(row) });
+      } catch (e) {
+        return sendJSON(res, 502, { message: '操作失败：' + e.message });
       }
     }
 

@@ -28,6 +28,7 @@ const state = {
   contents: [],
   favorites: [], // 收藏的内容 id（登录才有）
   refunds: [], // 我的退款/退货申请（登录才有）
+  myReviews: [], // 我的评价（登录才有，含被隐藏的）
   orders: [],
   tab: 'home',
   loaded: false,
@@ -39,7 +40,7 @@ const state = {
   contentCat: 'all', // 内容页分类筛选：all / 分类名 / __fav
 };
 
-const sheetState = { type: null, product: null, order: null, channel: 'wechat' };
+const sheetState = { type: null, product: null, order: null, channel: 'wechat', productId: '', reviewStars: 5 };
 
 const STATUS_TEXT = {
   created: '待支付',
@@ -312,6 +313,15 @@ function messageList() {
         orderId: o.id,
       });
     }
+    if (o.status === 'paid' && o.receivedAt) {
+      push({
+        at: Number(o.receivedAt) || at,
+        kind: 'ship',
+        title: '已签收',
+        text: `${o.title} · 确认收货成功，去评价一下呗`,
+        orderId: o.id,
+      });
+    }
     if (o.status === 'refunded') {
       push({
         at: Number(o.refundedAt) || at,
@@ -359,6 +369,68 @@ function markMsgRead() {
   const list = messageList();
   const top = list.length ? Number(list[0].at) || Date.now() : Date.now();
   lsSet(LS_MSG_READ, top);
+}
+
+
+/* ---------------- 确认收货 + 评价 ---------------- */
+
+/** 星级展示：4 → ★★★★☆ */
+function starsRow(n) {
+  const v = Math.max(0, Math.min(5, Math.round(Number(n) || 0)));
+  return '★'.repeat(v) + '☆'.repeat(5 - v);
+}
+
+/** 订单里的商品清单（购物车订单逐件，老订单单件） */
+function orderProductsOf(order) {
+  if (!order) return [];
+  if (order.items && order.items.length) {
+    return order.items.map((it) => ({
+      productId: String(it.productId || ''),
+      title: it.title || '',
+      qty: Number(it.qty) || 1,
+    }));
+  }
+  return order.productId ? [{ productId: String(order.productId), title: order.title || '', qty: 1 }] : [];
+}
+
+/** 我对这笔订单某商品的评价（没有则 undefined） */
+function myReviewFor(orderId, productId) {
+  return (state.myReviews || []).find(
+    (r) => r.orderId === orderId && String(r.productId) === String(productId)
+  );
+}
+
+/** 拉取我的评价（失败不阻塞页面） */
+async function refreshMyReviews() {
+  if (!getToken()) {
+    state.myReviews = [];
+    return;
+  }
+  try {
+    const res = await api('/api/reviews/mine');
+    state.myReviews = res.reviews || [];
+  } catch {
+    /* 忽略 */
+  }
+}
+
+/** 订单详情里的评价区：已收货后逐个商品显示「已评价 / 去评价」 */
+function reviewEntriesHTML(order) {
+  const prods = orderProductsOf(order).filter((p) => p.productId);
+  if (!prods.length) return '';
+  return `<div class="review-list">${prods
+    .map((p) => {
+      const mine = myReviewFor(order.id, p.productId);
+      if (mine) {
+        return `<div class="review-entry"><span class="k">${esc(p.title)}</span><span class="v"><span class="review-stars">${starsRow(
+          mine.rating
+        )}</span> 已评价${mine.hidden ? ' · 待审核' : ''}</span></div>`;
+      }
+      return `<button class="btn-ghost" data-act="review" data-id="${esc(p.productId)}" data-order="${esc(
+        order.id
+      )}" style="margin-top:10px">评价「${esc(p.title)}」</button>`;
+    })
+    .join('')}</div>`;
 }
 
 
@@ -1379,7 +1451,11 @@ function mineOrderRow(o) {
         ? '<span class="tag tag-gray" style="margin-left:6px">退款被拒</span>'
         : '';
   // 已发货在列表上直接可见，点开详情看单号
-  const shipTag = o.status === 'paid' && o.shipNo ? '<span class="tag tag-blue" style="margin-left:6px">已发货</span>' : '';
+  const shipTag = o.receivedAt
+    ? '<span class="tag tag-green" style="margin-left:6px">已签收</span>'
+    : o.status === 'paid' && o.shipNo
+      ? '<span class="tag tag-blue" style="margin-left:6px">已发货</span>'
+      : '';
   // 没付完的订单给一个明确入口，点整行就直接进支付界面
   const cta = isUnpaid(o) ? `<span class="order-cta">继续支付 ›</span>` : '';
   // 已支付且没有审核中的申请：列表上直接给「申请退款」，不用先进详情
@@ -1588,6 +1664,7 @@ function goodsSheet(productId) {
     Number(p.memberDays) > 0 ? `<span class="gs-chip">送 ${p.memberDays} 天会员</span>` : '',
     bought ? '<span class="gs-chip is-on">你已购买过</span>' : '',
     sold ? `<span class="gs-chip">已售 ${sold}</span>` : '',
+    Number(p.reviewCount) > 0 ? `<span class="gs-chip">⭐ ${Number(p.rating).toFixed(1)} · ${p.reviewCount} 条评价</span>` : '',
   ]
     .filter(Boolean)
     .join('');
@@ -1645,8 +1722,13 @@ function goodsSheet(productId) {
           ? '<button class="link-btn" data-act="open-wishlist">去心愿单看看 ›</button>'
           : '<p class="gs-tip">收藏后可在「我的 → 心愿单」随时找到</p>'
     }
+    <div class="gs-reviews" id="gsReviews">
+      <div class="gs-rec-head">用户评价</div>
+      <p class="gs-tip">加载中…</p>
+    </div>
     ${recHTML}
   `);
+  loadGoodsReviews(p.id); // 异步补评价区，不阻塞弹层打开
 }
 
 /** 收藏 / 取消收藏商品：就地刷新按钮，不整页重绘 */
@@ -3227,6 +3309,15 @@ function showSuccess(order) {
 function orderSheet(order) {
   sheetState.type = 'order';
   sheetState.order = order;
+  // 评价状态异步补拉一次（首次打开才拉，避免循环重绘）
+  if (getToken() && sheetState._revRefreshed !== order.id) {
+    sheetState._revRefreshed = order.id;
+    refreshMyReviews().then(() => {
+      if (sheetState.type === 'order' && sheetState.order && sheetState.order.id === order.id) {
+        orderSheet(sheetState.order);
+      }
+    });
+  }
   const canQueryPay = /^alipay/i.test(String(order.channel || ''));
   // 详情页点「继续支付」时沿用原渠道（渠道还能用的话）
   if (order.channel && channelList().some((c) => c.id === order.channel)) sheetState.channel = order.channel;
@@ -3269,7 +3360,13 @@ function orderSheet(order) {
               ? `<div class="refund-note is-ok"><b>退款已通过</b><i>${esc(rf.adminNote || '款项已原路退回')}</i></div>`
               : ''
         }
-        <button class="btn-ghost" data-act="refund" data-id="${esc(order.id)}" style="color:#f05252">申请退款 / 退货</button>
+        ${
+          order.receivedAt
+            ? `<div class="refund-note is-ok"><b>已确认收货</b><i>${timeText(order.receivedAt)} · 用得满意的话，评价一下呗</i></div>
+        ${reviewEntriesHTML(order)}`
+            : `<button class="btn-primary" data-act="receive-order" data-id="${esc(order.id)}">确认收货</button>`
+        }
+        <button class="btn-ghost" data-act="refund" data-id="${esc(order.id)}" style="color:#f05252;margin-top:10px">申请退款 / 退货</button>
         <button class="btn-ghost" data-act="open-refunds" style="margin-top:10px">退款与售后记录</button>
         ${trackLink}
         <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>`;
@@ -3328,9 +3425,16 @@ function orderSheet(order) {
           ? `<div class="detail-row"><span class="k">物流</span><span class="v">${
               order.shipNo
                 ? `${esc(order.shipCompany || '快递')} ${esc(order.shipNo)}
-              <button class="copy-mini" data-act="copy-shipno" data-id="${esc(order.shipNo)}">复制单号</button>`
+              <button class="copy-mini" data-act="copy-shipno" data-id="${esc(order.shipNo)}">复制单号</button>${
+                  order.receivedAt ? '<span class="tag tag-green" style="margin-left:6px">已签收</span>' : ''
+                }`
                 : '商家准备发货中，发货后这里会显示快递单号'
             }</span></div>`
+          : ''
+      }
+      ${
+        order.receivedAt
+          ? `<div class="detail-row"><span class="k">收货</span><span class="v">已确认收货 · ${timeText(order.receivedAt)}</span></div>`
           : ''
       }
       ${
@@ -3365,6 +3469,71 @@ function refundSheet(order) {
     <button class="btn-primary" data-act="submit-refund" data-id="${esc(order.id)}">提交申请</button>
     <button class="btn-ghost" data-act="close" style="margin-top:10px">取消</button>
   `);
+}
+
+/** 评价弹层：点星星打分 + 写两句感受 */
+function reviewSheet(order, productId, title) {
+  sheetState.type = 'review';
+  sheetState.order = order;
+  sheetState.productId = String(productId || '');
+  sheetState.reviewStars = 5;
+  openSheet(`
+    <h3>评价商品</h3>
+    <p class="sheet-sub">${esc(title || order.title)} · 订单 ${esc(order.id)}</p>
+    <div class="star-picker" id="starPicker">
+      ${[1, 2, 3, 4, 5]
+        .map((n) => `<button class="star-btn${n <= 5 ? ' on' : ''}" data-act="set-star" data-s="${n}" aria-label="${n} 星">★</button>`)
+        .join('')}
+      <span class="star-label" id="starLabel">5 分 · 非常满意</span>
+    </div>
+    <textarea class="fb-text" id="reviewContent" rows="4" maxlength="500" placeholder="说说商品的使用感受（选填，最多 500 字）"></textarea>
+    <p class="gs-tip">评价会以昵称展示在商品页，商家能后台处理违规内容</p>
+    <button class="btn-primary" data-act="submit-review" data-id="${esc(order.id)}">提交评价</button>
+    <button class="btn-ghost" data-act="close" style="margin-top:10px">取消</button>
+  `);
+}
+
+const STAR_LABELS = ['', '1 分 · 很不满意', '2 分 · 不满意', '3 分 · 一般', '4 分 · 满意', '5 分 · 非常满意'];
+
+/** 星星选择就地重绘 */
+function paintStars() {
+  const n = sheetState.reviewStars || 5;
+  const picker = $('#starPicker');
+  if (!picker) return;
+  picker.querySelectorAll('.star-btn').forEach((b) => b.classList.toggle('on', Number(b.dataset.s) <= n));
+  const label = $('#starLabel');
+  if (label) label.textContent = STAR_LABELS[n] || '';
+}
+
+/** 商品详情：拉取评价并填充到弹层里（弹层还开着且还是这个商品才填） */
+async function loadGoodsReviews(productId) {
+  try {
+    const res = await api(`/api/reviews?productId=${encodeURIComponent(productId)}&limit=5`);
+    const box = $('#gsReviews');
+    if (!box || sheetState.type !== 'goods' || String(sheetState.product && sheetState.product.id) !== String(productId)) return;
+    const list = res.reviews || [];
+    const head =
+      res.count > 0
+        ? `<div class="gs-rec-head">用户评价 <span class="gs-rate">${starsRow(res.rating)} ${Number(res.rating).toFixed(1)}</span><span class="gs-rate-n">${res.count} 条</span></div>`
+        : '<div class="gs-rec-head">用户评价</div>';
+    box.innerHTML =
+      head +
+      (list.length
+        ? list
+            .map(
+              (r) => `
+        <div class="gs-review">
+          <div class="gs-review-top"><b>${esc(r.nickname || '匿名用户')}</b><span class="review-stars">${starsRow(r.rating)}</span></div>
+          ${r.content ? `<p class="gs-review-text">${esc(r.content)}</p>` : '<p class="gs-review-text muted">这位用户没有留下文字</p>'}
+          <i class="gs-review-time">${timeText(r.createdAt)}</i>
+        </div>`
+            )
+            .join('')
+        : '<p class="gs-tip">还没有评价，购买后第一个来评价吧</p>');
+  } catch {
+    const box = $('#gsReviews');
+    if (box) box.innerHTML = '<div class="gs-rec-head">用户评价</div><p class="gs-tip">评价加载失败，稍后再看</p>';
+  }
 }
 
 /** 我的退款 / 售后记录 */
@@ -4375,6 +4544,71 @@ sheetEl.addEventListener('click', async (e) => {
       toast('已撤销申请');
       render();
     } catch (err) {
+      toast(err.message);
+    }
+    return;
+  }
+
+  /* ---------------- 确认收货 + 评价 ---------------- */
+
+  if (act === 'receive-order') {
+    if (!confirm('确认已收到货？确认后就可以评价商品了。')) return;
+    const id = el.dataset.id;
+    el.disabled = true;
+    el.textContent = '正在确认…';
+    try {
+      const res = await api(`/api/orders/${id}/receive`, { method: 'POST' });
+      if (res.order) upsertOrder(res.order);
+      toast('已确认收货');
+      const order = findOrder(id) || res.order;
+      sheetState._revRefreshed = null; // 收货后强制补拉一次评价状态
+      if (order) orderSheet(order);
+      render();
+    } catch (err) {
+      el.disabled = false;
+      el.textContent = '确认收货';
+      toast(err.message);
+    }
+    return;
+  }
+
+  if (act === 'review') {
+    const order = findOrder(el.dataset.order) || findOrder(el.dataset.id) || sheetState.order;
+    if (!order || !order.id) return toast('订单不存在，请刷新后重试');
+    if (!order.receivedAt) return toast('请先确认收货，再评价');
+    const productId = el.dataset.id;
+    const prod = orderProductsOf(order).find((p) => p.productId === String(productId));
+    return reviewSheet(order, productId, prod ? prod.title : order.title);
+  }
+
+  if (act === 'set-star') {
+    sheetState.reviewStars = Math.max(1, Math.min(5, Number(el.dataset.s) || 5));
+    paintStars();
+    return;
+  }
+
+  if (act === 'submit-review') {
+    const order = sheetState.order;
+    if (!order || !order.id) return toast('订单不存在');
+    const content = (($('#reviewContent') || {}).value || '').trim();
+    el.disabled = true;
+    try {
+      const res = await api('/api/reviews', {
+        method: 'POST',
+        body: JSON.stringify({
+          orderId: order.id,
+          productId: sheetState.productId,
+          rating: sheetState.reviewStars || 5,
+          content,
+        }),
+      });
+      await refreshMyReviews();
+      toast((res && res.message) || '评价提交成功');
+      const fresh = findOrder(order.id) || order;
+      orderSheet(fresh);
+      render();
+    } catch (err) {
+      el.disabled = false;
       toast(err.message);
     }
     return;
