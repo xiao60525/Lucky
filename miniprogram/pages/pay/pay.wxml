@@ -1,12 +1,12 @@
-<view class="page">
+<view class="page pay-page">
   <view wx:if="{{state === 'loading'}}" class="state">
-    <view class="state-desc">正在创建订单…</view>
+    <view class="state-desc">正在准备订单…</view>
   </view>
 
   <block wx:elif="{{state === 'need-login'}}">
     <view class="state">
       <view class="state-title">下单需要先登录</view>
-      <view class="state-desc">去「我的」用手机号验证码登录一下，回来就能下单了</view>
+      <view class="state-desc">去「我的」用手机号验证码登录一下，回来就能继续下单</view>
     </view>
     <view class="btn-primary" bindtap="onGoLogin">去登录</view>
   </block>
@@ -17,29 +17,51 @@
   </block>
 
   <block wx:else>
+    <view class="card goods">
+      <view class="goods-cover">{{product.initial}}</view>
+      <view class="goods-info">
+        <view class="goods-title">{{product.title}}</view>
+        <view class="goods-sub muted" wx:if="{{product.tag}}">{{product.tag}}</view>
+        <view class="goods-price"><text class="price-symbol">¥</text>{{product.amountText}}</view>
+      </view>
+    </view>
+
     <view class="card">
-      <view class="pay-title">{{product.title}}</view>
-      <view class="pay-amount"><text class="price-symbol">¥</text>{{product.amountText}}</view>
+      <view class="row">
+        <text class="row-label">购买数量</text>
+        <view class="stepper">
+          <view class="stepper-btn {{qty <= 1 ? 'is-disabled' : ''}}" bindtap="onMinus">−</view>
+          <view class="stepper-num">{{qty}}</view>
+          <view class="stepper-btn {{qty >= 99 ? 'is-disabled' : ''}}" bindtap="onPlus">+</view>
+        </view>
+      </view>
       <view class="divider"></view>
-      <view class="pay-row">
-        <text class="muted">订单号</text>
-        <text class="pay-value">{{order.id}}</text>
-      </view>
-      <view class="pay-row">
-        <text class="muted">状态</text>
-        <text class="pay-status">{{order.statusText}}</text>
-      </view>
-      <view class="pay-row">
-        <text class="muted">下单时间</text>
-        <text class="pay-value">{{order.createdText}}</text>
-      </view>
+      <view class="remark-label">备注（选填，最多 200 字）</view>
+      <textarea
+        class="remark-input"
+        value="{{remark}}"
+        maxlength="200"
+        placeholder="有特殊要求可以写在这里"
+        placeholder-class="remark-ph"
+        bindinput="onRemarkInput"
+      />
     </view>
 
     <view class="card tip-card">
-      <view class="tip-title">支付功能开发中</view>
-      <view class="tip-desc">订单已经存进你的账户，等支付接入后可以直接在这里完成付款，不用重新下单。</view>
+      <view class="tip-title">支付说明</view>
+      <view class="tip-desc">提交后会生成待支付订单。微信支付需要先把小程序绑定并开通（权限集 157），当前阶段可在订单详情里用「演示支付」把订单标记为已支付，不会真实扣款。</view>
     </view>
 
-    <view class="btn-primary" bindtap="onBack">返回继续逛</view>
+    <view class="error-box" wx:if="{{error}}">{{error}}</view>
   </block>
+
+  <view class="submit-bar" wx:if="{{state === 'ready'}}">
+    <view class="submit-price">
+      <text class="submit-label">应付</text>
+      <text class="submit-amount"><text class="price-symbol">¥</text>{{totalText}}</text>
+    </view>
+    <view class="submit-btn {{submitting ? 'is-loading' : ''}}" bindtap="onSubmit">
+      {{submitting ? '提交中…' : '提交订单'}}
+    </view>
+  </view>
 </view>

@@ -53,6 +53,10 @@ Page({
     onTapProduct(event) {
         const id = event.currentTarget.dataset.id;
         if (!id) return;
-        wx.navigateTo({ url: '/pages/pay/pay?productId=' + encodeURIComponent(id) });
+        wx.navigateTo({ url: '/pages/detail/detail?productId=' + encodeURIComponent(id) });
+    },
+
+    onGoOrders() {
+        wx.switchTab({ url: '/pages/mine/mine' });
     },
 });

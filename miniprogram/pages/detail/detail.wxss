@@ -1,0 +1,156 @@
+.detail-page {
+    padding-bottom: 180rpx;
+}
+
+.hero {
+    position: relative;
+    height: 320rpx;
+    border-radius: 28rpx;
+    background: linear-gradient(135deg, #5a5cf0 0%, #8b5cf6 100%);
+    margin-bottom: 20rpx;
+    overflow: hidden;
+}
+
+.hero-inner {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 140rpx;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.92);
+}
+
+.hero-tag {
+    position: absolute;
+    left: 24rpx;
+    bottom: 24rpx;
+    padding: 6rpx 20rpx;
+    font-size: 22rpx;
+    color: #ffffff;
+    background: rgba(255, 255, 255, 0.22);
+    border-radius: 24rpx;
+}
+
+.detail-title {
+    font-size: 36rpx;
+    font-weight: 600;
+    color: #1f2329;
+    line-height: 1.4;
+}
+
+.detail-price {
+    margin-top: 12rpx;
+    font-size: 48rpx;
+    font-weight: 600;
+    color: #f05252;
+}
+
+.detail-desc {
+    margin-top: 16rpx;
+    font-size: 28rpx;
+    color: #4a4f59;
+    line-height: 1.7;
+}
+
+.row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 12rpx 0;
+}
+
+.row-label {
+    font-size: 28rpx;
+    color: #4a4f59;
+}
+
+.row-total {
+    font-size: 34rpx;
+    font-weight: 600;
+    color: #f05252;
+}
+
+.stepper {
+    display: flex;
+    align-items: center;
+    border: 1rpx solid #e5e8ef;
+    border-radius: 12rpx;
+    overflow: hidden;
+}
+
+.stepper-btn {
+    width: 68rpx;
+    height: 60rpx;
+    line-height: 60rpx;
+    text-align: center;
+    font-size: 32rpx;
+    color: #1f2329;
+    background: #f7f8fb;
+}
+
+.stepper-btn.is-disabled {
+    color: #c9cdd6;
+}
+
+.stepper-num {
+    min-width: 88rpx;
+    text-align: center;
+    font-size: 28rpx;
+    color: #1f2329;
+}
+
+.notice-title {
+    font-size: 28rpx;
+    font-weight: 600;
+    color: #1f2329;
+    margin-bottom: 10rpx;
+}
+
+.notice-item {
+    font-size: 24rpx;
+    color: #8a8f99;
+    line-height: 1.8;
+}
+
+.buy-bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    padding: 20rpx 28rpx calc(20rpx + constant(safe-area-inset-bottom));
+    padding-bottom: calc(20rpx + env(safe-area-inset-bottom));
+    background: #ffffff;
+    box-shadow: 0 -4rpx 20rpx rgba(31, 35, 41, 0.06);
+}
+
+.buy-bar-price {
+    flex: 1;
+    display: flex;
+    align-items: baseline;
+}
+
+.buy-bar-label {
+    font-size: 24rpx;
+    color: #8a8f99;
+    margin-right: 8rpx;
+}
+
+.buy-bar-amount {
+    font-size: 40rpx;
+    font-weight: 600;
+    color: #f05252;
+}
+
+.buy-bar-btn {
+    width: 300rpx;
+    height: 84rpx;
+    line-height: 84rpx;
+    text-align: center;
+    font-size: 30rpx;
+    color: #ffffff;
+    background: #4f6ef7;
+    border-radius: 42rpx;
+}

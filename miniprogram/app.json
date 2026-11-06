@@ -3,7 +3,9 @@
     "pages/index/index",
     "pages/content/content",
     "pages/mine/mine",
-    "pages/pay/pay"
+    "pages/detail/detail",
+    "pages/pay/pay",
+    "pages/order/order"
   ],
   "window": {
     "navigationBarTitleText": "手机应用",
@@ -24,7 +26,7 @@
       },
       {
         "pagePath": "pages/content/content",
-        "text": "内容"
+        "text": "帮助"
       },
       {
         "pagePath": "pages/mine/mine",

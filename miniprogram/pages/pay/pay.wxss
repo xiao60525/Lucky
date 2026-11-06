@@ -1,43 +1,118 @@
-.pay-title {
-    font-size: 32rpx;
-    font-weight: 600;
-    color: #1f2329;
-    text-align: center;
-    margin-top: 8rpx;
+.pay-page {
+    padding-bottom: 180rpx;
 }
 
-.pay-amount {
-    text-align: center;
-    font-size: 64rpx;
+.goods {
+    display: flex;
+    align-items: center;
+}
+
+.goods-cover {
+    width: 132rpx;
+    height: 132rpx;
+    border-radius: 20rpx;
+    background: linear-gradient(135deg, #5a5cf0 0%, #8b5cf6 100%);
+    color: #ffffff;
+    font-size: 52rpx;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+}
+
+.goods-info {
+    flex: 1;
+    margin-left: 22rpx;
+    min-width: 0;
+}
+
+.goods-title {
+    font-size: 30rpx;
     font-weight: 600;
     color: #1f2329;
-    margin: 16rpx 0 8rpx;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.goods-sub {
+    margin-top: 6rpx;
+}
+
+.goods-price {
+    margin-top: 10rpx;
+    font-size: 32rpx;
+    font-weight: 600;
+    color: #f05252;
+}
+
+.row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.row-label {
+    font-size: 28rpx;
+    color: #4a4f59;
+}
+
+.stepper {
+    display: flex;
+    align-items: center;
+    border: 1rpx solid #e5e8ef;
+    border-radius: 12rpx;
+    overflow: hidden;
+}
+
+.stepper-btn {
+    width: 68rpx;
+    height: 60rpx;
+    line-height: 60rpx;
+    text-align: center;
+    font-size: 32rpx;
+    color: #1f2329;
+    background: #f7f8fb;
+}
+
+.stepper-btn.is-disabled {
+    color: #c9cdd6;
+}
+
+.stepper-num {
+    min-width: 88rpx;
+    text-align: center;
+    font-size: 28rpx;
+    color: #1f2329;
 }
 
 .divider {
     height: 2rpx;
     background: #eef0f5;
-    margin: 24rpx 0 8rpx;
+    margin: 22rpx 0;
 }
 
-.pay-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 16rpx 0;
-}
-
-.pay-value {
-    font-size: 24rpx;
-    color: #4a4f59;
-}
-
-.pay-status {
+.remark-label {
     font-size: 26rpx;
-    color: #d08316;
-    background: #fdf3e3;
-    padding: 4rpx 16rpx;
-    border-radius: 20rpx;
+    color: #4a4f59;
+    margin-bottom: 12rpx;
+}
+
+.remark-input {
+    width: 100%;
+    box-sizing: border-box;
+    height: 140rpx;
+    padding: 18rpx 20rpx;
+    background: #f7f8fb;
+    border-radius: 16rpx;
+    font-size: 26rpx;
+    color: #1f2329;
+    line-height: 1.6;
+}
+
+.remark-ph {
+    color: #b6bbc6;
 }
 
 .tip-card {
@@ -54,5 +129,51 @@
     margin-top: 8rpx;
     font-size: 26rpx;
     color: #5a6bb5;
-    line-height: 1.6;
+    line-height: 1.7;
+}
+
+.submit-bar {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    padding: 20rpx 28rpx;
+    padding-bottom: calc(20rpx + env(safe-area-inset-bottom));
+    background: #ffffff;
+    box-shadow: 0 -4rpx 20rpx rgba(31, 35, 41, 0.06);
+}
+
+.submit-price {
+    flex: 1;
+    display: flex;
+    align-items: baseline;
+}
+
+.submit-label {
+    font-size: 24rpx;
+    color: #8a8f99;
+    margin-right: 8rpx;
+}
+
+.submit-amount {
+    font-size: 40rpx;
+    font-weight: 600;
+    color: #f05252;
+}
+
+.submit-btn {
+    width: 300rpx;
+    height: 84rpx;
+    line-height: 84rpx;
+    text-align: center;
+    font-size: 30rpx;
+    color: #ffffff;
+    background: #4f6ef7;
+    border-radius: 42rpx;
+}
+
+.submit-btn.is-loading {
+    background: #c3ccf8;
 }

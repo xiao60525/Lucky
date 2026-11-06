@@ -60,3 +60,17 @@
     color: #a3a9b8;
     margin-top: 12rpx;
 }
+
+.product-hover {
+    background: #f7f8fb;
+}
+
+.quick-link {
+    margin: 4rpx 4rpx 12rpx;
+    padding: 22rpx 24rpx;
+    font-size: 24rpx;
+    color: #4f6ef7;
+    background: #eef1fe;
+    border-radius: 16rpx;
+    text-align: center;
+}

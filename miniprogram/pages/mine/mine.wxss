@@ -93,3 +93,81 @@
 .order-empty-action {
     margin-top: 20rpx;
 }
+
+/* ---------------- 订单状态统计 / 筛选 / 可点订单卡 ---------------- */
+.stats {
+    display: flex;
+    align-items: center;
+    padding: 8rpx 0;
+}
+
+.stat {
+    flex: 1;
+    text-align: center;
+    padding: 12rpx 0;
+}
+
+.stat-num {
+    font-size: 40rpx;
+    font-weight: 600;
+    color: #1f2329;
+    line-height: 1.2;
+}
+
+.stat-label {
+    margin-top: 4rpx;
+    font-size: 22rpx;
+    color: #8a8f99;
+}
+
+.stat-line {
+    width: 1rpx;
+    height: 48rpx;
+    background: #eef0f5;
+}
+
+.filters {
+    display: flex;
+    align-items: center;
+    margin: 4rpx 0 20rpx;
+}
+
+.filter {
+    padding: 10rpx 28rpx;
+    margin-right: 16rpx;
+    font-size: 26rpx;
+    color: #4a4f59;
+    background: #ffffff;
+    border-radius: 30rpx;
+    border: 1rpx solid #e5e8ef;
+}
+
+.filter.is-on {
+    color: #4f6ef7;
+    background: #eef1fe;
+    border-color: #d7dcef;
+    font-weight: 600;
+}
+
+.order-hover {
+    background: #f7f8fb;
+}
+
+.order-status.status-paid {
+    color: #0ca678;
+    background: #e6f7f1;
+}
+
+.order-status.status-closed,
+.order-status.status-refunded {
+    color: #8a8f99;
+    background: #f0f2f6;
+}
+
+.order-cta {
+    margin-top: 12rpx;
+    text-align: right;
+    font-size: 24rpx;
+    color: #4f6ef7;
+}
+

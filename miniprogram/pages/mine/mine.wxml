@@ -12,12 +12,37 @@
       <view class="avatar">{{initial}}</view>
       <view class="user-meta">
         <view class="user-name">{{phoneText}}</view>
-        <view class="muted">已登录</view>
+        <view class="muted">已登录 · 下拉可刷新订单</view>
       </view>
       <view class="logout" bindtap="onSignOut">退出</view>
     </view>
 
-    <view class="section-title">我的订单</view>
+    <view class="card stats">
+      <view class="stat">
+        <view class="stat-num">{{stats.created}}</view>
+        <view class="stat-label">待支付</view>
+      </view>
+      <view class="stat-line"></view>
+      <view class="stat">
+        <view class="stat-num">{{stats.paid}}</view>
+        <view class="stat-label">已支付</view>
+      </view>
+      <view class="stat-line"></view>
+      <view class="stat">
+        <view class="stat-num">{{stats.closed}}</view>
+        <view class="stat-label">已取消</view>
+      </view>
+    </view>
+
+    <view class="filters">
+      <view
+        wx:for="{{filters}}"
+        wx:key="key"
+        class="filter {{filter === item.key ? 'is-on' : ''}}"
+        data-key="{{item.key}}"
+        bindtap="onFilter"
+      >{{item.label}}</view>
+    </view>
 
     <view wx:if="{{ordersLoading}}" class="card">
       <view class="skeleton-line w60"></view>
@@ -29,22 +54,30 @@
       <view class="btn-ghost" bindtap="onRetryOrders">重新加载</view>
     </view>
 
-    <view wx:elif="{{orders.length === 0}}" class="card">
-      <view class="muted">还没有订单。去首页挑一个商品试试下单。</view>
+    <view wx:elif="{{shownOrders.length === 0}}" class="card">
+      <view class="muted">{{orders.length ? '这个状态下还没有订单' : '还没有订单。去首页挑一个商品试试下单。'}}</view>
       <view class="btn-ghost order-empty-action" bindtap="onGoShop">去首页</view>
     </view>
 
     <block wx:else>
-      <view class="card order" wx:for="{{orders}}" wx:key="id">
+      <view
+        class="card order"
+        wx:for="{{shownOrders}}"
+        wx:key="id"
+        data-id="{{item.id}}"
+        bindtap="onTapOrder"
+        hover-class="order-hover"
+      >
         <view class="order-top">
           <view class="order-title">{{item.title}}</view>
           <view class="order-amount"><text class="price-symbol">¥</text>{{item.amountText}}</view>
         </view>
         <view class="order-bottom">
-          <view class="order-no">单号 {{item.id}}</view>
-          <view class="order-status">{{item.statusText}}</view>
+          <view class="order-no">单号 {{item.id}} · ×{{item.qty}}</view>
+          <view class="order-status status-{{item.status}}">{{item.statusText}}</view>
         </view>
         <view class="order-time">{{item.createdText}}</view>
+        <view class="order-cta">查看详情 ›</view>
       </view>
     </block>
   </block>

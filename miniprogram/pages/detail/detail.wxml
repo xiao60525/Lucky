@@ -1,0 +1,54 @@
+<view class="page detail-page">
+  <view wx:if="{{state === 'loading'}}" class="state">
+    <view class="state-desc">正在加载商品…</view>
+  </view>
+
+  <block wx:elif="{{state === 'error'}}">
+    <view class="error-box">{{error}}</view>
+    <view class="btn-ghost" bindtap="onRetry">重新加载</view>
+  </block>
+
+  <block wx:else>
+    <view class="hero">
+      <view class="hero-inner">{{product.initial}}</view>
+      <view class="hero-tag" wx:if="{{product.tag}}">{{product.tag}}</view>
+    </view>
+
+    <view class="card">
+      <view class="detail-title">{{product.title}}</view>
+      <view class="detail-price"><text class="price-symbol">¥</text>{{product.amountText}}</view>
+      <view class="detail-desc" wx:if="{{product.description}}">{{product.description}}</view>
+      <view class="detail-desc muted" wx:else>商家还没有填写商品介绍。</view>
+    </view>
+
+    <view class="card">
+      <view class="row">
+        <text class="row-label">数量</text>
+        <view class="stepper">
+          <view class="stepper-btn {{qty <= 1 ? 'is-disabled' : ''}}" bindtap="onMinus">−</view>
+          <view class="stepper-num">{{qty}}</view>
+          <view class="stepper-btn {{qty >= 99 ? 'is-disabled' : ''}}" bindtap="onPlus">+</view>
+        </view>
+      </view>
+      <view class="row">
+        <text class="row-label">合计</text>
+        <text class="row-total"><text class="price-symbol">¥</text>{{totalText}}</text>
+      </view>
+    </view>
+
+    <view class="card notice">
+      <view class="notice-title">购买须知</view>
+      <view class="notice-item">· 下单后会生成订单，可在「我的 → 我的订单」里随时查看</view>
+      <view class="notice-item">· 微信支付尚未接入，当前可用「演示支付」把订单标记为已支付，不会真实扣款</view>
+      <view class="notice-item">· 未支付的订单可以自行取消，取消后不产生任何费用</view>
+    </view>
+  </block>
+
+  <view class="buy-bar" wx:if="{{state === 'ready'}}">
+    <view class="buy-bar-price">
+      <text class="buy-bar-label">合计</text>
+      <text class="buy-bar-amount"><text class="price-symbol">¥</text>{{totalText}}</text>
+    </view>
+    <view class="buy-bar-btn" bindtap="onBuy">立即购买</view>
+  </view>
+</view>

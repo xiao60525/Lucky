@@ -1,0 +1,165 @@
+.order-page {
+    padding-bottom: 40rpx;
+}
+
+/* 顶部状态卡 */
+.status-card {
+    border-radius: 24rpx;
+    padding: 36rpx 32rpx;
+    margin-bottom: 20rpx;
+    color: #ffffff;
+    background: linear-gradient(135deg, #5a5cf0 0%, #8b5cf6 100%);
+}
+
+.status-card.status-created {
+    background: linear-gradient(135deg, #f5a623 0%, #f76b1c 100%);
+}
+
+.status-card.status-paid {
+    background: linear-gradient(135deg, #12b886 0%, #0ca678 100%);
+}
+
+.status-card.status-closed,
+.status-card.status-refunded {
+    background: linear-gradient(135deg, #9aa0ad 0%, #7b8290 100%);
+}
+
+.status-title {
+    font-size: 40rpx;
+    font-weight: 600;
+}
+
+.status-hint {
+    margin-top: 10rpx;
+    font-size: 26rpx;
+    opacity: 0.9;
+    line-height: 1.6;
+}
+
+.status-new {
+    display: inline-block;
+    margin-top: 16rpx;
+    padding: 6rpx 18rpx;
+    font-size: 22rpx;
+    background: rgba(255, 255, 255, 0.22);
+    border-radius: 20rpx;
+}
+
+/* 商品行 */
+.goods {
+    display: flex;
+    align-items: center;
+}
+
+.goods-cover {
+    width: 108rpx;
+    height: 108rpx;
+    border-radius: 18rpx;
+    background: linear-gradient(135deg, #5a5cf0 0%, #8b5cf6 100%);
+    color: #ffffff;
+    font-size: 44rpx;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+}
+
+.goods-info {
+    flex: 1;
+    margin-left: 20rpx;
+    min-width: 0;
+}
+
+.goods-title {
+    font-size: 30rpx;
+    font-weight: 600;
+    color: #1f2329;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.goods-meta {
+    margin-top: 8rpx;
+}
+
+.goods-amount {
+    font-size: 32rpx;
+    font-weight: 600;
+    color: #1f2329;
+    white-space: nowrap;
+}
+
+/* 订单信息 */
+.info-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    padding: 14rpx 0;
+}
+
+.info-label {
+    font-size: 26rpx;
+    color: #8a8f99;
+    flex: 0 0 auto;
+    margin-right: 20rpx;
+}
+
+.info-value-row {
+    display: flex;
+    align-items: center;
+    flex: 1;
+    justify-content: flex-end;
+}
+
+.info-value {
+    font-size: 26rpx;
+    color: #4a4f59;
+    text-align: right;
+    word-break: break-all;
+    line-height: 1.6;
+}
+
+.info-mono {
+    font-family: Menlo, Consolas, monospace;
+}
+
+.copy-btn {
+    margin-left: 14rpx;
+    padding: 4rpx 16rpx;
+    font-size: 22rpx;
+    color: #4f6ef7;
+    border: 1rpx solid #d7dcef;
+    border-radius: 20rpx;
+    flex: 0 0 auto;
+}
+
+.tip-card {
+    background: #eef1fe;
+}
+
+.tip-title {
+    font-size: 28rpx;
+    font-weight: 600;
+    color: #3f56c9;
+}
+
+.tip-desc {
+    margin-top: 8rpx;
+    font-size: 26rpx;
+    color: #5a6bb5;
+    line-height: 1.7;
+}
+
+.actions {
+    margin-top: 12rpx;
+}
+
+.action-gap {
+    margin-top: 18rpx;
+}
+
+.btn-primary.is-loading {
+    background: #c3ccf8;
+}

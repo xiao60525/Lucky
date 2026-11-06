@@ -1,12 +1,34 @@
 <view class="page">
-  <view class="state">
-    <view class="state-title">内容暂空</view>
-    <view class="state-desc">这一页先留白。等你想好要放什么，下面是已经预留好的位置。</view>
+  <view class="card intro">
+    <view class="intro-title">{{brand.name}}</view>
+    <view class="intro-desc">{{brand.tagline || '有问题先看这里，基本能自己解决'}}</view>
+    <view class="intro-version">小程序版本 {{version}}</view>
   </view>
 
-  <view class="card slot" wx:for="{{placeholders}}" wx:key="id">
-    <view class="slot-title">{{item.title}}</view>
-    <view class="slot-desc">{{item.desc}}</view>
-    <view class="slot-line"></view>
+  <view class="section-title">常见问题</view>
+  <view class="card faq" wx:for="{{faq}}" wx:key="q">
+    <view class="faq-q" data-index="{{index}}" bindtap="onToggle">
+      <text>{{item.q}}</text>
+      <text class="faq-arrow {{open === index ? 'is-open' : ''}}">›</text>
+    </view>
+    <view class="faq-a" wx:if="{{open === index}}">{{item.a}}</view>
+  </view>
+
+  <view class="section-title">快速入口</view>
+  <view class="card links">
+    <view class="link" bindtap="onGoShop">
+      <text>去首页看商品</text>
+      <text class="link-arrow">›</text>
+    </view>
+    <view class="link" bindtap="onGoMine">
+      <text>我的订单</text>
+      <text class="link-arrow">›</text>
+    </view>
+  </view>
+
+  <view class="brand-foot">
+    <image wx:if="{{brand.logo}}" class="brand-foot-logo" src="{{brand.logo}}" mode="aspectFill" />
+    <view wx:else class="brand-foot-logo">{{brand.initial}}</view>
+    <text>{{brand.name}}</text>
   </view>
 </view>
