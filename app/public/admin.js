@@ -418,7 +418,7 @@ function orderTable(orders) {  const list = filteredOrders(orders);
     const sec = Math.floor((left % 60000) / 1000);
     return `<div class="muted" style="font-size:11px">剩余 ${m}:${String(sec).padStart(2, '0')}</div>`;
   };
-  return `<div class="otable-wrap"><table><thead><tr><th>订单号</th><th>商品</th><th>买家</th><th>金额</th><th>渠道</th><th>状态</th><th>下单时间</th><th>支付时间</th><th>第三方交易号</th><th>操作</th></tr></thead>
+  return `<div class="otable-wrap"><table><thead><tr><th>订单号</th><th>商品</th><th>买家</th><th>金额</th><th>渠道</th><th>状态</th><th>物流</th><th>下单时间</th><th>支付时间</th><th>第三方交易号</th><th>操作</th></tr></thead>
     <tbody>${pageList
       .map(
         (o) => `<tr>
@@ -436,6 +436,13 @@ function orderTable(orders) {  const list = filteredOrders(orders);
       <td style="white-space:nowrap">¥${o.amountText}</td>
       <td class="muted" style="white-space:nowrap">${o.channelName || '-'}</td>
       <td><span class="tag ${o.status}">${STATUS_TEXT[o.status] || o.status}</span>${refundBadgeOf(o.id)}${leftText(o)}</td>
+      <td style="white-space:nowrap;max-width:150px">${
+        o.status === 'paid'
+          ? o.shipNo
+            ? `<div style="font-size:12px">${esc(o.shipCompany || '快递')}</div><div class="muted" style="font-size:11px;font-family:monospace" title="${esc(o.shipNo)}">${esc(o.shipNo)}</div>`
+            : '<span class="tag" style="background:#fff7ed;color:#b45309">待发货</span>'
+          : '<span class="muted">—</span>'
+      }</td>
       <td class="muted" style="white-space:nowrap">${fmtTime(o.createdAt)}</td>
       <td class="muted" style="white-space:nowrap">${fmtTime(o.paidAt)}</td>
       <td style="font-family:monospace;font-size:11px;max-width:120px;word-break:break-all" title="${esc(o.transactionId || '')}">${
@@ -443,6 +450,7 @@ function orderTable(orders) {  const list = filteredOrders(orders);
       }</td>
       <td style="white-space:nowrap">
         ${o.status === 'paid' ? `<button class="op danger" data-refund="${o.id}">退款</button>` : ''}
+        ${o.status === 'paid' ? `<button class="op" data-ship="${o.id}" title="填写快递公司与运单号，用户端订单详情和消息中心会同步展示">${o.shipNo ? '改物流' : '发货'}</button>` : ''}
         ${
           o.status === 'pending' && /^alipay/i.test(String(o.channel || ''))
             ? `<button class="op" data-sync="${o.id}" title="向支付宝查单，已付款会自动变为已支付">同步</button>`
@@ -459,7 +467,7 @@ function orderTable(orders) {  const list = filteredOrders(orders);
 
 function exportOrdersCsv(orders) {
   const list = filteredOrders(orders);
-  const head = ['订单号', '商品', '买家昵称', '买家手机号', '金额(元)', '渠道', '状态', '下单时间', '支付时间', '第三方交易号'];
+  const head = ['订单号', '商品', '买家昵称', '买家手机号', '金额(元)', '渠道', '状态', '下单时间', '支付时间', '第三方交易号', '快递公司', '运单号'];
   const escCell = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
   const rows = list.map((o) =>
     [
@@ -473,6 +481,8 @@ function exportOrdersCsv(orders) {
       o.createdAt ? fmtTime(o.createdAt) : '',
       o.paidAt ? fmtTime(o.paidAt) : '',
       o.transactionId || '',
+      o.shipCompany || '',
+      o.shipNo || '',
     ]
       .map(escCell)
       .join(',')
@@ -1176,6 +1186,28 @@ function bindOrderOps() {
   document.querySelectorAll('[data-close]').forEach((b) => (b.onclick = () => closeOrder(b.dataset.close)));
   document.querySelectorAll('[data-sync]').forEach((b) => (b.onclick = () => syncOrder(b.dataset.sync, b)));
   document.querySelectorAll('[data-extend]').forEach((b) => (b.onclick = () => extendOrder(b.dataset.extend)));
+  document.querySelectorAll('[data-ship]').forEach((b) => (b.onclick = () => shipOrder(b.dataset.ship)));
+}
+
+/** 发货 / 修改物流：填快递公司 + 运单号，已发货的会带出旧值方便改 */
+async function shipOrder(id) {
+  const order = (state.data.orders || []).find((o) => o.id === id);
+  const company = (prompt(`订单 ${id}\n快递公司（如：顺丰速运 / 中通快递 / EMS）：`, (order && order.shipCompany) || '') || '').trim();
+  if (!company) return;
+  const no = (prompt(`快递公司：${company}\n运单号：`, (order && order.shipNo) || '') || '').trim();
+  if (!no) return;
+  try {
+    const res = await api('/api/admin/order/ship', {
+      method: 'POST',
+      body: JSON.stringify({ orderId: id, company, no }),
+    });
+    const r = (res.results || [])[0] || {};
+    if (!r.ok) return toast(r.message || '发货失败');
+    toast(order && order.shipNo ? '物流信息已更新' : '已发货，用户端会收到通知');
+    await load();
+  } catch (e) {
+    toast(e.message);
+  }
 }
 
 /** 延长支付：把订单创建时间推到当前，用户重新有 30 分钟 */

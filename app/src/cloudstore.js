@@ -62,6 +62,9 @@ function fromRow(row) {
     transactionId: row.transaction_id,
     settleSource: row.settle_source,
     items: Array.isArray(row.items) ? row.items : [],
+    shipCompany: row.ship_company || '',
+    shipNo: row.ship_no || '',
+    shippedAt: toMs(row.shipped_at),
     createdAt: toMs(row.created_at),
     paidAt: toMs(row.paid_at),
     refundedAt: toMs(row.refunded_at),
@@ -126,6 +129,10 @@ async function updateOrder(order) {
   if (order.paidAt) patch.paid_at = order.paidAt;
   if (order.refundedAt) patch.refunded_at = order.refundedAt;
   if (order.closedAt) patch.closed_at = order.closedAt;
+  // 物流发货：后台填快递公司 + 运单号（shippedAt 传毫秒时间戳）
+  if (order.shipCompany !== undefined) patch.ship_company = order.shipCompany;
+  if (order.shipNo !== undefined) patch.ship_no = order.shipNo;
+  if (order.shippedAt) patch.shipped_at = order.shippedAt;
 
   const row = await call(
     'app_update_order',

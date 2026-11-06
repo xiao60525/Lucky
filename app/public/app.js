@@ -303,6 +303,15 @@ function messageList() {
         orderId: o.id,
       });
     }
+    if (o.status === 'paid' && o.shipNo) {
+      push({
+        at: Number(o.shippedAt) || Number(o.paidAt) || at,
+        kind: 'ship',
+        title: '已发货',
+        text: `${o.title} · ${o.shipCompany || '快递'} ${o.shipNo}`,
+        orderId: o.id,
+      });
+    }
     if (o.status === 'refunded') {
       push({
         at: Number(o.refundedAt) || at,
@@ -1369,6 +1378,8 @@ function mineOrderRow(o) {
       : rf && rf.status === 'rejected'
         ? '<span class="tag tag-gray" style="margin-left:6px">退款被拒</span>'
         : '';
+  // 已发货在列表上直接可见，点开详情看单号
+  const shipTag = o.status === 'paid' && o.shipNo ? '<span class="tag tag-blue" style="margin-left:6px">已发货</span>' : '';
   // 没付完的订单给一个明确入口，点整行就直接进支付界面
   const cta = isUnpaid(o) ? `<span class="order-cta">继续支付 ›</span>` : '';
   // 已支付且没有审核中的申请：列表上直接给「申请退款」，不用先进详情
@@ -1391,7 +1402,7 @@ function mineOrderRow(o) {
   return `
     <button class="order-row" data-act="order" data-id="${esc(o.id)}">
       <span class="order-main">
-        <span class="order-title">${esc(o.title)}${chTag}${rfTag}</span>
+        <span class="order-title">${esc(o.title)}${chTag}${rfTag}${shipTag}</span>
         <span class="order-meta">${meta}</span>
       </span>
       <span class="order-right">
@@ -3221,6 +3232,10 @@ function orderSheet(order) {
   if (order.channel && channelList().some((c) => c.id === order.channel)) sheetState.channel = order.channel;
 
   let actions;
+  // 已发货时给一个直达物流查询的入口（按单号查，第三方页面无需登录）
+  const trackLink = order.shipNo
+    ? `<a class="btn-ghost" href="https://www.kuaidi100.com/chaxun?nu=${encodeURIComponent(order.shipNo)}" target="_blank" rel="noopener" style="margin-top:10px;display:block">查询物流进度</a>`
+    : '';
   if (isUnpaid(order)) {
     actions = `
       <button class="btn-primary" data-act="pay-order" data-id="${order.id}">继续支付 ${yuan(order.amount)}</button>
@@ -3241,6 +3256,7 @@ function orderSheet(order) {
         </div>
         <button class="btn-ghost" data-act="cancel-refund" data-id="${esc(rf.id)}" style="color:#f05252">撤销申请</button>
         <button class="btn-ghost" data-act="open-refunds" style="margin-top:10px">查看售后进度</button>
+        ${trackLink}
         <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>`;
     } else {
       actions = `
@@ -3255,6 +3271,7 @@ function orderSheet(order) {
         }
         <button class="btn-ghost" data-act="refund" data-id="${esc(order.id)}" style="color:#f05252">申请退款 / 退货</button>
         <button class="btn-ghost" data-act="open-refunds" style="margin-top:10px">退款与售后记录</button>
+        ${trackLink}
         <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>`;
     }
   } else {
@@ -3304,6 +3321,16 @@ function orderSheet(order) {
       ${
         order.paidAt
           ? `<div class="detail-row"><span class="k">支付时间</span><span class="v">${timeText(order.paidAt)}</span></div>`
+          : ''
+      }
+      ${
+        order.status === 'paid'
+          ? `<div class="detail-row"><span class="k">物流</span><span class="v">${
+              order.shipNo
+                ? `${esc(order.shipCompany || '快递')} ${esc(order.shipNo)}
+              <button class="copy-mini" data-act="copy-shipno" data-id="${esc(order.shipNo)}">复制单号</button>`
+                : '商家准备发货中，发货后这里会显示快递单号'
+            }</span></div>`
           : ''
       }
       ${
@@ -3479,7 +3506,7 @@ function footprintSheet() {
 function messagesSheet() {
   sheetState.type = 'messages';
   const list = messageList();
-  const icon = { pay: '💰', refund: '↩️', unpaid: '⏳' };
+  const icon = { pay: '💰', refund: '↩️', unpaid: '⏳', ship: '📦' };
   markMsgRead();
   updateTabBadge();
   openSheet(`
@@ -3992,6 +4019,11 @@ sheetEl.addEventListener('click', async (e) => {
   if (act === 'copy-order') {
     const ok = await copyText(el.dataset.id || '');
     toast(ok ? '订单号已复制' : '复制失败，请长按手动复制');
+    return;
+  }
+  if (act === 'copy-shipno') {
+    const ok = await copyText(el.dataset.id || '');
+    toast(ok ? '运单号已复制' : '复制失败，请长按手动复制');
     return;
   }
   if (act === 'copy-text') {

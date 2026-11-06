@@ -33,6 +33,18 @@ const VIEWER = {
   orders: [
     { id: 'O1', productId: 'demo_001', title: '会员月卡', amount: 1200, status: 'paid', createdAt: Date.now() },
     {
+      id: 'O4',
+      productId: 'demo_001',
+      title: '测试商品',
+      amount: 1,
+      status: 'paid',
+      createdAt: Date.now(),
+      paidAt: Date.now(),
+      shipCompany: '顺丰速运',
+      shipNo: 'SF1234567890',
+      shippedAt: Date.now(),
+    },
+    {
       id: 'O2',
       productId: 'demo_001',
       title: '测试商品',
@@ -518,7 +530,7 @@ await wait(60);
 check('订单入口存在且页面不直接铺订单', Boolean($('[data-act="open-orders"]')) && window.document.querySelectorAll('.order-row').length === 0);
 $('[data-act="open-orders"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(40);
-check('订单列表', window.document.querySelectorAll('.sheet .order-row').length === 2, text('.sheet .order-title'));
+check('订单列表', window.document.querySelectorAll('.sheet .order-row').length === 3, text('.sheet .order-title'));
 check(
   '超时未支付订单不展示',
   ![...window.document.querySelectorAll('.sheet .order-row')].some((r) => r.dataset.id === 'O3'),
@@ -699,6 +711,36 @@ if (paidRow) {
   await wait(40);
 } else {
   check('订单列表里有已支付订单', false, '未找到 O1');
+}
+
+// 9b-3. 已发货订单：列表有「已发货」标，详情显示运单号 + 复制 + 查询物流，消息中心有发货通知
+await goMine();
+await wait(40);
+$('[data-act="open-orders"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+const shipRow = [...window.document.querySelectorAll('.sheet .order-row')].find((r) => r.dataset.id === 'O4');
+check('已发货订单在列表上有「已发货」标记', Boolean(shipRow && shipRow.textContent.includes('已发货')), shipRow ? shipRow.textContent.slice(0, 30) : '未找到 O4');
+if (shipRow) {
+  shipRow.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(40);
+  const shipSheet = text('.sheet');
+  check('订单详情显示快递公司', shipSheet.includes('顺丰速运'), shipSheet.slice(0, 60));
+  check('订单详情显示运单号', shipSheet.includes('SF1234567890'), '');
+  check('运单号可复制', Boolean($('.sheet [data-act="copy-shipno"]')));
+  const trackLink = $('.sheet a[href*="kuaidi100.com"]');
+  check('有查询物流入口', Boolean(trackLink), trackLink ? trackLink.getAttribute('href') : '未找到链接');
+  $('.sheet [data-act="copy-shipno"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(40);
+  check('复制运单号有反馈', text('#toast').includes('运单号已复制'), text('#toast'));
+  closeSheetForTest();
+  await wait(40);
+  // 消息中心：发货通知
+  $('[data-act="open-messages"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(40);
+  const msgSheet = text('.sheet');
+  check('消息中心有发货通知', msgSheet.includes('已发货') && msgSheet.includes('SF1234567890'), msgSheet.slice(0, 60));
+  closeSheetForTest();
+  await wait(30);
 }
 
 // 9b-2. 列表里的「申请退款」快捷入口 + 本地找不到订单时补拉详情

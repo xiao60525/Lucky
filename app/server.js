@@ -831,6 +831,10 @@ function publicOrder(order) {
     paidAt: order.paidAt || null,
     refundedAt: order.refundedAt || null,
     transactionId: order.transactionId || null,
+    // 物流：shipNo 有值即「已发货」，前端据此显示单号/复制/查询
+    shipCompany: order.shipCompany || '',
+    shipNo: order.shipNo || '',
+    shippedAt: order.shippedAt || null,
   };
 }
 
@@ -3320,6 +3324,48 @@ async function handleApi(req, res, url) {
       return sendJSON(res, 200, { order: publicOrder(order) });
     }
 
+    /* ---------------- 物流发货（后台） ---------------- */
+
+    // 填快递公司 + 运单号；支持单笔 {orderId,company,no} 或批量 {items:[{orderId,company,no}]}
+    if (pathname === '/api/admin/order/ship' && method === 'POST') {
+      const body = await readBody(req);
+      const list = Array.isArray(body.items) && body.items.length
+        ? body.items
+        : [{ orderId: body.orderId, company: body.company, no: body.no }];
+      if (!list.length) return sendJSON(res, 400, { message: '缺少要发货的订单' });
+      const results = [];
+      for (const it of list) {
+        const id = String(it.orderId || '').trim();
+        const order = db.orders.find((o) => o.id === id);
+        if (!order) {
+          results.push({ orderId: id, ok: false, message: '订单不存在' });
+          continue;
+        }
+        if (order.status !== 'paid') {
+          results.push({ orderId: id, ok: false, message: '只有已支付的订单才能发货' });
+          continue;
+        }
+        const company = String(it.company || '').trim().slice(0, 30);
+        const no = String(it.no || '').trim().replace(/\s+/g, '').slice(0, 40);
+        if (!company || !no) {
+          results.push({ orderId: id, ok: false, message: '请填写快递公司和运单号' });
+          continue;
+        }
+        order.shipCompany = company;
+        order.shipNo = no;
+        order.shippedAt = Date.now();
+        try {
+          await persistOrder(order);
+          audit('发货', `订单 ${order.id} · ${company} ${no}`);
+          results.push({ orderId: id, ok: true });
+        } catch (e) {
+          results.push({ orderId: id, ok: false, message: '保存失败：' + e.message });
+        }
+      }
+      const okN = results.filter((r) => r.ok).length;
+      return sendJSON(res, okN ? 200 : 400, { results, ok: okN, fail: results.length - okN });
+    }
+
     /* ---------------- 用户反馈（后台） ---------------- */
 
     if (pathname === '/api/admin/feedback' && method === 'GET') {
@@ -3411,7 +3457,7 @@ async function handleApi(req, res, url) {
         audit('导出用户', `${list.length} 条`);
         return sendCSV(res, `users-${stamp}.csv`, rows);
       }
-      const rows = [['订单号', '商品', '金额(元)', '状态', '用户ID', '手机号', '渠道', '创建时间', '支付时间', '退款时间', '交易号']];
+      const rows = [['订单号', '商品', '金额(元)', '状态', '用户ID', '手机号', '渠道', '创建时间', '支付时间', '退款时间', '交易号', '快递公司', '运单号']];
       const umap = await userMap();
       sortOrdersDesc(db.orders)
         .forEach((o) => {
@@ -3433,6 +3479,8 @@ async function handleApi(req, res, url) {
             o.paidAt ? new Date(o.paidAt).toLocaleString('zh-CN', { hour12: false }) : '',
             o.refundedAt ? new Date(o.refundedAt).toLocaleString('zh-CN', { hour12: false }) : '',
             o.transactionId || '',
+            o.shipCompany || '',
+            o.shipNo || '',
           ]);
         });
       audit('导出订单', `${db.orders.length} 条`);
