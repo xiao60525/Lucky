@@ -2492,3 +2492,33 @@ body.dark .star-btn.on { color: #f7a723; }
 body.dark .review-entry { border-color: #2a2f3c; }
 body.dark .gs-review { border-color: #2a2f3c; }
 body.dark .tag.tag-green { color: #5ee39b; background: rgba(7, 193, 96, 0.16); }
+
+/* ==================================================================
+   20261106b：支付跳转体验加固
+================================================================== */
+
+/* 微信内支付弹层提示条 */
+.pay-tip {
+  margin: 0 0 10px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  background: rgba(247, 167, 35, 0.12);
+  color: #b06e00;
+  font-size: 12.5px;
+  line-height: 1.6;
+}
+
+/* 跳转支付过渡层说明 */
+.redirect-note {
+  margin: 0 0 12px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--line);
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+.redirect-note p { margin: 0; }
+
+body.dark .pay-tip { background: rgba(247, 167, 35, 0.16); color: #f0b355; }
+body.dark .redirect-note { border-color: #2a2f3c; }

@@ -127,7 +127,7 @@ class Alipay {
 
   /**
    * 生成页面支付跳转地址
-   * @param {{outTradeNo:string,totalAmountFen:number,subject:string,body?:string,wap?:boolean,returnUrl?:string,notifyUrl?:string,timeoutExpress?:string}} o
+   * @param {{outTradeNo:string,totalAmountFen:number,subject:string,body?:string,wap?:boolean,returnUrl?:string,notifyUrl?:string,timeoutExpress?:string,quitUrl?:string}} o
    */
   buildPagePayUrl(o) {
     const method = o.wap === false ? 'alipay.trade.page.pay' : 'alipay.trade.wap.pay';
@@ -138,6 +138,11 @@ class Alipay {
       product_code: method === 'alipay.trade.wap.pay' ? 'QUICK_WAP_WAY' : 'FAST_INSTANT_TRADE_PAY',
       timeout_express: o.timeoutExpress || '30m',
     };
+    // 手机网站支付：用户在收银台主动取消时回跳的地址（不配的话停在支付宝页）
+    if (method === 'alipay.trade.wap.pay') {
+      const quit = o.quitUrl || o.returnUrl || this.returnUrl;
+      if (quit) biz.quit_url = quit;
+    }
     if (o.body) biz.body = String(o.body).slice(0, 128);
 
     const params = this.baseParams(method, {

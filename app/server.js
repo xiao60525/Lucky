@@ -2128,6 +2128,16 @@ async function handleApi(req, res, url) {
       checked: false,
       error: e.message,
     }));
+    // 支付宝侧交易已关闭/超时过期：同步把本地单关掉，前端明确提示重新下单
+    const alipayDead =
+      r.tradeStatus === 'TRADE_CLOSED' ||
+      r.error === 'ACQ.TRADE_HAS_EXPIRED' ||
+      r.error === 'ACQ.TRADE_STATUS_ERROR';
+    if (order.status === 'pending' && alipayDead) {
+      order.status = 'closed';
+      order.closedAt = Date.now();
+      await persistOrder(order);
+    }
     return sendJSON(res, 200, {
       order: publicOrder(order),
       paid: order.status === 'paid',
@@ -2160,9 +2170,25 @@ async function handleApi(req, res, url) {
     }
     // 上次可能已经付成功、只是回调没到：先查一次，确认已付就直接回成功，避免重复下单收款
     if (order.status === 'pending') {
-      await syncOrderFromChannel(order).catch(() => {});
+      const syncRes = await syncOrderFromChannel(order).catch(() => null);
       if (order.status === 'paid') {
         return sendJSON(res, 200, { mode: 'already_paid', order: publicOrder(order) });
+      }
+      // 支付宝侧交易已关闭/超时过期：继续用同一单号重提会被支付宝拒绝（用户看到的报错页），
+      // 这里把本地单同步关掉，明确告诉用户重新下单
+      const alipayDead =
+        syncRes &&
+        (syncRes.tradeStatus === 'TRADE_CLOSED' ||
+          syncRes.error === 'ACQ.TRADE_HAS_EXPIRED' ||
+          syncRes.error === 'ACQ.TRADE_STATUS_ERROR');
+      if (alipayDead) {
+        order.status = 'closed';
+        order.closedAt = Date.now();
+        await persistOrder(order);
+        return sendJSON(res, 409, {
+          code: 'order_expired',
+          message: '这笔订单在支付宝侧已超时失效，请重新下单（原订单未扣款）',
+        });
       }
     }
 
@@ -2231,7 +2257,7 @@ async function handleApi(req, res, url) {
       order.channel = null;
       persistOrder(order).catch((err) => console.error('[pay] 回滚订单状态失败:', err.message));
       console.error('[pay] 下单失败:', e.message, e.detail ? JSON.stringify(e.detail) : '');
-      return sendJSON(res, 502, { message: e.message, code: (e.detail && e.detail.code) || null });
+      return sendJSON(res, 502, { message: e.message, code: (e.detail && (e.detail.subCode || e.detail.code)) || null });
     }
   }
 

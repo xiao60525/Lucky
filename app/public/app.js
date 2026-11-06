@@ -3028,11 +3028,9 @@ function channelList() {
     list.push({ id: 'alipay', name: '支付宝', cls: 'alipay', icon: ICON.alipay, extra: '手机网站支付' });
   }
   if (ch.alipayQr) {
-    list.push({ id: 'alipay_qr', name: '支付宝扫码', cls: 'alipay', icon: ICON.alipay, extra: '扫码付' });
+    list.push({ id: 'alipay_qr', name: '支付宝扫码', cls: 'alipay', icon: ICON.alipay, extra: inWechat ? '推荐' : '扫码付' });
   }
-  if (ch.alipay && inWechat) {
-    list.push({ id: 'alipay', name: '支付宝', cls: 'alipay', icon: ICON.alipay, extra: '手机网站支付' });
-  }
+  // 微信内置浏览器禁止跳转支付宝，列出只会让用户点了白屏，直接不放出来
   // 有真实渠道时不再展示「模拟收银台」：服务端 pickChannel 会把它落到真实渠道，容易被误会成沙箱
   const hasReal = ch.wechat || ch.alipay || ch.alipayQr;
   if (!hasReal) {
@@ -3075,17 +3073,25 @@ function rememberChannel(id) {
 function channelItemsHTML(selected) {
   // 充值订单不能用余额支付，过滤掉余额渠道
   const list = channelList().filter((c) => !(sheetState.product && sheetState.product.recharge && c.id === 'balance'));
-  return list
-    .map(
-      (c) => `
+  // 微信内提示：跳转支付宝会被拦截，引导用扫码或浏览器打开
+  const tip =
+    /MicroMessenger/i.test(navigator.userAgent) && (state.channels || {}).alipay
+      ? '<div class="pay-tip">微信内无法直接跳转支付宝：可用「支付宝扫码」付款，或复制本页网址到手机浏览器打开后再选支付宝</div>'
+      : '';
+  return (
+    tip +
+    list
+      .map(
+        (c) => `
         <button class="pay-item ${selected === c.id ? 'selected' : ''}" data-act="channel" data-id="${c.id}">
           <span class="pay-icon ${c.cls}">${c.icon}</span>
           <span class="pay-name">${c.name}</span>
           <span class="pay-extra">${c.id === 'balance' && state.balance < (sheetState.product ? sheetState.product.amount : 0) ? '余额不足' : c.extra}</span>
           <span class="radio"></span>
         </button>`
-    )
-    .join('');
+      )
+      .join('')
+  );
 }
 
 function confirmSheet() {
@@ -3137,6 +3143,54 @@ function invokeWechatPay(payParams) {
     }
   });
 }
+
+/** 跳转支付弹层：自动跳支付宝；被拦截时手动点按钮继续；付款回来自动查单 */
+function redirectSheet(order, payUrl, channel) {
+  sheetState.type = 'redirect';
+  sheetState.order = order;
+  const name = /^alipay/i.test(String(channel || order.channel || '')) ? '支付宝' : '收银台';
+  openSheet(`
+    <h3>正在跳转${name}付款…</h3>
+    <p class="sheet-sub">${esc(order.title)} · ${yuan(order.amount)}</p>
+    <div class="redirect-note">
+      <p>如果没有自动跳转（部分浏览器会拦截站外跳转），点下面按钮继续付款。</p>
+      <p>付款完成回到本页时，会自动帮你确认支付结果。</p>
+    </div>
+    <a class="btn-primary" href="${esc(payUrl)}">继续付款（手动跳转）</a>
+    <button class="btn-ghost" data-act="check-order" data-id="${esc(order.id)}" style="margin-top:10px">我已完成支付，查询结果</button>
+    <button class="btn-ghost" data-act="close" style="margin-top:10px">暂不支付</button>
+  `);
+  setTimeout(() => {
+    location.href = withShare(payUrl);
+  }, 250);
+}
+
+/** 从支付宝回来自动确认：仅在跳转支付过渡层打开时生效 */
+async function syncRedirectOrder() {
+  const order = sheetState.order;
+  if (sheetState.type !== 'redirect' || !order || order.status === 'paid') return;
+  try {
+    const res = await api(`/api/orders/${order.id}/sync`, { method: 'POST' });
+    if (res.order && res.order.status === 'paid') {
+      upsertOrder(res.order);
+      closeSheet();
+      showSuccess(res.order);
+      render();
+    } else if (res.order && res.order.status === 'closed') {
+      upsertOrder(res.order);
+      closeSheet();
+      toast('这笔订单已超时失效，请重新下单');
+      render();
+    }
+  } catch (e) {
+    /* 静默：用户可手动点「查询结果」 */
+  }
+}
+
+// 从支付宝付款切回浏览器时自动确认一次支付结果
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') syncRedirectOrder();
+});
 
 /** 扫码支付弹层：展示二维码并轮询订单状态 */
 function qrSheet(order, qrUrl, channel) {
@@ -3207,7 +3261,7 @@ async function applyPayResult(res) {
 
   if (res.mode === 'redirect' || res.mode === 'h5') {
     upsertOrder(res.order);
-    location.href = withShare(res.payUrl); // 跳收银台 / 微信 H5 收银台，回来后轮询状态
+    redirectSheet(res.order, res.payUrl, res.channel); // 先弹过渡层再跳：万一被浏览器拦截，用户还有手动入口
     return;
   }
 
@@ -4475,6 +4529,11 @@ sheetEl.addEventListener('click', async (e) => {
       if (order && order.status === 'paid') {
         upsertOrder(order);
         showSuccess(order);
+        render();
+      } else if (order && order.status === 'closed') {
+        upsertOrder(order);
+        closeSheet();
+        toast('这笔订单已超时失效（未扣款），请重新下单');
         render();
       } else {
         el.disabled = false;
