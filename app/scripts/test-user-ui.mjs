@@ -903,6 +903,10 @@ if (wishEntry) {
   await wait(50);
 }
 
+// 10.7c 商品大图预览层
+const viewerEl = window.document.getElementById('imgViewer');
+check('页面包含大图预览层（默认隐藏）', Boolean(viewerEl) && viewerEl.hidden === true);
+
 // 足迹：看两个商品后首页出现「最近看过」
 tabTo('home');
 await wait(60);
@@ -1009,6 +1013,21 @@ if (msgEntry) {
   await goMine();
   await wait(60);
   check('看过消息后未读清零', !$('.dot-num'));
+}
+
+// 10.7b 我的页：订单状态快捷入口
+const quickCells = [...window.document.querySelectorAll('.order-quick .quick-cell')];
+check('我的页有订单状态快捷入口', quickCells.length === 4, quickCells.map((c) => c.textContent.trim()).join(' / '));
+check(
+  '快捷入口覆盖待付款/待发货/待收货/待评价',
+  ['待付款', '待发货', '待收货', '待评价'].every((t) => quickCells.some((c) => c.textContent.includes(t)))
+);
+if (quickCells.length) {
+  quickCells[0].dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(80);
+  check('点快捷入口打开订单列表并带筛选', text('.sheet h3') === '我的订单' && Boolean($('.sheet .mchip.on')), text('.sheet .mchip.on'));
+  closeSheetForTest();
+  await wait(50);
 }
 
 // 10.8 购物车：详情加购 → 改数量 → 多件合并结算

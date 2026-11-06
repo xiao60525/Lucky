@@ -1,7 +1,7 @@
 /* Service Worker：iOS/Android 桌面应用壳缓存 + 离线兜底 + manifest 修补 */
 'use strict';
 
-const SHELL_CACHE = 'app-shell-v30';
+const SHELL_CACHE = 'app-shell-v31';
 
 /** 注册时透传的 sharecode（预览网关会把 query 里的 sharecode 剥掉，服务端看不到，只能在这里补） */
 const SHARE = (() => {
@@ -18,7 +18,7 @@ self.addEventListener('install', (event) => {
       const cache = await caches.open(SHELL_CACHE);
       // 逐个缓存：预览网关可能拦掉个别资源，单个失败不能拖垮安装
       await Promise.all(
-        ['/', '/index.html', '/styles.css?v=20261106b', '/app.js?v=20261106b'].map(async (u) => {
+        ['/', '/index.html', '/styles.css?v=20261106c', '/app.js?v=20261106c'].map(async (u) => {
           try {
             const r = await fetch(u, { credentials: 'same-origin' });
             if (r.ok) await cache.put(u, r);

@@ -827,6 +827,11 @@ function goodsCardHTML(p) {
               : `<span class="goods-emoji">${GOODS_ICONS[idx % GOODS_ICONS.length]}</span>`
           }
           <span class="goods-name">${esc(p.title)}</span>
+          ${
+            Number(p.reviewCount) > 0
+              ? `<span class="goods-rate">⭐ ${Number(p.rating || 0).toFixed(1)}<i>${p.reviewCount} 条评价</i></span>`
+              : ''
+          }
           ${p.desc ? `<span class="goods-desc">${esc(p.desc)}</span>` : ''}
           <span class="goods-foot">
             <b>${yuan(memberPriceOf(p))}</b>
@@ -1539,6 +1544,15 @@ function stopCountdownTick() {
 const ORDER_FILTERS = {
   all: { label: '全部', match: () => true },
   unpaid: { label: '待支付', match: (o) => isUnpaid(o) },
+  ship: {
+    label: '待发货',
+    match: (o) => o.status === 'paid' && !o.shipNo && (refundOfOrder(o.id) || {}).status !== 'pending',
+  },
+  recv: { label: '待收货', match: (o) => o.status === 'paid' && Boolean(o.shipNo) && !o.receivedAt },
+  review: {
+    label: '待评价',
+    match: (o) => o.status === 'paid' && Boolean(o.receivedAt) && !myReviewFor(o.id, o.productId),
+  },
   paid: { label: '已支付', match: (o) => o.status === 'paid' && (refundOfOrder(o.id) || {}).status !== 'pending' },
   refunding: { label: '售后中', match: (o) => (refundOfOrder(o.id) || {}).status === 'pending' },
   refunded: { label: '已退款', match: (o) => o.status === 'refunded' },
@@ -2352,6 +2366,22 @@ function renderUserCenter() {
       <button class="mini-btn" data-act="open-orders">全部订单${orders.length ? ' ' + orders.length : ''} ›</button>
     </div>
 
+    <div class="card order-quick">
+      ${[
+        ['unpaid', '待付款'],
+        ['ship', '待发货'],
+        ['recv', '待收货'],
+        ['review', '待评价'],
+      ]
+        .map(([k, label]) => {
+          const n = orders.filter(ORDER_FILTERS[k].match).length;
+          return `<button class="quick-cell${n ? ' is-on' : ''}" data-act="quick-orders" data-f="${k}">
+            <b>${n}</b><span>${label}</span>
+          </button>`;
+        })
+        .join('')}
+    </div>
+
     <div class="section-head"><h2>我的服务</h2></div>
     <div class="card set-list">
       <button class="set-row" data-act="go-tab" data-tab="cart">
@@ -2974,6 +3004,10 @@ function skeletonHTML() {
     </div>`;
 }
 
+// 各 tab 的滚动位置：切走再切回来时还原，避免总是跳回顶部
+const tabScroll = { home: 0, content: 0, cart: 0, mine: 0 };
+let pendingScroll = null;
+
 function render() {
   // 「我的」页与首页共用同一份订单：付款成功、刷新后立刻同步，避免刚付完看不到新订单
   if (state.viewer) state.viewer.orders = state.orders;
@@ -2996,7 +3030,11 @@ function render() {
           : renderMine();
   if (state.tab === 'home') refreshGoodsBox(); // 统一走一遍：空结果空态、emoji 对齐、计数
   if (view.querySelector('.order-count')) startCountdownTick(); // 有待支付倒计时才开始计时
+  // 切 tab 回来恢复滚动位置；其他重绘照旧回到顶部
+  const restore = pendingScroll;
+  pendingScroll = null;
   view.scrollTop = 0;
+  if (restore) requestAnimationFrame(() => { view.scrollTop = restore; });
 }
 
 /* ---------------- 支付流程 ---------------- */
@@ -3850,12 +3888,42 @@ async function openOrderById(id) {
 
 document.querySelectorAll('.tab').forEach((t) => {
   t.addEventListener('click', () => {
-    state.tab = t.dataset.tab;
+    const next = t.dataset.tab;
+    // 再点当前 tab：回到顶部并刷新一次（未读角标、订单状态等要跟着变）
+    if (next === state.tab) {
+      pendingScroll = 0;
+      render();
+      return;
+    }
+    tabScroll[state.tab] = view.scrollTop || 0;
+    state.tab = next;
+    pendingScroll = tabScroll[next] || 0;
     render();
   });
 });
 
 maskEl.addEventListener('click', closeSheet);
+
+/* 商品详情大图：点图放大查看，点任意处关闭 */
+const imgViewer = document.getElementById('imgViewer');
+if (imgViewer) {
+  document.addEventListener(
+    'click',
+    (e) => {
+      const img = e.target && e.target.closest ? e.target.closest('.gs-hero img') : null;
+      if (!img || !img.src) return;
+      e.preventDefault();
+      e.stopPropagation();
+      const pic = document.getElementById('imgViewerPic');
+      if (pic) pic.src = img.src;
+      imgViewer.hidden = false;
+    },
+    true
+  );
+  imgViewer.addEventListener('click', () => {
+    imgViewer.hidden = true;
+  });
+}
 
 // 兜底：异步处理里抛异常时给一句可见提示，避免用户点了却「没反应」
 window.addEventListener('unhandledrejection', (e) => {
@@ -4172,6 +4240,12 @@ view.addEventListener('click', async (e) => {
   if (act === 'reorder') return reorder(el.dataset.id);
 
   if (act === 'open-orders') return ordersSheet();
+
+  if (act === 'quick-orders') {
+    // 「我的」页订单状态快捷入口：直接带筛选打开订单列表
+    mineOrderFilter = el.dataset.f || 'all';
+    return ordersSheet();
+  }
 
   if (act === 'order') {
     // 列表里点「支付中 / 待支付」的订单，直接跳到支付界面；其余看详情
@@ -4689,6 +4763,12 @@ async function bootstrap() {
   state.orders = data.orders;
   await loadViewer();
   if (state.viewer) state.viewer.orders = state.orders;
+  // 我的评价（「待评价」计数要用）：不阻塞首屏，回来补一次渲染
+  if (state.viewer) {
+    refreshMyReviews().then(() => {
+      if (state.tab === 'mine') render();
+    });
+  }
   state.provider = data.provider;
   state.payScene = data.payScene || 'native';
   state.wechatReady = !!data.wechatReady;
