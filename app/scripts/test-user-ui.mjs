@@ -56,6 +56,17 @@ const VIEWER = {
     },
     // 40 分钟前创建、一直没支付：超过 30 分钟，服务端已删除，前端也不该再展示
     { id: 'O3', title: '超时未支付订单', amount: 500, status: 'created', createdAt: Date.now() - 40 * 60 * 1000 },
+    // 待支付：用于验证列表/详情里的「取消订单」
+    {
+      id: 'OCAN1',
+      productId: 'demo_001',
+      title: '待取消订单',
+      amount: 300,
+      status: 'created',
+      channel: 'alipay',
+      channelName: '支付宝',
+      createdAt: Date.now() - 120000,
+    },
   ],
 };
 
@@ -227,6 +238,12 @@ function fakeFetch(url, opts = {}) {
     const paid = { ...o, status: 'paid', channel: 'balance', channelName: '余额支付', paidAt: Date.now() };
     VIEWER.orders = VIEWER.orders.map((x) => (x.id === 'OCART1' ? paid : x));
     return json({ mode: 'balance', balance: 5000, order: paid });
+  }
+  if (path === '/api/orders/OCAN1/cancel' && method === 'POST') {
+    const o = VIEWER.orders.find((x) => x.id === 'OCAN1');
+    const closed = { ...o, status: 'closed', closedAt: Date.now() };
+    VIEWER.orders = VIEWER.orders.map((x) => (x.id === 'OCAN1' ? closed : x));
+    return json({ order: closed, paid: false });
   }
   if (path === '/api/orders' && method === 'POST' && body && body.recharge)
     return json({ order: { id: 'OR1', title: '余额充值 ¥30.00', amount: body.recharge, status: 'created', createdAt: Date.now() } }, 201);
@@ -483,7 +500,7 @@ check(
   '底部「我的」有待支付角标',
   (() => {
     const b = window.document.querySelector('.tab[data-tab="mine"] .tab-badge');
-    return Boolean(b) && b.textContent === '1';
+    return Boolean(b) && b.textContent === '2';
   })(),
   (window.document.querySelector('.tab[data-tab="mine"] .tab-badge') || {}).textContent || '无'
 );
@@ -535,12 +552,32 @@ await wait(60);
 check('订单入口存在且页面不直接铺订单', Boolean($('[data-act="open-orders"]')) && window.document.querySelectorAll('.order-row').length === 0);
 $('[data-act="open-orders"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(40);
-check('订单列表', window.document.querySelectorAll('.sheet .order-row').length === 3, text('.sheet .order-title'));
+check('订单列表', window.document.querySelectorAll('.sheet .order-row').length === 4, text('.sheet .order-title'));
 check(
   '超时未支付订单不展示',
   ![...window.document.querySelectorAll('.sheet .order-row')].some((r) => r.dataset.id === 'O3'),
   [...window.document.querySelectorAll('.sheet .order-row')].map((r) => r.dataset.id).join(',')
 );
+
+// 未支付订单：列表上有「取消订单」，点了就关单
+const o4row = [...window.document.querySelectorAll('.sheet .order-row')].find((r) => r.dataset.id === 'OCAN1');
+const o4cancel = o4row && o4row.querySelector('[data-act="cancel-order"]');
+check('未支付订单列表有「取消订单」', Boolean(o4cancel) && o4cancel.textContent.includes('取消订单'), o4cancel ? o4cancel.textContent.trim() : '未找到');
+if (o4cancel) {
+  o4cancel.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(140);
+  check('取消订单发出请求', calls.some((c) => c.path === '/api/orders/OCAN1/cancel' && c.method === 'POST'));
+  const rowAfter = [...window.document.querySelectorAll('.sheet .order-row')].find((r) => r.dataset.id === 'OCAN1');
+  check(
+    '取消后状态变已关闭且不再显示取消键',
+    Boolean(rowAfter) && rowAfter.textContent.includes('已关闭') && !rowAfter.querySelector('[data-act="cancel-order"]'),
+    rowAfter ? rowAfter.textContent.replace(/\s+/g, ' ').trim() : '未找到'
+  );
+  // 已关闭订单还能「再来一单」
+  check('已关闭订单有「再来一单」', Boolean(rowAfter) && rowAfter.textContent.includes('再来一单'));
+  $('.sheet .sheet-close, .sheet [data-act="close"]')?.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+  await wait(40);
+}
 check(
   '待支付订单显示剩余时间倒计时',
   Boolean($('.sheet .order-count')) && /剩余 \d+:\d{2}/.test(text('.sheet .order-count')),

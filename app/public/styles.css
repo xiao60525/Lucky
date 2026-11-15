@@ -624,6 +624,11 @@ body.dark .pw-main i { color: #b9a173; }
   color: #f05252;
   padding: 2px 0;
 }
+/* 未支付订单：列表里直接给「取消订单」入口 */
+.order-cta.is-cancel {
+  color: #f05252;
+  padding: 2px 0;
+}
 /* 弹层里的橙色提示条 */
 .keep-note {
   font-size: 12.5px;

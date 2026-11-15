@@ -2360,6 +2360,40 @@ async function handleApi(req, res, url) {
     return sendJSON(res, 200, { order: publicOrder(order) });
   }
 
+  // 取消未支付订单（用户主动放弃）：只允许未支付状态，顺带关掉渠道侧交易
+  const cancelMatch = pathname.match(/^\/api\/orders\/([^/]+)\/cancel$/);
+  if (cancelMatch && method === 'POST') {
+    const order = db.orders.find((o) => o.id === cancelMatch[1]);
+    if (!order) return sendJSON(res, 404, { message: '订单不存在' });
+    if (order.userId && currentUserId(req) !== order.userId && !checkAdmin(req)) {
+      return sendJSON(res, 403, { message: '无权操作该订单' });
+    }
+    if (order.status !== 'created' && order.status !== 'pending') {
+      return sendJSON(res, 409, {
+        message: order.status === 'paid' ? '订单已支付，如需退款请申请售后' : '订单当前状态不能取消',
+      });
+    }
+    // 支付中的单先向渠道确认一次：万一刚好付成功，不能误关
+    if (order.status === 'pending') {
+      await syncOrderFromChannel(order, { force: true }).catch(() => null);
+      if (order.status === 'paid') return sendJSON(res, 200, { order: publicOrder(order), paid: true });
+    }
+    order.status = 'closed';
+    order.closedAt = Date.now();
+    await persistOrder(order);
+    // 尽力关掉渠道侧交易，失败不影响本地已取消
+    if (order.channel && order.channel !== 'mock') {
+      try {
+        const p = getProvider(order.channel);
+        if (p && p.closePayment) p.closePayment(order).catch((e) => console.warn('[cancel] 关闭渠道订单失败:', e.message));
+      } catch (e) {
+        console.warn('[cancel] 渠道不可用:', e.message);
+      }
+    }
+    console.log(`[cancel] 用户取消订单 ${order.id}`);
+    return sendJSON(res, 200, { order: publicOrder(order), paid: false });
+  }
+
   // 主动同步订单状态（「我已完成支付」按钮走这里）：强制查单，不受节流限制
   const syncMatch = pathname.match(/^\/api\/orders\/([^/]+)\/sync$/);
   if (syncMatch && method === 'POST') {

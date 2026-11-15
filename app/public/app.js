@@ -1526,6 +1526,10 @@ function mineOrderRow(o) {
       : '';
   // 没付完的订单给一个明确入口，点整行就直接进支付界面
   const cta = isUnpaid(o) ? `<span class="order-cta">继续支付 ›</span>` : '';
+  // 未支付订单：列表上直接给「取消订单」，不用先进详情
+  const cancelCta = isUnpaid(o)
+    ? `<span class="order-cta is-cancel" data-act="cancel-order" data-id="${esc(o.id)}">取消订单</span>`
+    : '';
   // 已支付且没有审核中的申请：列表上直接给「申请退款」，不用先进详情
   const refundCta =
     o.status === 'paid' && !(rf && rf.status === 'pending')
@@ -1554,6 +1558,7 @@ function mineOrderRow(o) {
         <span class="status ${esc(o.status)}">${STATUS_TEXT[o.status] || o.status}</span>
         ${countdown}
         ${cta}
+        ${cancelCta}
         ${refundCta}
         ${reorderCta}
       </span>
@@ -3507,6 +3512,38 @@ function upsertOrder(order) {
   if (state.viewer) state.viewer.orders = state.orders;
 }
 
+/** 取消未支付订单：详情弹层与列表行共用（服务端会顺带关掉渠道侧交易） */
+async function cancelOrderFlow(el) {
+  const id = (el && el.dataset && el.dataset.id) || (sheetState.order && sheetState.order.id);
+  const order = findOrder(id);
+  if (!order) return toast('订单不存在');
+  if (!isUnpaid(order)) return toast('这笔订单已不能取消');
+  if (!window.confirm('确定取消这笔未支付订单吗？取消后需要重新下单。')) return;
+  const label = el ? el.textContent : '';
+  if (el) {
+    el.dataset.busy = '1';
+    if ('disabled' in el) el.disabled = true;
+    el.textContent = '正在取消…';
+  }
+  try {
+    const res = await api(`/api/orders/${id}/cancel`, { method: 'POST' });
+    const wasDetail = sheetState.type === 'order';
+    upsertOrder(res.order);
+    render();
+    // 详情弹层：取消后直接收起；订单列表弹层：原地刷新列表，让状态立刻变「已关闭」
+    if (wasDetail) closeSheet();
+    else if (document.getElementById('ordersBox')) ordersSheet();
+    toast(res.paid ? '这笔订单刚刚已支付成功，无需取消' : '订单已取消');
+  } catch (err) {
+    if (el) {
+      delete el.dataset.busy;
+      if ('disabled' in el) el.disabled = false;
+      el.textContent = label;
+    }
+    toast(err.message);
+  }
+}
+
 /** 把服务端返回的支付模式落到界面：余额 / 跳转 / 微信内调起 / 扫码 / 已付过 */
 async function applyPayResult(res) {
   if (res.mode === 'already_paid') {
@@ -3655,6 +3692,7 @@ function orderSheet(order) {
           ? `<button class="btn-ghost" data-act="check-order" data-id="${order.id}" style="margin-top:10px">我已完成支付，查询结果</button>`
           : ''
       }
+      <button class="btn-ghost" data-act="cancel-order" data-id="${order.id}" style="margin-top:10px;color:#f05252">取消订单</button>
       <button class="btn-ghost" data-act="close" style="margin-top:10px">关闭</button>`;
   } else if (order.status === 'paid') {
     const rf = refundOfOrder(order.id);
@@ -4494,6 +4532,7 @@ view.addEventListener('click', async (e) => {
   if (act === 'open-footprint') return footprintSheet();
   if (act === 'open-messages') return messagesSheet();
   if (act === 'reorder') return reorder(el.dataset.id);
+  if (act === 'cancel-order') return cancelOrderFlow(el);
 
   if (act === 'open-orders') return ordersSheet();
 
@@ -4835,6 +4874,10 @@ sheetEl.addEventListener('click', async (e) => {
   if (act === 'order-detail') {
     await openOrderById(el.dataset.id || (sheetState.order && sheetState.order.id));
     return;
+  }
+
+  if (act === 'cancel-order') {
+    return cancelOrderFlow(el);
   }
 
   if (act === 'pay-order') {
