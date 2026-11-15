@@ -381,13 +381,90 @@ try {
     body: JSON.stringify({ toUserId: meB.id, amountFen: 150, note: 'aa 午饭' }),
   });
   d = await j(r);
-  ok('转账成功', r.status === 200 && d.message && d.message.kind === 'transfer', `${r.status} ${d.message && d.message.kind}`);
+  const tid1 = (d.transfer || {}).id || '';
+  const msg1 = (d.message || {}).payload || {};
+  ok('发起转账成功', r.status === 200 && d.message && d.message.kind === 'transfer' && Boolean(tid1), `${r.status} ${d.message && d.message.kind}`);
+  ok('转账卡片是待领取', msg1.status === 'pending', String(msg1.status));
 
   const balA1 = (await j(await fetch(`${BASE}/api/auth/me`, { headers: H(tokenA) }))).viewer.balance;
   const balB1 = (await j(await fetch(`${BASE}/api/auth/me`, { headers: H(tokenB) }))).viewer.balance;
-  ok('A 余额扣减', balA1 === balA0 - 150, `${balA0} -> ${balA1}`);
-  ok('B 余额入账', balB1 === balB0 + 150, `${balB0} -> ${balB1}`);
+  ok('A 发起即扣款', balA1 === balA0 - 150, `${balA0} -> ${balA1}`);
+  ok('B 未领取前不到账', balB1 === balB0, `${balB0} -> ${balB1}`);
 
+  const pendB = await j(await fetch(`${BASE}/api/dm/transfer/pending`, { headers: H(tokenB) }));
+  ok('B 有 1 笔待收款', pendB.incomingCount === 1 && pendB.incomingAmount === 150, `${pendB.incomingCount} 笔 / ${pendB.incomingAmount}`);
+  ok('待收款带对方昵称', Boolean(((pendB.incoming || [])[0] || {}).nickname), String(((pendB.incoming || [])[0] || {}).nickname));
+  const unreadB0 = await j(await fetch(`${BASE}/api/dm/unread`, { headers: H(tokenB) }));
+  ok('未读接口带待收款笔数', unreadB0.transferIn === 1, String(unreadB0.transferIn));
+
+  r = await fetch(`${BASE}/api/dm/transfer/act`, {
+    method: 'POST',
+    headers: H(tokenA),
+    body: JSON.stringify({ transferId: tid1, action: 'accept' }),
+  });
+  ok('付款方不能替对方收款', r.status === 403, String(r.status));
+
+  r = await fetch(`${BASE}/api/dm/transfer/act`, {
+    method: 'POST',
+    headers: H(tokenB),
+    body: JSON.stringify({ transferId: tid1, action: 'accept' }),
+  });
+  d = await j(r);
+  ok('B 点收款成功', r.status === 200 && d.status === 'accepted', `${r.status} ${d.status}`);
+  const balB2 = (await j(await fetch(`${BASE}/api/auth/me`, { headers: H(tokenB) }))).viewer.balance;
+  ok('收款后 B 才入账', balB2 === balB0 + 150, `${balB0} -> ${balB2}`);
+
+  r = await fetch(`${BASE}/api/dm/transfer/act`, {
+    method: 'POST',
+    headers: H(tokenB),
+    body: JSON.stringify({ transferId: tid1, action: 'accept' }),
+  });
+  ok('重复收款被拒', r.status === 409, String(r.status));
+
+  const thA1 = await j(await fetch(`${BASE}/api/dm/thread?userId=${meB.id}`, { headers: H(tokenA) }));
+  const patch1 = (thA1.transfers || []).find((x) => x.id === (d.messageId || '')) || {};
+  ok('会话回传转账最新状态', String((patch1.payload || {}).status) === 'accepted', String((patch1.payload || {}).status));
+
+  // 退还：收款方拒收，钱原路退回
+  r = await fetch(`${BASE}/api/dm/transfer`, {
+    method: 'POST',
+    headers: H(tokenA),
+    body: JSON.stringify({ toUserId: meB.id, amountFen: 100, note: '退还测试' }),
+  });
+  d = await j(r);
+  const tid2 = (d.transfer || {}).id || '';
+  const balA2 = (await j(await fetch(`${BASE}/api/auth/me`, { headers: H(tokenA) }))).viewer.balance;
+  r = await fetch(`${BASE}/api/dm/transfer/act`, {
+    method: 'POST',
+    headers: H(tokenB),
+    body: JSON.stringify({ transferId: tid2, action: 'reject' }),
+  });
+  d = await j(r);
+  ok('对方可退还转账', r.status === 200 && d.status === 'rejected', `${r.status} ${d.status}`);
+  const balA3 = (await j(await fetch(`${BASE}/api/auth/me`, { headers: H(tokenA) }))).viewer.balance;
+  ok('退还后金额回到付款方', balA3 === balA2 + 100 && balA3 === balA1, `${balA2} -> ${balA3}`);
+
+  // 撤销：付款方在对方领取前自己撤回
+  r = await fetch(`${BASE}/api/dm/transfer`, {
+    method: 'POST',
+    headers: H(tokenA),
+    body: JSON.stringify({ toUserId: meB.id, amountFen: 100, note: '撤销测试' }),
+  });
+  d = await j(r);
+  const tid3 = (d.transfer || {}).id || '';
+  r = await fetch(`${BASE}/api/dm/transfer/act`, {
+    method: 'POST',
+    headers: H(tokenA),
+    body: JSON.stringify({ transferId: tid3, action: 'cancel' }),
+  });
+  d = await j(r);
+  ok('付款方可撤销待领取转账', r.status === 200 && d.status === 'canceled', `${r.status} ${d.status}`);
+  const balA4 = (await j(await fetch(`${BASE}/api/auth/me`, { headers: H(tokenA) }))).viewer.balance;
+  ok('撤销后金额退回', balA4 === balA3, `${balA3} -> ${balA4}`);
+  const pendB1 = await j(await fetch(`${BASE}/api/dm/transfer/pending`, { headers: H(tokenB) }));
+  ok('处理完的转账不再待收款', pendB1.incomingCount === 0, String(pendB1.incomingCount));
+
+  const balNow = (await j(await fetch(`${BASE}/api/auth/me`, { headers: H(tokenA) }))).viewer.balance;
   r = await fetch(`${BASE}/api/dm/transfer`, {
     method: 'POST',
     headers: H(tokenA),
@@ -398,7 +475,7 @@ try {
   r = await fetch(`${BASE}/api/dm/transfer`, {
     method: 'POST',
     headers: H(tokenA),
-    body: JSON.stringify({ toUserId: meB.id, amountFen: balA1 + 1000 }),
+    body: JSON.stringify({ toUserId: meB.id, amountFen: balNow + 1000 }),
   });
   ok('余额不足被拒', r.status === 400, String(r.status));
 

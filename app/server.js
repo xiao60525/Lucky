@@ -2926,6 +2926,10 @@ async function handleApi(req, res, url) {
     if (m.includes('bad_amount')) return sendJSON(res, 400, { message: '转账金额不正确' });
     if (m.includes('amount_too_large')) return sendJSON(res, 400, { message: '单笔转账最多 ¥5000' });
     if (m.includes('insufficient_balance')) return sendJSON(res, 400, { message: '余额不足，先充值再来转账' });
+    if (m.includes('transfer_missing')) return sendJSON(res, 404, { message: '这笔转账不存在' });
+    if (m.includes('transfer_closed')) return sendJSON(res, 409, { message: '这笔转账已经处理过了' });
+    if (m.includes('not_allowed')) return sendJSON(res, 403, { message: '你没有权限处理这笔转账' });
+    if (m.includes('bad_action')) return sendJSON(res, 400, { message: '不支持的操作' });
     return sendJSON(res, 502, { message: fallback + '：' + m });
   };
 
@@ -3078,7 +3082,7 @@ async function handleApi(req, res, url) {
     }
   }
 
-  // 好友间转账（站内余额）
+  // 好友间转账（站内余额）：只扣款冻结，等对方点「收款」才入账
   if (pathname === '/api/dm/transfer' && method === 'POST') {
     const uid = currentUserId(req);
     if (!uid) return sendJSON(res, 401, { message: '请先登录' });
@@ -3093,6 +3097,33 @@ async function handleApi(req, res, url) {
       return sendJSON(res, 200, out);
     } catch (e) {
       return friendFail(res, e, '转账失败');
+    }
+  }
+
+  // 收款 / 退还 / 撤销（对方领取后才真正到账）
+  if (pathname === '/api/dm/transfer/act' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    const body = await readBody(req);
+    const tid = String(body.transferId || body.tid || '').trim();
+    const action = String(body.action || '').trim().toLowerCase();
+    if (!tid) return sendJSON(res, 400, { message: '缺少转账单号' });
+    if (!['accept', 'reject', 'cancel'].includes(action)) return sendJSON(res, 400, { message: '不支持的操作' });
+    try {
+      return sendJSON(res, 200, await store.dmTransferAct(uid, tid, action));
+    } catch (e) {
+      return friendFail(res, e, '处理转账失败');
+    }
+  }
+
+  // 我的待收款 / 我发出的待领取
+  if (pathname === '/api/dm/transfer/pending' && method === 'GET') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 200, { incoming: [], outgoing: [], incomingCount: 0, incomingAmount: 0 });
+    try {
+      return sendJSON(res, 200, await store.dmTransferPending(uid));
+    } catch (e) {
+      return sendJSON(res, 200, { incoming: [], outgoing: [], incomingCount: 0, incomingAmount: 0 });
     }
   }
 
@@ -3113,11 +3144,11 @@ async function handleApi(req, res, url) {
   // 私聊未读（首页/我的页红点用）
   if (pathname === '/api/dm/unread' && method === 'GET') {
     const uid = currentUserId(req);
-    if (!uid) return sendJSON(res, 200, { unread: 0, pending: 0 });
+    if (!uid) return sendJSON(res, 200, { unread: 0, pending: 0, transferIn: 0 });
     try {
       return sendJSON(res, 200, await store.dmUnread(uid));
     } catch (e) {
-      return sendJSON(res, 200, { unread: 0, pending: 0 });
+      return sendJSON(res, 200, { unread: 0, pending: 0, transferIn: 0 });
     }
   }
 

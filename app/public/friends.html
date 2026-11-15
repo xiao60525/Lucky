@@ -191,6 +191,46 @@
     margin-top:8px; padding-top:6px; font-size:10.5px; opacity:.88;
     border-top:1px solid rgba(255,255,255,.3);
   }
+  .tcard.is-done { background:linear-gradient(135deg,#b9bfd0,#a4abbd); }
+  .tcard.is-ok { background:linear-gradient(135deg,#3ec98b,#1fae7a); }
+  .tcard-acts { display:flex; gap:8px; margin-top:10px; }
+  .tcard-btn {
+    flex:1; height:32px; border-radius:10px; font-size:13px; font-weight:600;
+    background:#fff; color:#e2651b;
+  }
+  .tcard-btn.ghost { background:rgba(255,255,255,.22); color:#fff; }
+  .tcard-btn:disabled { opacity:.6; }
+  .tcard-btn:active { transform:scale(.97); }
+
+  /* 待收款提示条 */
+  .tf-strip {
+    display:flex; align-items:center; gap:10px; margin:10px 12px 4px; padding:12px 13px;
+    border-radius:15px; text-align:left; width:calc(100% - 24px);
+    background:linear-gradient(135deg,#fff4e6,#ffece0); border:1px solid #ffd9b8;
+  }
+  .tf-strip .tf-ic { font-size:20px; }
+  .tf-strip .tf-txt { flex:1; min-width:0; }
+  .tf-strip .tf-txt b { display:block; font-size:13.5px; font-weight:650; color:#a8500f; }
+  .tf-strip .tf-txt i { font-style:normal; font-size:11.5px; color:#b57a44; }
+  .tf-strip .tf-go { font-size:12.5px; font-weight:600; color:#e2651b; }
+  .tf-strip:active { transform:scale(.99); }
+
+  /* 待收款弹层 */
+  .tf-list { overflow-y:auto; max-height:60vh; }
+  .tf-item { display:flex; align-items:center; gap:10px; padding:11px 2px; border-bottom:1px solid var(--line); }
+  .tf-item:last-child { border-bottom:0; }
+  .tf-item .ava { width:40px; height:40px; font-size:15px; }
+  .tf-info { flex:1; min-width:0; }
+  .tf-info b { display:block; font-size:14px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tf-info i { font-style:normal; font-size:11.5px; color:var(--muted); }
+  .tf-amt { flex:none; font-size:15px; font-weight:700; color:#e2651b; }
+  .tf-btns { flex:none; display:flex; gap:6px; }
+  .tf-btns button {
+    height:30px; padding:0 11px; border-radius:10px; font-size:12.5px; font-weight:600;
+    border:1px solid var(--line); color:var(--text);
+  }
+  .tf-btns button.primary { border-color:transparent; color:#fff; background:linear-gradient(135deg,#ff9f43,#ff7043); }
+  .tf-btns button:disabled { opacity:.55; }
 
   .composer {
     flex:none; display:flex; align-items:flex-end; gap:8px; padding:10px 12px;
@@ -457,7 +497,13 @@
     </div>
     <input class="note-input" id="tNote" maxlength="60" placeholder="转账说明（选填）" />
     <button class="btn-primary-lg" id="tSubmit">确认转账</button>
-    <div class="hint">用站内余额转给对方，实时到账；余额可从首页充值。单笔最多 ¥5000。</div>
+    <div class="hint">发起后先从你的余额扣款，对方点「收款」才真正到账；对方 24 小时不领会自动退回，中途你也可以撤销。</div>
+  </div>
+
+  <!-- 待收款 -->
+  <div class="sheet" id="tfSheet">
+    <h3>待收款<button data-close="tfSheet">关闭</button></h3>
+    <div class="tf-list" id="tfBody"><div class="hint" style="padding:14px 2px">加载中…</div></div>
   </div>
 
   <!-- 大图 -->
@@ -499,12 +545,15 @@
     balance: 0,
     products: null,
     loadingOlder: false,
+    tf: { incoming: [], outgoing: [], incomingCount: 0, incomingAmount: 0 },
+    tfSig: '',
   };
 
   var params = new URLSearchParams(location.search);
   var sharecode = params.get('sharecode') || '';
   var shareQs = sharecode ? 'sharecode=' + encodeURIComponent(sharecode) : '';
   var pendingShare = params.get('share') || '';
+  var wantTf = params.get('tf') === '1';
 
   /* ---------- 基础 ---------- */
   function esc(s) {
@@ -659,15 +708,16 @@
     if (state.tab === 'req') return renderRequests();
 
     if (!state.friends.length) {
-      listEl.innerHTML = '<div class="empty"><div class="big">👋</div>' +
+      listEl.innerHTML = tfStripHTML() + '<div class="empty"><div class="big">👋</div>' +
         '<p>还没有好友，加个朋友一起聊吧</p>' +
         '<button class="btn-mini primary" style="max-width:180px;margin:0 auto" id="emptyAdd">＋ 加好友</button></div>';
+      bindTfStrip();
       var b = $('emptyAdd');
       if (b) b.onclick = openAdd;
       return;
     }
 
-    listEl.innerHTML = sortedFriends().map(function (f) {
+    listEl.innerHTML = tfStripHTML() + sortedFriends().map(function (f) {
       var pre = prefOf(f.id);
       var last = f.lastBody
         ? (f.lastFrom === state.me ? '我：' : '') + f.lastBody
@@ -687,6 +737,12 @@
     Array.prototype.forEach.call(listEl.querySelectorAll('.row'), function (el) {
       el.onclick = function () { openChat(el.dataset.id); };
     });
+    bindTfStrip();
+  }
+
+  function bindTfStrip() {
+    var s = $('tfStrip');
+    if (s) s.onclick = openTfSheet;
   }
 
   function renderRequests() {
@@ -809,6 +865,15 @@
         state.msgs.forEach(function (m) { seen[m.id] = 1; });
         incoming.forEach(function (m) { if (!seen[m.id]) state.msgs.push(m); });
       }
+      // 转账卡片状态补丁：对方收款 / 退还 / 撤销后，老消息不会重发，用补丁同步
+      var patches = r.transfers || [];
+      if (patches.length) {
+        var byId = {};
+        patches.forEach(function (x) { if (x && x.id) byId[x.id] = x.payload; });
+        state.msgs.forEach(function (m) {
+          if (m.kind === 'transfer' && byId[m.id]) m.payload = byId[m.id];
+        });
+      }
       paint();
     }).catch(function (e) {
       if (silent) return;
@@ -844,10 +909,31 @@
     if (kind === 'transfer') {
       var amt = Number(p.amount) || 0;
       var note = String(p.note || '');
-      return '<div class="tcard"><div class="t1">转账</div>' +
+      var st = String(p.status || 'pending');
+      var tid = String(p.tid || '');
+      var mine = m.fromUser === state.me;
+      var label = ({
+        pending: mine ? '等待对方收款' : '待你收款',
+        accepted: mine ? '对方已收款' : '✓ 已收款，金额到账',
+        rejected: mine ? '对方已退还，金额退回' : '你已退还，金额退回对方',
+        canceled: mine ? '✓ 已撤销，金额退回余额' : '对方已撤销，金额退回',
+        expired: '超过 24 小时未领取，已退回',
+        done: '✓ 已到账',
+      })[st] || '处理中';
+      var acts = '';
+      if (st === 'pending' && tid) {
+        acts = mine
+          ? '<div class="tcard-acts"><button class="tcard-btn ghost" data-tf="' + esc(tid) + '" data-tfact="cancel">撤销转账</button></div>'
+          : '<div class="tcard-acts">' +
+            '<button class="tcard-btn ghost" data-tf="' + esc(tid) + '" data-tfact="reject">退还</button>' +
+            '<button class="tcard-btn" data-tf="' + esc(tid) + '" data-tfact="accept">收款</button></div>';
+      }
+      var cls = st === 'pending' ? '' : (st === 'accepted' || st === 'done') ? ' is-ok' : ' is-done';
+      return '<div class="tcard' + cls + '">' +
+        '<div class="t1">' + (mine ? '转给对方' : '对方转账') + '</div>' +
         '<div class="t2">' + esc(yuan2(amt)) + '</div>' +
-        '<div class="t3">' + (note ? esc(note) : '已转入对方余额') + '</div>' +
-        '<div class="t4">' + (p.status === 'done' ? '✓ 已到账' : '处理中') + '</div></div>';
+        '<div class="t3">' + (note ? esc(note) : (mine ? '等对方收款后到账' : '收款后进入我的余额')) + '</div>' +
+        '<div class="t4">' + esc(label) + '</div>' + acts + '</div>';
     }
     return '<div class="bubble">' + esc(m.body) + '</div>';
   }
@@ -876,6 +962,11 @@
   }
 
   msgsEl.addEventListener('click', function (e) {
+    var tfBtn = e.target.closest('[data-tf]');
+    if (tfBtn) {
+      actTransfer(tfBtn.getAttribute('data-tf'), tfBtn.getAttribute('data-tfact'), tfBtn);
+      return;
+    }
     var img = e.target.closest('[data-view]');
     if (img) {
       $('viewerImg').src = img.getAttribute('data-view');
@@ -1115,14 +1206,118 @@
     }).then(function (r) {
       state.balance = Number(r.balance) || Math.max(0, state.balance - fen);
       closeSheet('transferSheet');
-      toast('已转账 ' + yuan2(fen));
+      toast('已发起，等对方收款 ' + yuan2(fen));
       return loadThread(true, true);
     }).catch(function (e) {
       toast(e.message || '转账失败');
     }).then(function () {
       btn.disabled = false;
       btn.textContent = '确认转账';
+      loadTransferPending();
     });
+  }
+
+  /* ---------- 收款 / 退还 / 撤销 ---------- */
+  function tfWord(action, status) {
+    if (action === 'accept') return '已收款';
+    if (action === 'reject') return '已退还';
+    if (action === 'cancel') return '已撤销';
+    return status === 'expired' ? '已过期退回' : '已处理';
+  }
+
+  function actTransfer(tid, action, btn) {
+    if (!tid || !action) return;
+    if (action === 'accept' && !window.confirm('确认收款？钱会进入你的余额。')) return;
+    if (action === 'reject' && !window.confirm('确定退还这笔转账？金额会退回给对方。')) return;
+    if (action === 'cancel' && !window.confirm('确定撤销这笔转账？金额会退回你的余额。')) return;
+    var all = document.querySelectorAll('[data-tf="' + tid + '"]');
+    Array.prototype.forEach.call(all, function (b) { b.disabled = true; });
+    api('/api/dm/transfer/act', {
+      method: 'POST',
+      body: JSON.stringify({ transferId: tid, action: action }),
+    }).then(function (r) {
+      var st = r.status || (action === 'accept' ? 'accepted' : action === 'reject' ? 'rejected' : 'canceled');
+      state.msgs.forEach(function (m) {
+        if (m.kind === 'transfer' && m.payload && m.payload.tid === tid) {
+          m.payload = Object.assign({}, m.payload, { status: st });
+        }
+      });
+      if (typeof r.balance === 'number') state.balance = r.balance;
+      paint();
+      toast(tfWord(action, st));
+      loadTransferPending();
+      if (state.tab !== 'req') loadFriends(true);
+    }).catch(function (e) {
+      toast(e.message || '操作失败');
+      Array.prototype.forEach.call(all, function (b) { b.disabled = false; });
+      loadThread(true, true);
+    });
+  }
+
+  function loadTransferPending() {
+    if (!token()) return Promise.resolve();
+    return api('/api/dm/transfer/pending').then(function (r) {
+      var prevSig = state.tfSig || '';
+      state.tf = {
+        incoming: r.incoming || [],
+        outgoing: r.outgoing || [],
+        incomingCount: Number(r.incomingCount) || 0,
+        incomingAmount: Number(r.incomingAmount) || 0,
+      };
+      state.tfSig = state.tf.incomingCount + ':' + state.tf.incomingAmount;
+      // 只在待收款有变化时重绘列表，避免定时轮询把列表滚动位置顶回去
+      if (prevSig !== state.tfSig && state.tab === 'chat') renderList();
+      if ($('tfSheet').classList.contains('show')) renderTfSheet();
+    }).catch(function () {});
+  }
+
+  function tfStripHTML() {
+    var t = state.tf || {};
+    if (!t.incomingCount) return '';
+    return '<button class="tf-strip" id="tfStrip"><span class="tf-ic">💰</span>' +
+      '<span class="tf-txt"><b>' + t.incomingCount + ' 笔转账待收款</b>' +
+      '<i>共 ' + esc(yuan2(t.incomingAmount)) + '，24 小时不领会自动退回</i></span>' +
+      '<span class="tf-go">去收款 ›</span></button>';
+  }
+
+  function tfItemHTML(x) {
+    var who = x.direction === 'in' ? x.nickname : x.nickname;
+    var sub = (x.direction === 'in' ? '来自 ' : '转给 ') + who +
+      (x.note ? ' · ' + x.note : '') + ' · ' + fmtStamp(x.createdAt);
+    var btns = x.direction === 'in'
+      ? '<span class="tf-btns"><button data-tf2="' + esc(x.id) + '" data-a="reject">退还</button>' +
+        '<button class="primary" data-tf2="' + esc(x.id) + '" data-a="accept">收款</button></span>'
+      : '<span class="tf-btns"><button data-tf2="' + esc(x.id) + '" data-a="cancel">撤销</button></span>';
+    return '<div class="tf-item">' + avaHTML(x.avatar, x.nickname) +
+      '<span class="tf-info"><b>' + esc(x.nickname) + '</b><i>' + esc(sub) + '</i></span>' +
+      '<span class="tf-amt">' + esc(yuan2(x.amount)) + '</span>' + btns + '</div>';
+  }
+
+  function renderTfSheet() {
+    var t = state.tf || {};
+    var inc = t.incoming || [];
+    var outg = t.outgoing || [];
+    if (!inc.length && !outg.length) {
+      $('tfBody').innerHTML = '<div class="hint" style="padding:16px 2px">没有待收款的转账</div>';
+      return;
+    }
+    var html = '';
+    if (inc.length) {
+      html += '<div class="section-note">待我收款 · 共 ' + esc(yuan2(t.incomingAmount)) + '</div>' + inc.map(tfItemHTML).join('');
+    }
+    if (outg.length) {
+      html += '<div class="section-note">我发出的 · 等对方收款</div>' + outg.map(tfItemHTML).join('');
+    }
+    $('tfBody').innerHTML = html;
+    Array.prototype.forEach.call($('tfBody').querySelectorAll('[data-tf2]'), function (el) {
+      el.onclick = function () { actTransfer(el.getAttribute('data-tf2'), el.getAttribute('data-a'), el); };
+    });
+  }
+
+  function openTfSheet() {
+    renderTfSheet();
+    openSheet('tfSheet');
+    loadTransferPending();
   }
 
   /* ---------- 会话设置 ---------- */
@@ -1412,10 +1607,14 @@
     loadMe();
     loadFriends();
     loadRequests(true);
+    loadTransferPending().then(function () {
+      if (wantTf) setTimeout(openTfSheet, 150);
+    });
     showShareBar();
     state.timerList = setInterval(function () {
       if (document.hidden) return;
       loadFriends(true);
+      loadTransferPending();
       if (state.tab === 'req') loadRequests(true);
     }, 6000);
   }

@@ -1046,6 +1046,13 @@ async function dmThread(userId, otherId, after) {
       avatar: f.avatar || null,
     },
     messages: (Array.isArray(r && r.messages) ? r.messages : []).map(dmMsgRow).filter(Boolean),
+    // 转账卡片状态补丁：增量拉取时老消息不会重发，用它同步「已收款 / 已退还 / 已撤销」
+    transfers: (Array.isArray(r && r.transfers) ? r.transfers : [])
+      .map((x) => ({
+        id: String((x && x.id) || ''),
+        payload: x && x.payload && typeof x.payload === 'object' ? x.payload : null,
+      }))
+      .filter((x) => x.id),
     clearedAt: toMs(r && r.clearedAt) || null,
   };
 }
@@ -1059,7 +1066,7 @@ async function dmClear(userId, otherId) {
   );
 }
 
-/** 好友间转账（站内余额，单位分） */
+/** 好友间转账（站内余额，单位分）：只扣款冻结，等对方领取才入账 */
 async function dmTransfer(userId, toUserId, amountFen, note) {
   const r = await call(
     'app_dm_transfer',
@@ -1072,18 +1079,81 @@ async function dmTransfer(userId, toUserId, amountFen, note) {
     },
     '转账'
   );
+  const t = (r && r.transfer) || {};
   return {
     message: dmMsgRow(r && r.message),
+    transfer: {
+      id: String(t.id || ''),
+      status: String(t.status || 'pending'),
+      amount: Number(t.amount) || 0,
+      note: String(t.note || ''),
+      fromUser: String(t.fromUser || ''),
+      toUser: String(t.toUser || ''),
+      messageId: String(t.messageId || ''),
+    },
     balance: Number((r && r.balance) || 0),
   };
 }
 
-/** 私聊未读 + 好友申请待处理数 */
+/** 收款 / 退还 / 撤销：action = accept | reject | cancel */
+async function dmTransferAct(userId, transferId, action) {
+  const r = await call(
+    'app_dm_transfer_act',
+    {
+      p_secret: secret,
+      p_user: String(userId || ''),
+      p_tid: String(transferId || ''),
+      p_action: String(action || ''),
+    },
+    '处理转账'
+  );
+  return {
+    status: String((r && r.status) || ''),
+    transferId: String((r && r.tid) || ''),
+    messageId: String((r && r.messageId) || ''),
+    balance: Number((r && r.balance) || 0),
+  };
+}
+
+/** 待收款（收到的）+ 待领取（我发出的） */
+async function dmTransferPending(userId) {
+  const r = await call(
+    'app_dm_transfer_pending',
+    { p_secret: secret, p_user: String(userId || '') },
+    '读取待收款转账'
+  );
+  const map = (row) => {
+    const x = row || {};
+    const c = x.createdAt ? new Date(x.createdAt).getTime() : 0;
+    return {
+      id: String(x.id || ''),
+      direction: String(x.direction || 'in'),
+      amount: Number(x.amount) || 0,
+      note: String(x.note || ''),
+      status: String(x.status || 'pending'),
+      createdAt: Number.isFinite(c) ? c : 0,
+      fromUser: String(x.fromUser || ''),
+      toUser: String(x.toUser || ''),
+      messageId: String(x.messageId || ''),
+      nickname: String(x.nickname || '好友'),
+      avatar: x.avatar || null,
+    };
+  };
+  return {
+    incoming: (Array.isArray(r && r.incoming) ? r.incoming : []).map(map).filter((x) => x.id),
+    outgoing: (Array.isArray(r && r.outgoing) ? r.outgoing : []).map(map).filter((x) => x.id),
+    incomingCount: Math.max(0, Number(r && r.incomingCount) || 0),
+    incomingAmount: Math.max(0, Number(r && r.incomingAmount) || 0),
+  };
+}
+
+/** 私聊未读 + 好友申请待处理数 + 待收款转账数 */
 async function dmUnread(userId) {
   const r = await call('app_dm_unread', { p_secret: secret, p_user: String(userId || '') }, '读取未读消息');
   return {
     unread: Math.max(0, Number(r && r.unread) || 0),
     pending: Math.max(0, Number(r && r.pending) || 0),
+    transferIn: Math.max(0, Number(r && r.transferIn) || 0),
   };
 }
 
@@ -1148,6 +1218,8 @@ module.exports = {
   dmThread,
   dmClear,
   dmTransfer,
+  dmTransferAct,
+  dmTransferPending,
   dmUnread,
   friendRemove,
   applyRefund,

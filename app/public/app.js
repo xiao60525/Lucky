@@ -41,6 +41,7 @@ const state = {
   chatUnread: 0, // 客服未读消息数（首页红点）
   friendUnread: 0, // 好友私聊未读消息数
   friendPending: 0, // 待处理的好友申请数
+  friendTransfer: 0, // 待我收款的好友转账笔数
 };
 
 const sheetState = { type: null, product: null, order: null, channel: 'wechat', productId: '', reviewStars: 5 };
@@ -1285,17 +1286,12 @@ function bannerHTML() {
 /** 快捷入口宫格：后台添加什么就显示什么 */
 function entriesHTML() {
   const list = homeCfg().entries;
-  // 金刚区末尾两格固定：好友消息（/friends）、小游戏（/game）
-  const friendEntry = `<button class="entry-item" data-act="go-friends">
-    <span class="entry-icon">👥</span>
-    <span class="entry-title">好友</span>
-    <span class="entry-dot${state.friendUnread || state.friendPending ? ' on' : ''}" id="friendEntryDot"></span>
-  </button>`;
+  // 金刚区末尾固定一格：小游戏（好友入口移到「我的」页单独一栏）
   const gameEntry = `<button class="entry-item" data-act="go-game">
     <span class="entry-icon">🍉</span>
     <span class="entry-title">大西瓜</span>
   </button>`;
-  if (!list.length) return `<div class="entry-grid">${friendEntry}${gameEntry}</div>`;
+  if (!list.length) return `<div class="entry-grid">${gameEntry}</div>`;
   return `<div class="entry-grid">${list
     .map(
       (e, i) => `<button class="entry-item" data-act="home-entry" data-i="${i}">
@@ -1303,7 +1299,7 @@ function entriesHTML() {
         <span class="entry-title">${esc(e.title)}</span>
       </button>`
     )
-    .join('')}${friendEntry}${gameEntry}</div>`;
+    .join('')}${gameEntry}</div>`;
 }
 
 /* ---------------- 渲染：内容 ---------------- */
@@ -2245,6 +2241,9 @@ const BALANCE_KIND_TEXT = {
   refund: '退款',
   autorenew: '会员自动续费',
   admin: '后台调整',
+  dm_out: '转账给好友',
+  dm_in: '好友转入',
+  dm_refund: '转账退回',
 };
 
 function balKindText(l) {
@@ -2541,6 +2540,27 @@ function renderUserCenter() {
   const fpN = footprintList().filter((x) => (state.products || []).some((p) => String(p.id) === String(x.id))).length;
   const cartN = cartCount();
 
+  const orderN = (k) => orders.filter(ORDER_FILTERS[k].match).length;
+  const tIn = Number(state.friendTransfer) || 0;
+  const friendHit = (state.friendUnread || 0) + (state.friendPending || 0) + tIn;
+  const friendSub = tIn
+    ? tIn + ' 笔转账待收款'
+    : state.friendUnread
+      ? state.friendUnread + ' 条新消息'
+      : state.friendPending
+        ? state.friendPending + ' 条好友申请'
+        : '聊天 · 加好友 · 转账';
+  const grid = [
+    { act: 'go-tab', tab: 'cart', ic: '🛒', t: '购物车', n: cartN },
+    { act: 'open-messages', ic: '🔔', t: '消息中心', n: unreadN },
+    { act: 'open-wishlist', ic: '❤️', t: '心愿单', n: wishN },
+    { act: 'open-footprint', ic: '🕘', t: '浏览记录', n: fpN },
+    { act: 'open-favorites', ic: '⭐', t: '文章收藏', n: (state.favorites || []).length },
+    { act: 'open-refunds', ic: '🧾', t: '退款售后', n: (state.refunds || []).filter((x) => x.status === 'pending').length },
+    { act: 'go-chat', ic: '💬', t: '在线客服', n: state.chatUnread },
+    { act: 'feedback-new', ic: '✍️', t: '意见反馈', n: 0 },
+  ];
+
   return `
     <div class="card user-hero">
       <div class="profile">
@@ -2569,136 +2589,107 @@ function renderUserCenter() {
 
     ${homeCfg().modules.member ? memberBannerHTML(v) : ''}
 
-    <div class="section-head">
-      <h2>收货地址</h2>
-      <button class="mini-btn" data-act="edit-address">${hasAddr ? '编辑' : '去填写'}</button>
-    </div>
-    <div class="card addr-card">
-      ${
-        hasAddr
-          ? `<div class="addr-name">${esc(addr.name || '未填姓名')} <span>${esc(
-              (addr.phone || '').replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2')
-            )}</span></div>
-             <div class="addr-detail">${esc(addr.detail || '未填写详细地址')}</div>`
-          : `<div class="empty" style="padding:16px 4px"><p>还没有收货地址，点右上角填写</p></div>`
-      }
-    </div>
+    <button class="card addr-row${hasAddr ? '' : ' is-empty'}" data-act="edit-address">
+      <span class="ar-ic">📍</span>
+      <span class="ar-body">
+        <b class="addr-name">${
+          hasAddr
+            ? esc(addr.name || '未填姓名') +
+              ' <span>' +
+              esc((addr.phone || '').replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2')) +
+              '</span>'
+            : '还没有收货地址'
+        }</b>
+        <i class="addr-detail">${hasAddr ? esc(addr.detail || '未填写详细地址') : '点这里填写，下单发货要用'}</i>
+      </span>
+      <span class="ar-edit">${hasAddr ? '修改' : '去填写'} ›</span>
+    </button>
 
-    <div class="section-head">
-      <h2>我的订单</h2>
-      <button class="mini-btn" data-act="open-orders">全部订单${orders.length ? ' ' + orders.length : ''} ›</button>
-    </div>
-
-    <div class="card order-quick">
-      ${[
-        ['unpaid', '待付款'],
-        ['ship', '待发货'],
-        ['recv', '待收货'],
-        ['review', '待评价'],
-      ]
-        .map(([k, label]) => {
-          const n = orders.filter(ORDER_FILTERS[k].match).length;
-          return `<button class="quick-cell${n ? ' is-on' : ''}" data-act="quick-orders" data-f="${k}">
+    <div class="card mine-card">
+      <div class="mc-head">
+        <b>我的订单</b>
+        <button class="mc-more" data-act="open-orders">全部${orders.length ? ' ' + orders.length : ''} ›</button>
+      </div>
+      <div class="order-quick">
+        ${[
+          ['unpaid', '待付款'],
+          ['ship', '待发货'],
+          ['recv', '待收货'],
+          ['review', '待评价'],
+        ]
+          .map(([k, label]) => {
+            const n = orderN(k);
+            return `<button class="quick-cell${n ? ' is-on' : ''}" data-act="quick-orders" data-f="${k}">
             <b>${n}</b><span>${label}</span>
           </button>`;
-        })
-        .join('')}
+          })
+          .join('')}
+      </div>
     </div>
 
-    <div class="section-head"><h2>我的服务</h2></div>
+    <div class="card mine-card">
+      <div class="mc-head"><b>常用功能</b><span>购物与服务</span></div>
+      <div class="mine-grid">
+        ${grid
+          .map(
+            (g) => `<button class="mg-item" data-act="${g.act}"${g.tab ? ` data-tab="${g.tab}"` : ''}>
+          <span class="mg-ic">${g.ic}${g.n ? `<em class="mg-num dot-num">${g.n > 99 ? '99+' : g.n}</em>` : ''}</span>
+          <span class="mg-t">${g.t}</span>
+        </button>`
+          )
+          .join('')}
+      </div>
+    </div>
+
+    <div class="mc-head alone">
+      <b>好友</b>
+      <span>${tIn ? `<em class="mc-tag">${tIn} 笔待收款</em>` : '聊天 / 加好友'}</span>
+    </div>
     <div class="card set-list">
-      <button class="set-row" data-act="go-tab" data-tab="cart">
-        <span>购物车${cartN ? ` <em class="dot-num">${cartN}</em>` : ''}</span>
-        <i style="font-size:12px;color:var(--muted)">${cartN ? `${cartN} 件待结算` : '还没加购商品'}</i>
-        <i>›</i>
+      <button class="set-row" data-act="go-friends">
+        <span class="sr-ic">💬</span>
+        <span class="sr-body">
+          <b>好友消息${friendHit ? ` <em class="dot-num">${friendHit > 99 ? '99+' : friendHit}</em>` : ''}</b>
+          <i>${esc(friendSub)}</i>
+        </span>
+        <em class="sr-dot${friendHit ? ' on' : ''}" id="friendRowDot"></em>
+        <i class="sr-go">›</i>
       </button>
-      <button class="set-row" data-act="open-messages">
-        <span>消息中心${unreadN ? ` <em class="dot-num">${unreadN}</em>` : ''}</span>
-        <i style="font-size:12px;color:var(--muted)">${
-          unreadN ? `${unreadN} 条新动态` : msgTotal ? '订单与售后通知' : '暂无消息'
-        }</i>
-        <i>›</i>
-      </button>
-      <button class="set-row" data-act="open-wishlist">
-        <span>心愿单</span>
-        <i style="font-size:12px;color:var(--muted)">${
-          wishN ? `${wishN} 件商品` : '收藏想买的商品'
-        }</i>
-        <i>›</i>
-      </button>
-      <button class="set-row" data-act="open-footprint">
-        <span>最近浏览</span>
-        <i style="font-size:12px;color:var(--muted)">${fpN ? `${fpN} 件` : '看看逛过什么'}</i>
-        <i>›</i>
+      ${
+        tIn
+          ? `<button class="set-row" data-act="go-friends" data-tf="1">
+        <span class="sr-ic">💰</span>
+        <span class="sr-body"><b>待收款</b><i>${tIn} 笔转账等你领取，24 小时不领会退回</i></span>
+        <i class="sr-go">›</i>
+      </button>`
+          : ''
+      }
+      <button class="set-row" data-act="go-friends">
+        <span class="sr-ic">👥</span>
+        <span class="sr-body"><b>加好友</b><i>用手机号或昵称找人</i></span>
+        <i class="sr-go">›</i>
       </button>
     </div>
 
-    <div class="section-head"><h2>分享给好友</h2></div>
-    <div class="card share-card">
-      <p class="share-tip">把「${esc((state.site && state.site.name) || '本应用')}」转发给朋友，对方用浏览器打开即可添加到桌面，像 App 一样使用。</p>
+    <div class="mc-head alone"><b>更多</b></div>
+    <div class="card mine-card">
       <div class="share-btns">
         <button class="share-btn" data-act="share-copy"><span>复制链接</span></button>
         <button class="share-btn" data-act="share-more"><span>分享给朋友</span></button>
         <button class="share-btn" data-act="share-qr"><span>二维码</span></button>
       </div>
-    </div>
-
-    <div class="section-head">
-      <h2>内容与帮助</h2>
-      <button class="mini-btn" data-act="go-content">看内容 ›</button>
-    </div>
-    <div class="card set-list">
-      <button class="set-row" data-act="go-friends">
-        <span>好友消息</span>
-        <i style="font-size:12px;color:var(--muted)">${
-          state.friendUnread
-            ? state.friendUnread + ' 条新消息'
-            : state.friendPending
-              ? state.friendPending + ' 条好友申请'
-              : '聊天 / 加好友'
-        }</i>
-        <i>›</i>
-      </button>
-      <button class="set-row" data-act="go-chat">
-        <span>在线客服</span>
-        <i style="font-size:12px;color:var(--muted)">${
-          state.chatUnread ? state.chatUnread + ' 条新消息' : '有问题直接问商家'
-        }</i>
-        <i>›</i>
-      </button>
-      <button class="set-row" data-act="open-favorites">
-        <span>我的收藏</span>
-        <i style="font-size:12px;color:var(--muted)">${
-          (state.favorites || []).length ? (state.favorites || []).length + ' 篇' : '还没有收藏'
-        }</i>
-        <i>›</i>
-      </button>
-      <button class="set-row" data-act="open-refunds">
-        <span>退款与售后</span>
-        <i style="font-size:12px;color:var(--muted)">${
-          (state.refunds || []).some((r) => r.status === 'pending')
-            ? '有申请审核中'
-            : (state.refunds || []).length
-              ? (state.refunds || []).length + ' 条记录'
-              : '申请与进度'
-        }</i>
-        <i>›</i>
-      </button>
-      <button class="set-row" data-act="feedback-new">
-        <span>意见反馈</span>
-        <i style="font-size:12px;color:var(--muted)">想加功能 / 遇到问题</i>
-        <i>›</i>
-      </button>
-      <button class="set-row" data-act="feedback-mine"><span>我的反馈</span><i>›</i></button>
-    </div>
-
-    <div class="section-head"><h2>设置</h2></div>
-    <div class="card set-list">
-      <button class="set-row" data-act="settings">
-        <span>设置中心</span>
-        <i style="font-size:12px;color:var(--muted)">${isDark() ? '深色模式开 · ' : ''}账号安全 / 外观 / 通用</i>
-        <i>›</i>
-      </button>
+      <div class="set-list">
+        <button class="set-row" data-act="feedback-mine">
+          <span class="sr-ic">📮</span>
+          <span class="sr-body"><b>我的反馈</b><i>看看处理进度</i></span>
+          <i class="sr-go">›</i>
+        </button>
+        <button class="set-row" data-act="settings">
+          <span class="sr-ic">⚙️</span>
+          <span class="sr-body"><b>设置中心</b><i>${isDark() ? '深色模式开 · ' : ''}账号安全 / 外观 / 通用</i></span>
+          <i class="sr-go">›</i>
+        </button>
+      </div>
     </div>
     <p class="mine-foot">${esc(v.phoneMasked)} · 注册于 ${v.createdAt ? new Date(v.createdAt).toLocaleDateString('zh-CN') : '--'}</p>
   `;
@@ -4361,7 +4352,11 @@ view.addEventListener('click', async (e) => {
   if (act === 'edit-address') return addressSheet();
   if (act === 'go-game') return void location.assign(withShare('/game'));
   if (act === 'go-chat') return void location.assign(withShare('/chat'));
-  if (act === 'go-friends') return void location.assign(withShare('/friends'));
+  if (act === 'go-friends') {
+    // 从「待收款」那一行进去时，好友页直接弹出收款面板
+    const wantTf = el.dataset.tf === '1';
+    return void location.assign(withShare('/friends' + (wantTf ? '?tf=1' : '')));
+  }
   if (act === 'settings') return settingsSheet();
   if (act === 'share-copy') return doShareCopy();
   if (act === 'share-more') return doShareMore();
@@ -5131,17 +5126,18 @@ async function bootstrap() {
   startChatUnreadPoll();
 }
 
-/** 好友未读：同步金刚区好友格的红点 */
+/** 好友未读：同步「我的」页好友入口的红点 */
 function syncFriendBadge() {
-  const dot = document.getElementById('friendEntryDot');
-  if (dot) dot.classList.toggle('on', state.friendUnread > 0 || state.friendPending > 0);
+  const dot = document.getElementById('friendRowDot');
+  if (dot) dot.classList.toggle('on', state.friendUnread > 0 || state.friendPending > 0 || state.friendTransfer > 0);
 }
 
-/** 拉一次好友未读与待处理申请（未登录直接归零） */
+/** 拉一次好友未读、待处理申请与待收款转账（未登录直接归零） */
 async function refreshFriendUnread() {
   if (!state.viewer) {
     state.friendUnread = 0;
     state.friendPending = 0;
+    state.friendTransfer = 0;
     syncFriendBadge();
     return;
   }
@@ -5149,6 +5145,7 @@ async function refreshFriendUnread() {
     const r = await api('/api/dm/unread');
     state.friendUnread = Number(r.unread) || 0;
     state.friendPending = Number(r.pending) || 0;
+    state.friendTransfer = Number(r.transferIn) || 0;
   } catch (e) {
     /* 未读拿不到不影响主流程 */
   }
