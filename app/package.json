@@ -15,7 +15,8 @@
     "test:engage": "node scripts/test-engage.mjs && node scripts/test-engage-ui.mjs",
     "test:refund": "node scripts/test-refund.mjs",
     "test:profile": "node scripts/test-profile.mjs",
-    "test:sku": "node scripts/test-sku.mjs"
+    "test:sku": "node scripts/test-sku.mjs",
+    "test:friends": "node scripts/test-friends-e2e.mjs && node scripts/test-friends-ui.mjs"
   },
   "engines": {
     "node": ">=18"
