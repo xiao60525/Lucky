@@ -4792,6 +4792,7 @@ function serveStatic(req, res, url) {
   if (pathname === '/game') pathname = '/game.html';
   if (pathname === '/chat') pathname = '/chat.html';
   if (pathname === '/friends') pathname = '/friends.html';
+  if (pathname === '/mahjong') pathname = '/mahjong.html';
 
   const filePath = path.join(PUBLIC_DIR, path.normalize(pathname).replace(/^(\.\.[/\\])+/, ''));
   if (!filePath.startsWith(PUBLIC_DIR)) {

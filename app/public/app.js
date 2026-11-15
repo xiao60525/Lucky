@@ -1294,6 +1294,9 @@ function entriesHTML() {
   const gameEntry = `<button class="entry-item" data-act="go-game">
     <span class="entry-icon">🍉</span>
     <span class="entry-title">大西瓜</span>
+  </button><button class="entry-item" data-act="go-mahjong">
+    <span class="entry-icon">🀄</span>
+    <span class="entry-title">南京麻将</span>
   </button>`;
   if (!list.length) return `<div class="entry-grid">${gameEntry}</div>`;
   return `<div class="entry-grid">${list
@@ -4611,6 +4614,7 @@ view.addEventListener('click', async (e) => {
   }
   if (act === 'edit-address' || act === 'address-book') return openAddrBook(el.dataset.pick === '1' ? 'pick' : 'manage');
   if (act === 'go-game') return void location.assign(withShare('/game'));
+  if (act === 'go-mahjong') return void location.assign(withShare('/mahjong'));
   if (act === 'go-chat') return void location.assign(withShare('/chat'));
   if (act === 'go-friends') {
     // 从「待收款」那一行进去时，好友页直接弹出收款面板

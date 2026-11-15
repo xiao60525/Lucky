@@ -17,7 +17,8 @@
     "test:profile": "node scripts/test-profile.mjs",
     "test:sku": "node scripts/test-sku.mjs",
     "test:friends": "node scripts/test-friends-e2e.mjs && node scripts/test-friends-ui.mjs",
-    "test:address": "node scripts/test-address-e2e.mjs"
+    "test:address": "node scripts/test-address-e2e.mjs",
+    "test:mahjong": "node scripts/test-mahjong.mjs"
   },
   "engines": {
     "node": ">=18"
