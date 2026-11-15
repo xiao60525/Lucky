@@ -2920,6 +2920,12 @@ async function handleApi(req, res, url) {
     if (m.includes('request_not_found')) return sendJSON(res, 404, { message: '这条申请不存在' });
     if (m.includes('bad_target')) return sendJSON(res, 400, { message: '不能对自己做这个操作' });
     if (m.includes('empty_message')) return sendJSON(res, 400, { message: '说点什么再发送吧' });
+    if (m.includes('empty_image')) return sendJSON(res, 400, { message: '图片没能读取，换一张试试' });
+    if (m.includes('bad_product')) return sendJSON(res, 400, { message: '这个商品已经下架了' });
+    if (m.includes('bad_kind')) return sendJSON(res, 400, { message: '不支持的消息类型' });
+    if (m.includes('bad_amount')) return sendJSON(res, 400, { message: '转账金额不正确' });
+    if (m.includes('amount_too_large')) return sendJSON(res, 400, { message: '单笔转账最多 ¥5000' });
+    if (m.includes('insufficient_balance')) return sendJSON(res, 400, { message: '余额不足，先充值再来转账' });
     return sendJSON(res, 502, { message: fallback + '：' + m });
   };
 
@@ -3002,34 +3008,105 @@ async function handleApi(req, res, url) {
     }
   }
 
-  // 私聊记录（顺带清未读）
+  // 私聊记录（顺带清未读）；带 after 时只返回这之后的新消息
   if (pathname === '/api/dm/thread' && method === 'GET') {
     const uid = currentUserId(req);
     if (!uid) return sendJSON(res, 401, { message: '请先登录' });
     const otherId = String(url.searchParams.get('userId') || '').trim();
+    const after = String(url.searchParams.get('after') || '').trim();
     if (!otherId) return sendJSON(res, 400, { message: '缺少聊天对象' });
     try {
-      return sendJSON(res, 200, await store.dmThread(uid, otherId));
+      return sendJSON(res, 200, await store.dmThread(uid, otherId, after || null));
     } catch (e) {
       return friendFail(res, e, '读取聊天记录失败');
     }
   }
 
-  // 发私聊消息
+  // 发私聊消息：文本 / 图片 / 商品卡片 / 转账
   if (pathname === '/api/dm/send' && method === 'POST') {
     const uid = currentUserId(req);
     if (!uid) return sendJSON(res, 401, { message: '请先登录' });
     const body = await readBody(req);
     const toUserId = String(body.toUserId || body.userId || '').trim();
-    const text = String(body.text || '').trim();
     if (!toUserId) return sendJSON(res, 400, { message: '缺少聊天对象' });
-    if (!text) return sendJSON(res, 400, { message: '说点什么再发送吧' });
-    if (text.length > 1000) return sendJSON(res, 400, { message: '单条消息最多 1000 字' });
+
+    const kind = String(body.kind || 'text').trim() || 'text';
+    let text = String(body.text || '').trim();
+    let payload = null;
+
+    if (kind === 'text') {
+      if (!text) return sendJSON(res, 400, { message: '说点什么再发送吧' });
+      if (text.length > 1000) return sendJSON(res, 400, { message: '单条消息最多 1000 字' });
+    } else if (kind === 'image') {
+      const src = body.payload || {};
+      const dataUrl = String(src.dataUrl || '');
+      if (!/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(dataUrl)) {
+        return sendJSON(res, 400, { message: '只支持图片文件' });
+      }
+      if (dataUrl.length > 800000) return sendJSON(res, 400, { message: '图片太大了，换一张或压缩后再发' });
+      payload = {
+        dataUrl,
+        w: Math.max(0, Math.min(4000, Number(src.w) || 0)),
+        h: Math.max(0, Math.min(4000, Number(src.h) || 0)),
+      };
+    } else if (kind === 'product') {
+      const src = body.payload || {};
+      const pid = String(src.productId || src.id || '').trim();
+      const p = db.products.find((x) => String(x.id) === pid);
+      if (!p) return sendJSON(res, 400, { message: '这个商品已经下架了' });
+      // 商品信息一律以服务端为准，避免前端伪造价格
+      payload = {
+        productId: String(p.id),
+        title: String(p.title || ''),
+        image: String(p.image || ''),
+        amount: Math.max(0, Number(p.amount) || 0),
+        tag: String(p.tag || ''),
+        memberOnly: Boolean(p.memberOnly),
+      };
+      text = payload.title;
+    } else if (kind === 'transfer') {
+      return sendJSON(res, 400, { message: '转账请使用转账功能' });
+    } else {
+      return sendJSON(res, 400, { message: '不支持的消息类型' });
+    }
+
     try {
-      const message = await store.dmSend(uid, toUserId, text);
+      const message = await store.dmSend(uid, toUserId, text, kind, payload);
       return sendJSON(res, 200, { message });
     } catch (e) {
       return friendFail(res, e, '发送失败');
+    }
+  }
+
+  // 好友间转账（站内余额）
+  if (pathname === '/api/dm/transfer' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    const body = await readBody(req);
+    const toUserId = String(body.toUserId || body.userId || '').trim();
+    if (!toUserId) return sendJSON(res, 400, { message: '缺少收款人' });
+    const amountFen = Math.round(Number(body.amountFen || body.amount || 0));
+    if (!Number.isFinite(amountFen) || amountFen < 1) return sendJSON(res, 400, { message: '转账金额至少 ¥0.01' });
+    if (amountFen > 500000) return sendJSON(res, 400, { message: '单笔转账最多 ¥5000' });
+    try {
+      const out = await store.dmTransfer(uid, toUserId, amountFen, String(body.note || '').slice(0, 60));
+      return sendJSON(res, 200, out);
+    } catch (e) {
+      return friendFail(res, e, '转账失败');
+    }
+  }
+
+  // 清空聊天记录（只清自己这边）
+  if (pathname === '/api/dm/clear' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    const body = await readBody(req);
+    const otherId = String(body.userId || body.toUserId || '').trim();
+    if (!otherId) return sendJSON(res, 400, { message: '缺少聊天对象' });
+    try {
+      return sendJSON(res, 200, await store.dmClear(uid, otherId));
+    } catch (e) {
+      return friendFail(res, e, '清空聊天记录失败');
     }
   }
 

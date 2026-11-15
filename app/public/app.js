@@ -1924,6 +1924,7 @@ function goodsSheet(productId) {
         fav ? '♥ 已收藏' : '♡ 收藏'
       }</button>
       <button class="btn-ghost" data-act="share-goods" data-id="${esc(p.id)}">分享给朋友</button>
+      <button class="btn-ghost" data-act="share-to-friend" data-id="${esc(p.id)}">发给好友</button>
     </div>
     ${
       inCart
@@ -4603,6 +4604,13 @@ sheetEl.addEventListener('click', async (e) => {
   }
   if (act === 'share-goods') {
     await shareGoods(el.dataset.id);
+    return;
+  }
+  // 直接把商品发到好友聊天：跳好友页并带上商品 id，选好友后自动发送
+  if (act === 'share-to-friend') {
+    const pid = el.dataset.id || '';
+    if (!pid) return;
+    location.assign(withShare('/friends?share=' + encodeURIComponent(pid)));
     return;
   }
   // 付费内容弹层里的两个入口（弹层内点击走这里，不是页面监听器）

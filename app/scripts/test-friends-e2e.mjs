@@ -276,6 +276,156 @@ try {
   d = await j(r);
   ok('对方已申请时直接互加', d.status === 'accepted', d.status);
 
+  /* ---------------- 多媒体：图片 / 商品 / 转账 / 清空 ---------------- */
+  const PNG = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+  r = await fetch(`${BASE}/api/dm/send`, {
+    method: 'POST',
+    headers: H(tokenA),
+    body: JSON.stringify({ toUserId: meB.id, kind: 'image', payload: { dataUrl: PNG, w: 1, h: 1 } }),
+  });
+  d = await j(r);
+  ok('发图片消息', r.status === 200 && d.message && d.message.kind === 'image', `${r.status} ${d.message && d.message.kind}`);
+
+  r = await fetch(`${BASE}/api/dm/send`, {
+    method: 'POST',
+    headers: H(tokenA),
+    body: JSON.stringify({ toUserId: meB.id, kind: 'image', payload: { dataUrl: 'data:text/html;base64,AAA' } }),
+  });
+  ok('非图片类型被拒绝', r.status === 400, String(r.status));
+
+  r = await fetch(`${BASE}/api/dm/send`, {
+    method: 'POST',
+    headers: H(tokenA),
+    body: JSON.stringify({
+      toUserId: meB.id,
+      kind: 'image',
+      payload: { dataUrl: 'data:image/png;base64,' + 'A'.repeat(850000) },
+    }),
+  });
+  ok('超大图片被拒绝', r.status === 400, String(r.status));
+
+  // 商品卡片
+  const boot = await j(await fetch(`${BASE}/api/bootstrap`));
+  const goodsList = (boot.products || []).filter((p) => p.type !== 'recharge' && !p.contentId);
+  const goods = goodsList[0];
+  ok('拿到可分享商品', Boolean(goods && goods.id), goods && goods.title);
+
+  r = await fetch(`${BASE}/api/dm/send`, {
+    method: 'POST',
+    headers: H(tokenA),
+    body: JSON.stringify({ toUserId: meB.id, kind: 'product', payload: { productId: goods.id } }),
+  });
+  d = await j(r);
+  ok(
+    '发商品卡片（价格以服务端为准）',
+    r.status === 200 && d.message.kind === 'product' && d.message.payload.amount === goods.amount,
+    `${r.status} ${d.message && d.message.payload && d.message.payload.amount}/${goods.amount}`
+  );
+  // 前端伪造价格应被忽略
+  r = await fetch(`${BASE}/api/dm/send`, {
+    method: 'POST',
+    headers: H(tokenA),
+    body: JSON.stringify({
+      toUserId: meB.id,
+      kind: 'product',
+      payload: { productId: goods.id, amount: 1, title: '假标题' },
+    }),
+  });
+  d = await j(r);
+  ok('伪造价格/标题被服务端覆盖', d.message && d.message.payload.amount === goods.amount && d.message.payload.title !== '假标题', d.message && String(d.message.payload.title));
+
+  r = await fetch(`${BASE}/api/dm/send`, {
+    method: 'POST',
+    headers: H(tokenA),
+    body: JSON.stringify({ toUserId: meB.id, kind: 'product', payload: { productId: 'not-exist' } }),
+  });
+  ok('下架商品不能分享', r.status === 400, String(r.status));
+
+  // 增量拉取
+  const full = await j(await fetch(`${BASE}/api/dm/thread?userId=${meB.id}`, { headers: H(tokenA) }));
+  const lastAt = full.messages[full.messages.length - 1].createdAt;
+  const incRes = await j(
+    await fetch(`${BASE}/api/dm/thread?userId=${meB.id}&after=${encodeURIComponent(new Date(lastAt + 1).toISOString())}`, {
+      headers: H(tokenA),
+    })
+  );
+  ok('增量拉取不带旧消息', (incRes.messages || []).length === 0, String((incRes.messages || []).length));
+
+  // 转账：先充值
+  const topupOrder = await j(
+    await fetch(`${BASE}/api/orders`, { method: 'POST', headers: H(tokenA), body: JSON.stringify({ recharge: 2000 }) })
+  );
+  const payRes = await fetch(`${BASE}/api/orders/${topupOrder.order.id}/pay`, {
+    method: 'POST',
+    headers: H(tokenA),
+    body: JSON.stringify({ channel: 'mock' }),
+  });
+  const payBody = await j(payRes);
+  const paySign = new URL('http://x' + String(payBody.payUrl || '').replace(/^https?:\/\/[^/]+/, '')).searchParams.get('sign') || '';
+  ok('A 充值下单', payRes.status === 200 && Boolean(paySign), String(payRes.status));
+  // mock 渠道：确认收银台后由渠道回调入账
+  await fetch(`${BASE}/api/pay/confirm`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ orderId: topupOrder.order.id, sign: paySign }),
+  });
+  await sleep(1600);
+
+  const balA0 = (await j(await fetch(`${BASE}/api/auth/me`, { headers: H(tokenA) }))).viewer.balance;
+  const balB0 = (await j(await fetch(`${BASE}/api/auth/me`, { headers: H(tokenB) }))).viewer.balance;
+
+  r = await fetch(`${BASE}/api/dm/transfer`, {
+    method: 'POST',
+    headers: H(tokenA),
+    body: JSON.stringify({ toUserId: meB.id, amountFen: 150, note: 'aa 午饭' }),
+  });
+  d = await j(r);
+  ok('转账成功', r.status === 200 && d.message && d.message.kind === 'transfer', `${r.status} ${d.message && d.message.kind}`);
+
+  const balA1 = (await j(await fetch(`${BASE}/api/auth/me`, { headers: H(tokenA) }))).viewer.balance;
+  const balB1 = (await j(await fetch(`${BASE}/api/auth/me`, { headers: H(tokenB) }))).viewer.balance;
+  ok('A 余额扣减', balA1 === balA0 - 150, `${balA0} -> ${balA1}`);
+  ok('B 余额入账', balB1 === balB0 + 150, `${balB0} -> ${balB1}`);
+
+  r = await fetch(`${BASE}/api/dm/transfer`, {
+    method: 'POST',
+    headers: H(tokenA),
+    body: JSON.stringify({ toUserId: meB.id, amountFen: 900000 }),
+  });
+  ok('超单笔上限被拒', r.status === 400, String(r.status));
+
+  r = await fetch(`${BASE}/api/dm/transfer`, {
+    method: 'POST',
+    headers: H(tokenA),
+    body: JSON.stringify({ toUserId: meB.id, amountFen: balA1 + 1000 }),
+  });
+  ok('余额不足被拒', r.status === 400, String(r.status));
+
+  r = await fetch(`${BASE}/api/dm/transfer`, {
+    method: 'POST',
+    headers: H(tokenC),
+    body: JSON.stringify({ toUserId: meB.id, amountFen: 100 }),
+  });
+  ok('非好友不能转账', r.status === 403, String(r.status));
+
+  // 列表预览文案
+  const listA = await j(await fetch(`${BASE}/api/friends`, { headers: H(tokenA) }));
+  const rowB = (listA.friends || []).find((x) => x.id === meB.id) || {};
+  ok('会话预览带转账文案', String(rowB.lastBody || '').indexOf('[转账]') === 0, String(rowB.lastBody));
+
+  // 清空记录：只清 A 侧
+  r = await fetch(`${BASE}/api/dm/clear`, {
+    method: 'POST',
+    headers: H(tokenA),
+    body: JSON.stringify({ userId: meB.id }),
+  });
+  ok('清空聊天记录', r.status === 200, String(r.status));
+  const aAfter = await j(await fetch(`${BASE}/api/dm/thread?userId=${meB.id}`, { headers: H(tokenA) }));
+  ok('A 侧已清空', (aAfter.messages || []).length === 0, String((aAfter.messages || []).length));
+  const bAfter = await j(await fetch(`${BASE}/api/dm/thread?userId=${meA.id}`, { headers: H(tokenB) }));
+  ok('B 侧记录仍在', (bAfter.messages || []).length > 0, String((bAfter.messages || []).length));
+
   console.log('\n测试账号：' + [phoneA, phoneB, phoneC].join(' / '));
 } catch (e) {
   fails.push('异常：' + e.message);

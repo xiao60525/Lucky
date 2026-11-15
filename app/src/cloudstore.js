@@ -948,6 +948,8 @@ function dmMsgRow(row) {
     fromUser: String(row.from_user || ''),
     toUser: String(row.to_user || ''),
     body: String(row.body || ''),
+    kind: String(row.kind || 'text'),
+    payload: row.payload && typeof row.payload === 'object' ? row.payload : null,
     createdAt: toMs(row.created_at),
   };
 }
@@ -1010,8 +1012,8 @@ async function friendList(userId) {
   };
 }
 
-/** 发私聊消息（必须是好友） */
-async function dmSend(userId, toUserId, body) {
+/** 发私聊消息（必须是好友）：kind = text | image | product | transfer */
+async function dmSend(userId, toUserId, body, kind, payload) {
   const r = await call(
     'app_dm_send',
     {
@@ -1019,19 +1021,23 @@ async function dmSend(userId, toUserId, body) {
       p_from: String(userId || ''),
       p_to: String(toUserId || ''),
       p_body: String(body || ''),
+      p_kind: String(kind || 'text'),
+      p_payload: payload || null,
     },
     '发送消息'
   );
   return dmMsgRow(r && r.message);
 }
 
-/** 读和某个好友的对话（顺带清未读） */
-async function dmThread(userId, otherId) {
-  const r = await call(
-    'app_dm_thread',
-    { p_secret: secret, p_user: String(userId || ''), p_other: String(otherId || '') },
-    '读取聊天记录'
-  );
+/** 读和某个好友的对话（顺带清未读）；after 传 ISO 时间表示只要这之后的新消息 */
+async function dmThread(userId, otherId, after) {
+  const params = {
+    p_secret: secret,
+    p_user: String(userId || ''),
+    p_other: String(otherId || ''),
+  };
+  if (after) params.p_after = String(after);
+  const r = await call('app_dm_thread', params, '读取聊天记录');
   const f = (r && r.friend) || {};
   return {
     friend: {
@@ -1040,6 +1046,35 @@ async function dmThread(userId, otherId) {
       avatar: f.avatar || null,
     },
     messages: (Array.isArray(r && r.messages) ? r.messages : []).map(dmMsgRow).filter(Boolean),
+    clearedAt: toMs(r && r.clearedAt) || null,
+  };
+}
+
+/** 清空与某个好友的聊天记录（只清自己这边） */
+async function dmClear(userId, otherId) {
+  return call(
+    'app_dm_clear',
+    { p_secret: secret, p_user: String(userId || ''), p_other: String(otherId || '') },
+    '清空聊天记录'
+  );
+}
+
+/** 好友间转账（站内余额，单位分） */
+async function dmTransfer(userId, toUserId, amountFen, note) {
+  const r = await call(
+    'app_dm_transfer',
+    {
+      p_secret: secret,
+      p_from: String(userId || ''),
+      p_to: String(toUserId || ''),
+      p_amount: Math.round(Number(amountFen) || 0),
+      p_note: String(note || ''),
+    },
+    '转账'
+  );
+  return {
+    message: dmMsgRow(r && r.message),
+    balance: Number((r && r.balance) || 0),
   };
 }
 
@@ -1111,6 +1146,8 @@ module.exports = {
   friendList,
   dmSend,
   dmThread,
+  dmClear,
+  dmTransfer,
   dmUnread,
   friendRemove,
   applyRefund,
