@@ -363,9 +363,10 @@ check('板块标题用后台配置的文案', text('.section-head h2').includes(
 check('首页横幅显示后台文案', text('.home-banner').includes('双 11 全场 8 折'), text('.home-banner').replace(/\s+/g, ' ').slice(0, 40));
 check('首页横幅有副文案与按钮', text('.home-banner').includes('下单再送 60 金币') && text('.home-banner').includes('去看看'));
 check(
-  '快捷入口按后台配置渲染（含固定的游戏入口）',
-  window.document.querySelectorAll('.entry-item').length === 4 + 1 &&
-    text('.entry-grid').includes('大西瓜'),
+  '快捷入口按后台配置渲染（含固定的好友与游戏入口）',
+  window.document.querySelectorAll('.entry-item').length === 4 + 2 &&
+    text('.entry-grid').includes('大西瓜') &&
+    text('.entry-grid').includes('好友'),
   String(window.document.querySelectorAll('.entry-item').length)
 );
 check('快捷入口文案正确', text('.entry-grid').includes('优惠活动') && text('.entry-grid').includes('联系客服'));
@@ -592,6 +593,11 @@ check(
 check(
   '我的页有收藏与反馈入口',
   Boolean($('[data-act="open-favorites"]')) && Boolean($('[data-act="feedback-new"]')) && Boolean($('[data-act="feedback-mine"]'))
+);
+check(
+  '我的页有好友消息与在线客服入口',
+  Boolean($('[data-act="go-friends"]')) && Boolean($('[data-act="go-chat"]')),
+  text('[data-act="go-friends"]').replace(/\s+/g, ' ')
 );
 
 // 4a2. 编辑资料：昵称 / 个性签名 / 换绑手机号

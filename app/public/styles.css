@@ -1151,6 +1151,7 @@ body {
   margin: 4px 14px 12px;
 }
 .entry-item {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -1163,6 +1164,19 @@ body {
   cursor: pointer;
   transition: transform 0.12s ease;
 }
+/* 金刚区入口右上角红点（好友未读 / 待处理申请） */
+.entry-dot {
+  position: absolute;
+  top: 8px;
+  right: 10px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #f05252;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+.entry-dot.on { opacity: 1; }
 .entry-item:active { transform: scale(0.96); }
 .entry-icon { font-size: 22px; line-height: 1; }
 .entry-title {

@@ -914,6 +914,153 @@ async function adminChatMsgs(userId) {
   };
 }
 
+/* ---------------- 好友与私聊 ---------------- */
+
+function friendReqRow(row) {
+  if (!row) return null;
+  return {
+    id: String(row.id || ''),
+    otherId: String(row.otherId || row.other_id || ''),
+    nickname: String(row.nickname || ''),
+    avatar: row.avatar || null,
+    createdAt: toMs(row.createdAt || row.created_at),
+  };
+}
+
+function friendRow(row) {
+  if (!row) return null;
+  return {
+    id: String(row.id || ''),
+    nickname: String(row.nickname || ''),
+    avatar: row.avatar || null,
+    lastBody: String(row.lastBody || ''),
+    lastFrom: String(row.lastFrom || ''),
+    lastAt: toMs(row.lastAt),
+    unread: Math.max(0, Number(row.unread) || 0),
+    friendSince: toMs(row.friendSince),
+  };
+}
+
+function dmMsgRow(row) {
+  if (!row) return null;
+  return {
+    id: String(row.id || ''),
+    fromUser: String(row.from_user || ''),
+    toUser: String(row.to_user || ''),
+    body: String(row.body || ''),
+    createdAt: toMs(row.created_at),
+  };
+}
+
+/** 搜人：手机号精确 / 昵称模糊 */
+async function friendSearch(userId, q) {
+  const rows = await call(
+    'app_friend_search',
+    { p_secret: secret, p_user: String(userId || ''), p_q: String(q || '') },
+    '搜索用户'
+  );
+  return (Array.isArray(rows) ? rows : []).map((r) => ({
+    id: String(r.id || ''),
+    nickname: String(r.nickname || ''),
+    avatar: r.avatar || null,
+    phoneMasked: String(r.phoneMasked || ''),
+    relation: String(r.relation || 'none'),
+  }));
+}
+
+/** 发起加好友（对方已申请时直接互相加为好友） */
+async function friendRequest(userId, toUserId) {
+  return call(
+    'app_friend_request',
+    { p_secret: secret, p_from: String(userId || ''), p_to: String(toUserId || '') },
+    '发送好友申请'
+  );
+}
+
+/** 我收到的与发出的待处理申请 */
+async function friendRequests(userId) {
+  const r = await call('app_friend_requests', { p_secret: secret, p_user: String(userId || '') }, '读取好友申请');
+  return {
+    incoming: (Array.isArray(r && r.incoming) ? r.incoming : []).map(friendReqRow).filter(Boolean),
+    outgoing: (Array.isArray(r && r.outgoing) ? r.outgoing : []).map(friendReqRow).filter(Boolean),
+  };
+}
+
+/** 同意 / 拒绝好友申请 */
+async function friendRespond(userId, requestId, accept) {
+  return call(
+    'app_friend_respond',
+    {
+      p_secret: secret,
+      p_user: String(userId || ''),
+      p_id: String(requestId || ''),
+      p_accept: Boolean(accept),
+    },
+    accept ? '同意好友申请' : '拒绝好友申请'
+  );
+}
+
+/** 好友列表 + 总未读 + 待处理申请数 */
+async function friendList(userId) {
+  const r = await call('app_friend_list', { p_secret: secret, p_user: String(userId || '') }, '读取好友列表');
+  return {
+    friends: (Array.isArray(r && r.friends) ? r.friends : []).map(friendRow).filter(Boolean),
+    unread: Math.max(0, Number(r && r.unread) || 0),
+    pending: Math.max(0, Number(r && r.pending) || 0),
+  };
+}
+
+/** 发私聊消息（必须是好友） */
+async function dmSend(userId, toUserId, body) {
+  const r = await call(
+    'app_dm_send',
+    {
+      p_secret: secret,
+      p_from: String(userId || ''),
+      p_to: String(toUserId || ''),
+      p_body: String(body || ''),
+    },
+    '发送消息'
+  );
+  return dmMsgRow(r && r.message);
+}
+
+/** 读和某个好友的对话（顺带清未读） */
+async function dmThread(userId, otherId) {
+  const r = await call(
+    'app_dm_thread',
+    { p_secret: secret, p_user: String(userId || ''), p_other: String(otherId || '') },
+    '读取聊天记录'
+  );
+  const f = (r && r.friend) || {};
+  return {
+    friend: {
+      id: String(f.id || otherId || ''),
+      nickname: String(f.nickname || ''),
+      avatar: f.avatar || null,
+    },
+    messages: (Array.isArray(r && r.messages) ? r.messages : []).map(dmMsgRow).filter(Boolean),
+  };
+}
+
+/** 私聊未读 + 好友申请待处理数 */
+async function dmUnread(userId) {
+  const r = await call('app_dm_unread', { p_secret: secret, p_user: String(userId || '') }, '读取未读消息');
+  return {
+    unread: Math.max(0, Number(r && r.unread) || 0),
+    pending: Math.max(0, Number(r && r.pending) || 0),
+  };
+}
+
+/** 删除好友 */
+async function friendRemove(userId, otherId) {
+  return call(
+    'app_friend_remove',
+    { p_secret: secret, p_user: String(userId || ''), p_other: String(otherId || '') },
+    '删除好友'
+  );
+}
+
 module.exports = {
   enabled,
   endpoint,
@@ -957,6 +1104,15 @@ module.exports = {
   chatUnread,
   adminChatThreads,
   adminChatMsgs,
+  friendSearch,
+  friendRequest,
+  friendRequests,
+  friendRespond,
+  friendList,
+  dmSend,
+  dmThread,
+  dmUnread,
+  friendRemove,
   applyRefund,
   myRefunds,
   cancelRefund,

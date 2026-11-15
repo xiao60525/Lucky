@@ -2908,6 +2908,142 @@ async function handleApi(req, res, url) {
     }
   }
 
+  /* ---------------- 好友与私聊 ---------------- */
+
+  // 好友相关的错误统一翻译成用户能看懂的话
+  const friendFail = (res, e, fallback) => {
+    const m = String((e && e.message) || '');
+    if (m.includes('not_friends')) return sendJSON(res, 403, { message: '你们还不是好友，先加好友再聊吧' });
+    if (m.includes('user_not_found')) return sendJSON(res, 404, { message: '找不到这个用户' });
+    if (m.includes('not_yours')) return sendJSON(res, 403, { message: '这条申请不是发给你的' });
+    if (m.includes('already_handled')) return sendJSON(res, 409, { message: '这条申请已经处理过了' });
+    if (m.includes('request_not_found')) return sendJSON(res, 404, { message: '这条申请不存在' });
+    if (m.includes('bad_target')) return sendJSON(res, 400, { message: '不能对自己做这个操作' });
+    if (m.includes('empty_message')) return sendJSON(res, 400, { message: '说点什么再发送吧' });
+    return sendJSON(res, 502, { message: fallback + '：' + m });
+  };
+
+  // 好友列表（含最后一条消息与未读）
+  if (pathname === '/api/friends' && method === 'GET') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    try {
+      const out = await store.friendList(uid);
+      return sendJSON(res, 200, out);
+    } catch (e) {
+      return friendFail(res, e, '读取好友列表失败');
+    }
+  }
+
+  // 搜人加好友
+  if (pathname === '/api/friends/search' && method === 'GET') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    const q = String(url.searchParams.get('q') || '').trim();
+    if (!q) return sendJSON(res, 200, { list: [] });
+    try {
+      const list = await store.friendSearch(uid, q);
+      return sendJSON(res, 200, { list });
+    } catch (e) {
+      return friendFail(res, e, '搜索失败');
+    }
+  }
+
+  // 好友申请列表
+  if (pathname === '/api/friends/requests' && method === 'GET') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    try {
+      return sendJSON(res, 200, await store.friendRequests(uid));
+    } catch (e) {
+      return friendFail(res, e, '读取好友申请失败');
+    }
+  }
+
+  // 发起加好友
+  if (pathname === '/api/friends/request' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    const body = await readBody(req);
+    const toUserId = String(body.toUserId || body.userId || '').trim();
+    if (!toUserId) return sendJSON(res, 400, { message: '请选择要加的用户' });
+    try {
+      return sendJSON(res, 200, await store.friendRequest(uid, toUserId));
+    } catch (e) {
+      return friendFail(res, e, '发送好友申请失败');
+    }
+  }
+
+  // 同意 / 拒绝
+  if (pathname === '/api/friends/respond' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    const body = await readBody(req);
+    const id = String(body.id || '').trim();
+    if (!id) return sendJSON(res, 400, { message: '缺少申请编号' });
+    try {
+      return sendJSON(res, 200, await store.friendRespond(uid, id, body.accept !== false));
+    } catch (e) {
+      return friendFail(res, e, '处理好友申请失败');
+    }
+  }
+
+  // 删除好友
+  if (pathname === '/api/friends/remove' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    const body = await readBody(req);
+    const otherId = String(body.userId || body.otherId || '').trim();
+    if (!otherId) return sendJSON(res, 400, { message: '缺少用户' });
+    try {
+      return sendJSON(res, 200, await store.friendRemove(uid, otherId));
+    } catch (e) {
+      return friendFail(res, e, '删除好友失败');
+    }
+  }
+
+  // 私聊记录（顺带清未读）
+  if (pathname === '/api/dm/thread' && method === 'GET') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    const otherId = String(url.searchParams.get('userId') || '').trim();
+    if (!otherId) return sendJSON(res, 400, { message: '缺少聊天对象' });
+    try {
+      return sendJSON(res, 200, await store.dmThread(uid, otherId));
+    } catch (e) {
+      return friendFail(res, e, '读取聊天记录失败');
+    }
+  }
+
+  // 发私聊消息
+  if (pathname === '/api/dm/send' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    const body = await readBody(req);
+    const toUserId = String(body.toUserId || body.userId || '').trim();
+    const text = String(body.text || '').trim();
+    if (!toUserId) return sendJSON(res, 400, { message: '缺少聊天对象' });
+    if (!text) return sendJSON(res, 400, { message: '说点什么再发送吧' });
+    if (text.length > 1000) return sendJSON(res, 400, { message: '单条消息最多 1000 字' });
+    try {
+      const message = await store.dmSend(uid, toUserId, text);
+      return sendJSON(res, 200, { message });
+    } catch (e) {
+      return friendFail(res, e, '发送失败');
+    }
+  }
+
+  // 私聊未读（首页/我的页红点用）
+  if (pathname === '/api/dm/unread' && method === 'GET') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 200, { unread: 0, pending: 0 });
+    try {
+      return sendJSON(res, 200, await store.dmUnread(uid));
+    } catch (e) {
+      return sendJSON(res, 200, { unread: 0, pending: 0 });
+    }
+  }
+
   /* ---------------- 确认收货 ---------------- */
 
   // 用户确认收货：paid 订单记录 receivedAt（不改变 status，所有已支付判断不受影响）
@@ -4444,6 +4580,7 @@ function serveStatic(req, res, url) {
   if (pathname === '/admin') pathname = '/admin.html';
   if (pathname === '/game') pathname = '/game.html';
   if (pathname === '/chat') pathname = '/chat.html';
+  if (pathname === '/friends') pathname = '/friends.html';
 
   const filePath = path.join(PUBLIC_DIR, path.normalize(pathname).replace(/^(\.\.[/\\])+/, ''));
   if (!filePath.startsWith(PUBLIC_DIR)) {

@@ -39,6 +39,8 @@ const state = {
   contentQuery: '', // 内容页搜索词
   contentCat: 'all', // 内容页分类筛选：all / 分类名 / __fav
   chatUnread: 0, // 客服未读消息数（首页红点）
+  friendUnread: 0, // 好友私聊未读消息数
+  friendPending: 0, // 待处理的好友申请数
 };
 
 const sheetState = { type: null, product: null, order: null, channel: 'wechat', productId: '', reviewStars: 5 };
@@ -1283,12 +1285,17 @@ function bannerHTML() {
 /** 快捷入口宫格：后台添加什么就显示什么 */
 function entriesHTML() {
   const list = homeCfg().entries;
-  // 金刚区最后一格固定为小游戏入口（合成大西瓜，跳 /game）
+  // 金刚区末尾两格固定：好友消息（/friends）、小游戏（/game）
+  const friendEntry = `<button class="entry-item" data-act="go-friends">
+    <span class="entry-icon">👥</span>
+    <span class="entry-title">好友</span>
+    <span class="entry-dot${state.friendUnread || state.friendPending ? ' on' : ''}" id="friendEntryDot"></span>
+  </button>`;
   const gameEntry = `<button class="entry-item" data-act="go-game">
     <span class="entry-icon">🍉</span>
     <span class="entry-title">大西瓜</span>
   </button>`;
-  if (!list.length) return `<div class="entry-grid">${gameEntry}</div>`;
+  if (!list.length) return `<div class="entry-grid">${friendEntry}${gameEntry}</div>`;
   return `<div class="entry-grid">${list
     .map(
       (e, i) => `<button class="entry-item" data-act="home-entry" data-i="${i}">
@@ -1296,7 +1303,7 @@ function entriesHTML() {
         <span class="entry-title">${esc(e.title)}</span>
       </button>`
     )
-    .join('')}${gameEntry}</div>`;
+    .join('')}${friendEntry}${gameEntry}</div>`;
 }
 
 /* ---------------- 渲染：内容 ---------------- */
@@ -2640,6 +2647,17 @@ function renderUserCenter() {
       <button class="mini-btn" data-act="go-content">看内容 ›</button>
     </div>
     <div class="card set-list">
+      <button class="set-row" data-act="go-friends">
+        <span>好友消息</span>
+        <i style="font-size:12px;color:var(--muted)">${
+          state.friendUnread
+            ? state.friendUnread + ' 条新消息'
+            : state.friendPending
+              ? state.friendPending + ' 条好友申请'
+              : '聊天 / 加好友'
+        }</i>
+        <i>›</i>
+      </button>
       <button class="set-row" data-act="go-chat">
         <span>在线客服</span>
         <i style="font-size:12px;color:var(--muted)">${
@@ -4342,6 +4360,7 @@ view.addEventListener('click', async (e) => {
   if (act === 'edit-address') return addressSheet();
   if (act === 'go-game') return void location.assign(withShare('/game'));
   if (act === 'go-chat') return void location.assign(withShare('/chat'));
+  if (act === 'go-friends') return void location.assign(withShare('/friends'));
   if (act === 'settings') return settingsSheet();
   if (act === 'share-copy') return doShareCopy();
   if (act === 'share-more') return doShareMore();
@@ -5100,7 +5119,32 @@ async function bootstrap() {
   registerSW();
   maybeShowInstallHint();
   refreshChatUnread();
+  refreshFriendUnread();
   startChatUnreadPoll();
+}
+
+/** 好友未读：同步金刚区好友格的红点 */
+function syncFriendBadge() {
+  const dot = document.getElementById('friendEntryDot');
+  if (dot) dot.classList.toggle('on', state.friendUnread > 0 || state.friendPending > 0);
+}
+
+/** 拉一次好友未读与待处理申请（未登录直接归零） */
+async function refreshFriendUnread() {
+  if (!state.viewer) {
+    state.friendUnread = 0;
+    state.friendPending = 0;
+    syncFriendBadge();
+    return;
+  }
+  try {
+    const r = await api('/api/dm/unread');
+    state.friendUnread = Number(r.unread) || 0;
+    state.friendPending = Number(r.pending) || 0;
+  } catch (e) {
+    /* 未读拿不到不影响主流程 */
+  }
+  syncFriendBadge();
 }
 
 /** 客服未读：同步首页头部的红点 */
@@ -5131,6 +5175,7 @@ function startChatUnreadPoll() {
   chatUnreadTimer = setInterval(() => {
     if (document.hidden || !state.viewer) return;
     refreshChatUnread();
+    refreshFriendUnread();
   }, 60000);
 }
 

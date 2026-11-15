@@ -1,0 +1,796 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+<meta name="theme-color" content="#f4f5f9" />
+<meta name="robots" content="noindex, nofollow" />
+<title>好友消息</title>
+<link rel="icon" href="data:," />
+<style>
+  :root {
+    --bg:#f4f5f9; --card:#fff; --text:#10131c; --muted:#8b91a1; --line:#edeff5;
+    --accent:#5a5cf0; --accent2:#8b5cf6; --danger:#f05252; --ok:#12b981;
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  body.dark {
+    --bg:#12141c; --card:#1c1f2b; --text:#e9ecf5; --muted:#8b93a7; --line:#262a38;
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg); color:var(--text); font-size:15px; line-height:1.55;
+    font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Helvetica Neue','Microsoft YaHei',sans-serif;
+    display:flex; justify-content:center; overflow:hidden;
+  }
+  button, input, textarea { font-family:inherit; font-size:inherit; color:inherit; }
+  button { border:0; background:none; cursor:pointer; }
+  [hidden] { display:none !important; }
+
+  .page {
+    position:relative; width:100%; max-width:430px; height:100dvh;
+    background:var(--bg); display:flex; flex-direction:column; overflow:hidden;
+  }
+  @media (min-width:480px) and (min-height:700px) {
+    body { align-items:center; background:#e6e8f0; }
+    .page { height:min(880px,95dvh); border-radius:34px; box-shadow:0 24px 70px rgba(15,20,40,.18); }
+  }
+  body.dark { background:#0c0e14; }
+
+  /* ---------- 顶栏 ---------- */
+  .top {
+    flex:none; display:flex; align-items:center; gap:10px;
+    padding:calc(env(safe-area-inset-top,0px) + 12px) 14px 12px;
+    background:var(--card); border-bottom:1px solid var(--line);
+  }
+  .back {
+    flex:none; width:34px; height:34px; border-radius:12px; border:1px solid var(--line);
+    display:flex; align-items:center; justify-content:center; font-size:18px;
+  }
+  .back:active { transform:scale(.94); }
+  .who { flex:1; min-width:0; }
+  .who b { display:block; font-size:17px; font-weight:650; line-height:1.2; }
+  .who i { font-style:normal; font-size:11.5px; color:var(--muted); }
+  .top-btn {
+    flex:none; height:32px; padding:0 12px; border-radius:11px; font-size:13px; font-weight:600;
+    background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff;
+  }
+  .top-btn:active { transform:scale(.96); }
+
+  /* ---------- 分段 ---------- */
+  .tabs { flex:none; display:flex; gap:8px; padding:10px 14px 4px; background:var(--card); }
+  .tab {
+    position:relative; padding:7px 14px; border-radius:12px; font-size:13.5px; font-weight:600;
+    color:var(--muted); background:transparent;
+  }
+  .tab.on { color:var(--text); background:var(--bg); box-shadow:inset 0 0 0 1px var(--line); }
+  .tab em {
+    font-style:normal; display:inline-block; min-width:16px; height:16px; line-height:16px; padding:0 4px;
+    margin-left:4px; border-radius:9px; background:var(--danger); color:#fff; font-size:10.5px; text-align:center;
+  }
+
+  /* ---------- 列表 ---------- */
+  .list { flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; padding:8px 10px calc(18px + var(--safe-bottom)); }
+  .row {
+    width:100%; display:flex; align-items:center; gap:11px; padding:11px 10px; border-radius:15px;
+    background:transparent; text-align:left;
+  }
+  .row:active { background:var(--card); }
+  .ava {
+    flex:none; width:44px; height:44px; border-radius:50%; overflow:hidden;
+    display:flex; align-items:center; justify-content:center;
+    background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff; font-size:16px; font-weight:600;
+  }
+  .ava.has-img { background:#dde1ec; }
+  .ava img { width:100%; height:100%; object-fit:cover; display:block; }
+  .row-txt { flex:1; min-width:0; }
+  .row-txt b { display:block; font-size:15px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .row-txt i {
+    display:block; font-style:normal; font-size:12.5px; color:var(--muted);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .row-meta { flex:none; display:flex; flex-direction:column; align-items:flex-end; gap:5px; }
+  .row-meta em { font-style:normal; font-size:11px; color:var(--muted); }
+  .badge {
+    min-width:17px; height:17px; line-height:17px; padding:0 5px; border-radius:9px;
+    background:var(--danger); color:#fff; font-size:10.5px; font-weight:600; text-align:center;
+  }
+  .badge.zero { display:none; }
+
+  .empty { padding:56px 26px; text-align:center; color:var(--muted); }
+  .empty .big { font-size:42px; line-height:1; margin-bottom:12px; }
+  .empty p { margin:0 0 16px; font-size:13.5px; }
+  .section-note { font-size:12px; color:var(--muted); padding:12px 6px 2px; }
+
+  /* ---------- 申请卡片 ---------- */
+  .req-card { background:var(--card); border-radius:16px; padding:12px; margin:8px 4px; }
+  .req-head { display:flex; align-items:center; gap:10px; }
+  .req-head .ava { width:40px; height:40px; font-size:15px; }
+  .req-head b { flex:1; min-width:0; font-size:14.5px; font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .req-head em { font-style:normal; font-size:11.5px; color:var(--muted); }
+  .req-acts { display:flex; gap:8px; margin-top:10px; }
+  .btn-mini {
+    flex:1; height:34px; border-radius:11px; font-size:13px; font-weight:600; border:1px solid var(--line);
+  }
+  .btn-mini.primary { background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff; border-color:transparent; }
+  .btn-mini.ghost { color:var(--muted); }
+  .btn-mini:active { transform:scale(.97); }
+
+  /* ---------- 聊天面板 ---------- */
+  .chat {
+    position:absolute; inset:0; z-index:20; display:flex; flex-direction:column;
+    background:var(--bg); transform:translateX(100%); transition:transform .22s ease;
+    pointer-events:none;
+  }
+  .chat.show { transform:translateX(0); pointer-events:auto; }
+  .chat .top { border-bottom:1px solid var(--line); }
+  .chat-who { flex:1; min-width:0; text-align:center; }
+  .chat-who b { display:block; font-size:15.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .chat-who i { font-style:normal; font-size:11px; color:var(--muted); }
+  .msgs { flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch; padding:14px 12px 6px; }
+  .day { text-align:center; font-size:11px; color:var(--muted); margin:10px 0 12px; }
+  .line { display:flex; gap:8px; margin-bottom:12px; align-items:flex-end; }
+  .line.me { flex-direction:row-reverse; }
+  .line .ava { width:32px; height:32px; font-size:13px; }
+  .bubble {
+    max-width:72%; padding:9px 12px; border-radius:14px; font-size:14.5px; line-height:1.5;
+    background:var(--card); border:1px solid var(--line); word-break:break-word; white-space:pre-wrap;
+  }
+  .line.me .bubble {
+    background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff; border-color:transparent;
+  }
+  .line.pending .bubble { opacity:.65; }
+  .chat-empty { text-align:center; color:var(--muted); font-size:12.5px; padding:30px 20px; }
+  .composer {
+    flex:none; display:flex; align-items:flex-end; gap:8px; padding:10px 12px calc(10px + var(--safe-bottom));
+    background:var(--card); border-top:1px solid var(--line);
+  }
+  .composer textarea {
+    flex:1; min-height:38px; max-height:110px; padding:9px 12px; border-radius:13px; border:1px solid var(--line);
+    background:var(--bg); resize:none; outline:none; font-size:14.5px; line-height:1.4;
+  }
+  .send {
+    flex:none; height:38px; padding:0 16px; border-radius:13px; font-size:14px; font-weight:600;
+    background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff;
+  }
+  .send:disabled { opacity:.55; }
+  .send:active { transform:scale(.96); }
+
+  /* ---------- 加好友弹层 ---------- */
+  .sheet-mask {
+    position:absolute; inset:0; background:rgba(10,12,20,.42); z-index:30; opacity:0; pointer-events:none;
+    transition:opacity .2s;
+  }
+  .sheet-mask.show { opacity:1; pointer-events:auto; }
+  .sheet {
+    position:absolute; left:0; right:0; bottom:0; z-index:31; max-height:82%;
+    background:var(--card); border-radius:22px 22px 0 0; padding:16px 14px calc(16px + var(--safe-bottom));
+    transform:translateY(102%); transition:transform .24s cubic-bezier(.3,.9,.3,1);
+    display:flex; flex-direction:column; gap:12px;
+  }
+  .sheet.show { transform:translateY(0); }
+  .sheet h3 { margin:0; font-size:16px; font-weight:650; display:flex; align-items:center; }
+  .sheet h3 button { margin-left:auto; font-size:13px; color:var(--muted); }
+  .search { display:flex; gap:8px; }
+  .search input {
+    flex:1; height:40px; padding:0 13px; border-radius:13px; border:1px solid var(--line);
+    background:var(--bg); outline:none; font-size:14.5px;
+  }
+  .search button {
+    flex:none; padding:0 16px; height:40px; border-radius:13px; font-weight:600; font-size:14px;
+    background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff;
+  }
+  .hint { font-size:12px; color:var(--muted); line-height:1.5; }
+  .results { overflow-y:auto; min-height:80px; }
+  .res {
+    display:flex; align-items:center; gap:10px; padding:10px 2px; border-bottom:1px solid var(--line);
+  }
+  .res:last-child { border-bottom:0; }
+  .res .ava { width:40px; height:40px; font-size:15px; }
+  .res-txt { flex:1; min-width:0; }
+  .res-txt b { display:block; font-size:14.5px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .res-txt i { font-style:normal; font-size:11.5px; color:var(--muted); }
+  .res-btn {
+    flex:none; height:32px; padding:0 13px; border-radius:11px; font-size:13px; font-weight:600;
+    border:1px solid var(--line); color:var(--text);
+  }
+  .res-btn.add { background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff; border-color:transparent; }
+  .res-btn.done { color:var(--muted); }
+
+  /* ---------- 未登录 ---------- */
+  .gate { flex:1; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px; padding:30px; }
+  .gate .big { font-size:44px; }
+  .gate p { margin:0; color:var(--muted); font-size:13.5px; text-align:center; }
+  .gate button {
+    height:42px; padding:0 26px; border-radius:14px; font-weight:600; font-size:15px;
+    background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff;
+  }
+
+  .toast {
+    position:fixed; left:50%; bottom:76px; transform:translate(-50%,10px); z-index:60;
+    background:rgba(16,19,28,.92); color:#fff; padding:9px 16px; border-radius:12px; font-size:13.5px;
+    opacity:0; pointer-events:none; transition:all .2s; max-width:88vw; text-align:center;
+  }
+  .toast.show { opacity:1; transform:translate(-50%,0); }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="top">
+    <button class="back" id="backBtn" aria-label="返回">‹</button>
+    <div class="who"><b>消息</b><i>和好友聊天</i></div>
+    <button class="top-btn" id="addBtn">＋ 加好友</button>
+  </div>
+
+  <div class="tabs" id="tabs">
+    <button class="tab on" data-tab="chat">好友</button>
+    <button class="tab" data-tab="req">申请<em id="reqBadge" hidden>0</em></button>
+  </div>
+
+  <div class="list" id="list"></div>
+
+  <div class="gate" id="gate" hidden>
+    <div class="big">💬</div>
+    <p>登录后就能加好友、和朋友一对一聊天</p>
+    <button id="gateBtn">去登录</button>
+  </div>
+
+  <!-- 聊天面板 -->
+  <section class="chat" id="chatPanel" aria-hidden="true">
+    <div class="top">
+      <button class="back" id="chatBack" aria-label="返回">‹</button>
+      <div class="chat-who"><b id="chatName">聊天</b><i id="chatSub">好友</i></div>
+      <button class="back" id="chatMore" aria-label="更多">⋯</button>
+    </div>
+    <div class="msgs" id="msgs"></div>
+    <div class="composer">
+      <textarea id="input" rows="1" placeholder="说点什么…"></textarea>
+      <button class="send" id="sendBtn">发送</button>
+    </div>
+  </section>
+
+  <!-- 加好友 -->
+  <div class="sheet-mask" id="sheetMask"></div>
+  <div class="sheet" id="addSheet">
+    <h3>加好友<button id="sheetClose">关闭</button></h3>
+    <div class="search">
+      <input id="q" placeholder="输入手机号或昵称" autocomplete="off" />
+      <button id="searchBtn">搜索</button>
+    </div>
+    <div class="hint">输入对方的手机号或昵称（至少 1 个字）即可找到人；手机号需完整输入。</div>
+    <div class="results" id="results"></div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var TOKEN_KEY = 'user_token_v1';
+  var DARK_KEY = 'dark_mode';
+
+  var $ = function (id) { return document.getElementById(id); };
+  var listEl = $('list');
+  var msgsEl = $('msgs');
+  var inputEl = $('input');
+  var toastEl = $('toast');
+
+  var state = {
+    me: '',
+    friends: [],
+    pending: 0,
+    unread: 0,
+    requests: { incoming: [], outgoing: [] },
+    tab: 'chat',
+    chatId: '',
+    chatName: '',
+    chatAvatar: null,
+    msgs: [],
+    sending: false,
+    timerList: null,
+    timerChat: null,
+    searchSeq: 0,
+  };
+
+  var params = new URLSearchParams(location.search);
+  var sharecode = params.get('sharecode') || '';
+  var shareQs = sharecode ? 'sharecode=' + encodeURIComponent(sharecode) : '';
+
+  /* ---------- 基础 ---------- */
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function token() {
+    var q = params.get('t');
+    if (q) { try { localStorage.setItem(TOKEN_KEY, q); } catch (e) {} return q; }
+    try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return ''; }
+  }
+
+  function tokenPayload(t) {
+    try {
+      var p = String(t).split('.')[0].replace(/-/g, '+').replace(/_/g, '/');
+      while (p.length % 4) p += '=';
+      var txt = decodeURIComponent(escape(atob(p)));
+      return txt.split('|')[0] || null;
+    } catch (e) { return null; }
+  }
+
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toast._t);
+    toast._t = setTimeout(function () { toastEl.classList.remove('show'); }, 2400);
+  }
+
+  function applyDark() {
+    var on = false;
+    try { on = localStorage.getItem(DARK_KEY) === '1'; } catch (e) {}
+    document.body.classList.toggle('dark', on);
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', on ? '#12141c' : '#f4f5f9');
+  }
+
+  function api(path, options) {
+    options = options || {};
+    var headers = { 'Content-Type': 'application/json' };
+    var t = token();
+    var url = path;
+    if (t) {
+      headers.Authorization = 'Bearer ' + t;
+      headers['x-user-token'] = t;
+      url += (path.indexOf('?') >= 0 ? '&' : '?') + 't=' + encodeURIComponent(t);
+    }
+    return fetch(url, Object.assign({ credentials: 'same-origin' }, options, {
+      headers: Object.assign(headers, options.headers || {}),
+    })).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (body) {
+        if (!res.ok) {
+          var err = new Error(body.message || '请求失败（' + res.status + '）');
+          err.status = res.status;
+          throw err;
+        }
+        return body;
+      });
+    });
+  }
+
+  function homeUrl() {
+    return '/' + (sharecode ? '?' + shareQs : '');
+  }
+
+  /* ---------- 时间 ---------- */
+  function sameDay(a, b) {
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  }
+  function hm(d) {
+    return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+  }
+  function fmtStamp(ts) {
+    if (!ts) return '';
+    var d = new Date(ts), now = new Date(), t = hm(d);
+    if (sameDay(d, now)) return t;
+    var y = new Date(now); y.setDate(now.getDate() - 1);
+    if (sameDay(d, y)) return '昨天 ' + t;
+    return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + t;
+  }
+  function dayLabel(ts) {
+    var d = new Date(ts), now = new Date();
+    if (sameDay(d, now)) return '今天';
+    var y = new Date(now); y.setDate(now.getDate() - 1);
+    if (sameDay(d, y)) return '昨天';
+    return (d.getMonth() + 1) + '月' + d.getDate() + '日';
+  }
+
+  /* ---------- 头像 ---------- */
+  function avaHTML(avatar, nickname, cls) {
+    var c = cls || 'ava';
+    if (avatar) return '<span class="' + c + ' has-img"><img src="' + esc(avatar) + '" alt="" /></span>';
+    var ini = String(nickname || '用').trim().slice(0, 1) || '用';
+    return '<span class="' + c + '">' + esc(ini) + '</span>';
+  }
+
+  /* ---------- 列表渲染 ---------- */
+  function renderList() {
+    if (!token()) {
+      $('gate').hidden = false;
+      $('tabs').hidden = true;
+      listEl.hidden = true;
+      $('addBtn').hidden = true;
+      return;
+    }
+    $('gate').hidden = true;
+    $('tabs').hidden = false;
+    listEl.hidden = false;
+    $('addBtn').hidden = false;
+
+    var badge = $('reqBadge');
+    if (state.pending > 0) { badge.hidden = false; badge.textContent = state.pending > 99 ? '99+' : String(state.pending); }
+    else badge.hidden = true;
+
+    if (state.tab === 'req') return renderRequests();
+
+    if (!state.friends.length) {
+      listEl.innerHTML = '<div class="empty"><div class="big">👋</div>' +
+        '<p>还没有好友，加个朋友一起聊吧</p>' +
+        '<button class="btn-mini primary" style="max-width:180px;margin:0 auto" id="emptyAdd">＋ 加好友</button></div>';
+      var b = $('emptyAdd');
+      if (b) b.onclick = openAdd;
+      return;
+    }
+
+    listEl.innerHTML = state.friends.map(function (f) {
+      var last = f.lastBody
+        ? (f.lastFrom === state.me ? '我：' : '') + f.lastBody
+        : '打个招呼吧';
+      return '<button class="row" data-id="' + esc(f.id) + '">' +
+        avaHTML(f.avatar, f.nickname) +
+        '<span class="row-txt"><b>' + esc(f.nickname) + '</b><i>' + esc(last) + '</i></span>' +
+        '<span class="row-meta"><em>' + esc(fmtStamp(f.lastAt)) + '</em>' +
+        '<span class="badge' + (f.unread > 0 ? '' : ' zero') + '">' + (f.unread > 99 ? '99+' : f.unread) + '</span>' +
+        '</span></button>';
+    }).join('');
+
+    Array.prototype.forEach.call(listEl.querySelectorAll('.row'), function (el) {
+      el.onclick = function () { openChat(el.dataset.id); };
+    });
+  }
+
+  function renderRequests() {
+    var inc = state.requests.incoming || [];
+    var outg = state.requests.outgoing || [];
+    if (!inc.length && !outg.length) {
+      listEl.innerHTML = '<div class="empty"><div class="big">📭</div><p>暂时没有好友申请</p></div>';
+      return;
+    }
+    var html = '';
+    if (inc.length) {
+      html += '<div class="section-note">收到的申请</div>';
+      html += inc.map(function (r) {
+        return '<div class="req-card"><div class="req-head">' + avaHTML(r.avatar, r.nickname) +
+          '<b>' + esc(r.nickname) + '</b><em>' + esc(fmtStamp(r.createdAt)) + '</em></div>' +
+          '<div class="req-acts">' +
+          '<button class="btn-mini ghost" data-respond="0" data-id="' + esc(r.id) + '">忽略</button>' +
+          '<button class="btn-mini primary" data-respond="1" data-id="' + esc(r.id) + '">同意</button>' +
+          '</div></div>';
+      }).join('');
+    }
+    if (outg.length) {
+      html += '<div class="section-note">我发出的</div>';
+      html += outg.map(function (r) {
+        return '<div class="req-card"><div class="req-head">' + avaHTML(r.avatar, r.nickname) +
+          '<b>' + esc(r.nickname) + '</b><em>等待对方同意</em></div></div>';
+      }).join('');
+    }
+    listEl.innerHTML = html;
+    Array.prototype.forEach.call(listEl.querySelectorAll('[data-respond]'), function (el) {
+      el.onclick = function () { respond(el.dataset.id, el.dataset.respond === '1', el); };
+    });
+  }
+
+  /* ---------- 数据加载 ---------- */
+  function loadFriends(silent) {
+    if (!token()) { renderList(); return Promise.resolve(); }
+    return api('/api/friends').then(function (r) {
+      state.friends = r.friends || [];
+      state.pending = r.pending || 0;
+      state.unread = r.unread || 0;
+      renderList();
+      if (state.tab === 'req') loadRequests(true);
+    }).catch(function (e) {
+      if (!silent) toast(e.message);
+    });
+  }
+
+  function loadRequests(silent) {
+    if (!token()) return Promise.resolve();
+    return api('/api/friends/requests').then(function (r) {
+      state.requests = { incoming: r.incoming || [], outgoing: r.outgoing || [] };
+      if (state.tab === 'req') renderList();
+    }).catch(function (e) {
+      if (!silent) toast(e.message);
+    });
+  }
+
+  /* ---------- 聊天 ---------- */
+  function openChat(id) {
+    var f = state.friends.filter(function (x) { return x.id === id; })[0] || { id: id, nickname: '好友', avatar: null };
+    state.chatId = id;
+    state.chatName = f.nickname;
+    state.chatAvatar = f.avatar;
+    $('chatName').textContent = f.nickname;
+    $('chatSub').textContent = '好友';
+    msgsEl.innerHTML = '<div class="chat-empty">正在加载…</div>';
+    $('chatPanel').classList.add('show');
+    $('chatPanel').setAttribute('aria-hidden', 'false');
+    loadThread(false).then(function () { scrollBottom(false); });
+    startChatPoll();
+    setTimeout(function () { inputEl.focus(); }, 240);
+  }
+
+  function closeChat() {
+    $('chatPanel').classList.remove('show');
+    $('chatPanel').setAttribute('aria-hidden', 'true');
+    state.chatId = '';
+    stopChatPoll();
+    loadFriends(true);
+  }
+
+  function loadThread(silent) {
+    if (!state.chatId) return Promise.resolve();
+    var id = state.chatId;
+    return api('/api/dm/thread?userId=' + encodeURIComponent(id)).then(function (r) {
+      if (state.chatId !== id) return;
+      if (r.friend && r.friend.nickname) {
+        state.chatName = r.friend.nickname;
+        state.chatAvatar = r.friend.avatar || state.chatAvatar;
+        $('chatName').textContent = r.friend.nickname;
+      }
+      state.msgs = r.messages || [];
+      paint();
+    }).catch(function (e) {
+      if (silent) return;
+      msgsEl.innerHTML = '<div class="chat-empty">' + esc(e.message) + '</div>';
+    });
+  }
+
+  function nearBottom() {
+    return msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 90;
+  }
+  function scrollBottom(smooth) {
+    msgsEl.scrollTo({ top: msgsEl.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+  }
+
+  function paint() {
+    var stick = nearBottom();
+    if (!state.msgs.length) {
+      msgsEl.innerHTML = '<div class="chat-empty">还没有聊过，打个招呼吧 👋</div>';
+      return;
+    }
+    var html = '';
+    var lastDay = '';
+    state.msgs.forEach(function (m) {
+      var day = m.createdAt ? dayLabel(m.createdAt) : '';
+      if (day && day !== lastDay) {
+        html += '<div class="day">' + esc(day) + '</div>';
+        lastDay = day;
+      }
+      var mine = m.fromUser === state.me;
+      html += '<div class="line' + (mine ? ' me' : '') + '">' +
+        avaHTML(mine ? null : state.chatAvatar, mine ? '我' : state.chatName) +
+        '<div class="bubble">' + esc(m.body) + '</div></div>';
+    });
+    msgsEl.innerHTML = html;
+    if (stick) scrollBottom(false);
+  }
+
+  function send() {
+    var text = String(inputEl.value || '').trim();
+    if (!text || !state.chatId || state.sending) return;
+    var to = state.chatId;
+    state.sending = true;
+    $('sendBtn').disabled = true;
+    inputEl.value = '';
+    inputEl.style.height = 'auto';
+
+    // 乐观上屏
+    var temp = {
+      id: 'tmp_' + Date.now(),
+      fromUser: state.me,
+      toUser: to,
+      body: text,
+      createdAt: Date.now(),
+    };
+    state.msgs = state.msgs.concat([temp]);
+    paint();
+    scrollBottom(true);
+
+    api('/api/dm/send', {
+      method: 'POST',
+      body: JSON.stringify({ toUserId: to, text: text }),
+    }).then(function () {
+      return loadThread(true);
+    }).catch(function (e) {
+      state.msgs = state.msgs.filter(function (m) { return m.id !== temp.id; });
+      paint();
+      toast(e.message || '发送失败');
+      inputEl.value = text;
+    }).then(function () {
+      state.sending = false;
+      $('sendBtn').disabled = false;
+    });
+  }
+
+  function startChatPoll() {
+    stopChatPoll();
+    state.timerChat = setInterval(function () {
+      if (document.hidden || !state.chatId) return;
+      loadThread(true);
+    }, 3000);
+  }
+  function stopChatPoll() {
+    if (state.timerChat) { clearInterval(state.timerChat); state.timerChat = null; }
+  }
+
+  function removeFriend() {
+    if (!state.chatId) return;
+    if (!window.confirm('确定删除好友「' + state.chatName + '」吗？删掉后聊天记录不再展示，可以重新加好友。')) return;
+    api('/api/friends/remove', { method: 'POST', body: JSON.stringify({ userId: state.chatId }) })
+      .then(function () {
+        toast('已删除好友');
+        closeChat();
+      })
+      .catch(function (e) { toast(e.message); });
+  }
+
+  /* ---------- 加好友 ---------- */
+  function openAdd() {
+    $('sheetMask').classList.add('show');
+    $('addSheet').classList.add('show');
+    setTimeout(function () { $('q').focus(); }, 220);
+  }
+  function closeAdd() {
+    $('sheetMask').classList.remove('show');
+    $('addSheet').classList.remove('show');
+  }
+
+  function relText(rel) {
+    if (rel === 'friend') return '已是好友';
+    if (rel === 'pending_out') return '已申请';
+    if (rel === 'pending_in') return '待你同意';
+    return '加好友';
+  }
+
+  function renderResults(list) {
+    var box = $('results');
+    if (!list.length) {
+      box.innerHTML = '<div class="hint" style="padding:18px 2px">没找到这个人。确认下手机号是否完整，或换个昵称关键字试试。</div>';
+      return;
+    }
+    box.innerHTML = list.map(function (u) {
+      var btn = relText(u.relation);
+      var cls = u.relation === 'none' ? 'add' : (u.relation === 'pending_in' ? 'add' : 'done');
+      return '<div class="res" data-id="' + esc(u.id) + '">' +
+        avaHTML(u.avatar, u.nickname, 'ava') +
+        '<span class="res-txt"><b>' + esc(u.nickname) + '</b><i>' + esc(u.phoneMasked || '本站用户') + '</i></span>' +
+        '<button class="res-btn ' + cls + '" data-rel="' + esc(u.relation) + '" data-uid="' + esc(u.id) + '">' + esc(btn) + '</button>' +
+        '</div>';
+    }).join('');
+
+    Array.prototype.forEach.call(box.querySelectorAll('.res-btn'), function (el) {
+      el.onclick = function () {
+        var rel = el.dataset.rel;
+        if (rel === 'friend') { toast('你们已经是好友了'); return; }
+        if (rel === 'pending_out') { toast('已经申请过了，等对方同意'); return; }
+        if (rel === 'pending_in') { closeAdd(); switchTab('req'); loadRequests(); return; }
+        addFriend(el.dataset.uid, el);
+      };
+    });
+  }
+
+  function doSearch() {
+    var q = String($('q').value || '').trim();
+    if (!q) { $('results').innerHTML = ''; return; }
+    var seq = ++state.searchSeq;
+    $('results').innerHTML = '<div class="hint" style="padding:14px 2px">搜索中…</div>';
+    api('/api/friends/search?q=' + encodeURIComponent(q)).then(function (r) {
+      if (seq !== state.searchSeq) return;
+      renderResults(r.list || []);
+    }).catch(function (e) {
+      if (seq !== state.searchSeq) return;
+      $('results').innerHTML = '<div class="hint" style="padding:14px 2px">' + esc(e.message) + '</div>';
+    });
+  }
+
+  function addFriend(uid, el) {
+    if (el) { el.disabled = true; el.textContent = '发送中…'; }
+    api('/api/friends/request', { method: 'POST', body: JSON.stringify({ toUserId: uid }) })
+      .then(function (r) {
+        if (r.status === 'accepted') { toast('你们已成为好友'); loadFriends(true); loadRequests(true); }
+        else if (r.status === 'friend') { toast('你们已经是好友了'); }
+        else { toast('好友申请已发出'); }
+        if (el) { el.textContent = '已申请'; el.className = 'res-btn done'; }
+        loadRequests(true);
+      })
+      .catch(function (e) {
+        toast(e.message);
+        if (el) { el.disabled = false; el.textContent = '加好友'; }
+      });
+  }
+
+  function respond(id, accept, el) {
+    if (el) { el.disabled = true; el.textContent = accept ? '处理中…' : '忽略中…'; }
+    api('/api/friends/respond', { method: 'POST', body: JSON.stringify({ id: id, accept: accept }) })
+      .then(function () {
+        toast(accept ? '已添加为好友' : '已忽略');
+        loadRequests(true);
+        loadFriends(true);
+      })
+      .catch(function (e) {
+        toast(e.message);
+        if (el) { el.disabled = false; el.textContent = accept ? '同意' : '忽略'; }
+      });
+  }
+
+  /* ---------- 分段 ---------- */
+  function switchTab(tab) {
+    state.tab = tab;
+    Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (t) {
+      t.classList.toggle('on', t.dataset.tab === tab);
+    });
+    renderList();
+    if (tab === 'req') loadRequests();
+  }
+
+  /* ---------- 绑定 ---------- */
+  $('backBtn').onclick = function () { location.href = homeUrl(); };
+  $('gateBtn').onclick = function () { location.href = homeUrl(); };
+  $('addBtn').onclick = openAdd;
+  $('sheetClose').onclick = closeAdd;
+  $('sheetMask').onclick = closeAdd;
+  $('searchBtn').onclick = doSearch;
+  $('q').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') { e.preventDefault(); doSearch(); }
+  });
+  $('chatBack').onclick = closeChat;
+  $('chatMore').onclick = removeFriend;
+  $('sendBtn').onclick = send;
+
+  inputEl.addEventListener('input', function () {
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(110, inputEl.scrollHeight) + 'px';
+  });
+  inputEl.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
+  });
+
+  Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (t) {
+    t.onclick = function () { switchTab(t.dataset.tab); };
+  });
+
+  // 从聊天面板侧滑返回（移动端手势）
+  (function () {
+    var sx = 0;
+    $('chatPanel').addEventListener('touchstart', function (e) { sx = e.touches[0].clientX; }, { passive: true });
+    $('chatPanel').addEventListener('touchend', function (e) {
+      var dx = e.changedTouches[0].clientX - sx;
+      if (sx < 40 && dx > 70) closeChat();
+    }, { passive: true });
+  })();
+
+  /* ---------- 启动 ---------- */
+  applyDark();
+  var t = token();
+  state.me = t ? tokenPayload(t) || '' : '';
+  renderList();
+  if (t) {
+    loadFriends();
+    loadRequests(true);
+    state.timerList = setInterval(function () {
+      if (document.hidden) return;
+      loadFriends(true);
+      if (state.tab === 'req') loadRequests(true);
+    }, 6000);
+  }
+
+  document.addEventListener('visibilitychange', function () {
+    if (document.hidden) return;
+    if (state.chatId) loadThread(true);
+    else loadFriends(true);
+  });
+
+  // 直接带好友 id 进来（从别处跳转）时自动打开对话
+  var openId = params.get('u') || params.get('userId');
+  if (openId && t) {
+    setTimeout(function () {
+      loadFriends(true).then(function () { openChat(openId); });
+    }, 120);
+  }
+})();
+</script>
+</body>
+</html>
