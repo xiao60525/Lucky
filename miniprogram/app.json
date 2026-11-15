@@ -5,7 +5,8 @@
     "pages/mine/mine",
     "pages/detail/detail",
     "pages/pay/pay",
-    "pages/order/order"
+    "pages/order/order",
+    "pages/points/points"
   ],
   "window": {
     "navigationBarTitleText": "手机应用",
@@ -22,15 +23,21 @@
     "list": [
       {
         "pagePath": "pages/index/index",
-        "text": "首页"
+        "text": "首页",
+        "iconPath": "images/tab-home.png",
+        "selectedIconPath": "images/tab-home-on.png"
       },
       {
         "pagePath": "pages/content/content",
-        "text": "帮助"
+        "text": "帮助",
+        "iconPath": "images/tab-help.png",
+        "selectedIconPath": "images/tab-help-on.png"
       },
       {
         "pagePath": "pages/mine/mine",
-        "text": "我的"
+        "text": "我的",
+        "iconPath": "images/tab-mine.png",
+        "selectedIconPath": "images/tab-mine-on.png"
       }
     ]
   },

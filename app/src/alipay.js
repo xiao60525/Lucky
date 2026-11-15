@@ -126,10 +126,10 @@ class Alipay {
   }
 
   /**
-   * 生成页面支付跳转地址
+   * 生成页面支付参数（签名后的完整参数表，配合 buildPayForm / 中转页使用）
    * @param {{outTradeNo:string,totalAmountFen:number,subject:string,body?:string,wap?:boolean,returnUrl?:string,notifyUrl?:string,timeoutExpress?:string,quitUrl?:string}} o
    */
-  buildPagePayUrl(o) {
+  buildPagePayParams(o) {
     const method = o.wap === false ? 'alipay.trade.page.pay' : 'alipay.trade.wap.pay';
     const biz = {
       out_trade_no: o.outTradeNo,
@@ -151,12 +151,63 @@ class Alipay {
       biz_content: JSON.stringify(biz),
     });
     params.sign = this.sign(signContent(params));
+    return { gateway: this.gateway, params };
+  }
 
+  /**
+   * 生成页面支付跳转地址
+   * @param {...*} o 见 buildPagePayParams
+   */
+  buildPagePayUrl(o) {
+    const { gateway, params } = this.buildPagePayParams(o);
     const qs = Object.keys(params)
       .filter((k) => params[k] !== undefined && params[k] !== null && params[k] !== '')
       .map((k) => `${encodeURIComponent(k)}=${encodeURIComponent(params[k])}`)
       .join('&');
-    return `${this.gateway}?${qs}`;
+    return `${gateway}?${qs}`;
+  }
+
+  /**
+   * 生成自动提交的支付表单 HTML（推荐：参数走 POST body，不经过 URL，
+   * 浏览器/中间层往 URL 上追加或改写任何参数都不会破坏签名）
+   * @param {{gateway:string,params:object}} p buildPagePayParams 的返回值
+   */
+  buildPayFormHTML({ gateway, params }) {
+    const inputs = Object.keys(params)
+      .filter((k) => params[k] !== undefined && params[k] !== null && params[k] !== '')
+      .map(
+        (k) =>
+          `<input type="hidden" name="${k.replace(/[&<>"']/g, '')}" value="${String(params[k]).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]))}" />`
+      )
+      .join('\n      ');
+    return `<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="robots" content="noindex,nofollow" />
+<title>正在跳转支付宝…</title>
+<style>
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;background:#f5f6fa;color:#1f2329;display:flex;min-height:100vh;align-items:center;justify-content:center;margin:0}
+  .box{text-align:center;padding:32px}
+  .spinner{width:34px;height:34px;border:3px solid #dcdfe6;border-top-color:#1677ff;border-radius:50%;margin:0 auto 16px;animation:s .8s linear infinite}
+  @keyframes s{to{transform:rotate(360deg)}}
+  p{margin:6px 0;color:#5a6070;font-size:14px}
+  a{color:#1677ff;text-decoration:none;font-size:14px}
+</style>
+</head>
+<body>
+  <div class="box">
+    <div class="spinner"></div>
+    <p>正在跳转支付宝收银台…</p>
+    <p>如未自动跳转，<a href="javascript:void(0)" onclick="document.getElementById('alipayForm').submit()">点此继续</a></p>
+  </div>
+  <form id="alipayForm" method="post" action="${gateway.replace(/[&<>"']/g, '')}">
+      ${inputs}
+  </form>
+  <script>try{document.getElementById('alipayForm').submit()}catch(e){}</script>
+</body>
+</html>`;
   }
 
   /** 验签异步通知 / 同步返回（入参需已 URL 解码） */

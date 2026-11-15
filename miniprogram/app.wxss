@@ -193,3 +193,30 @@ button {
     font-size: 20rpx;
     font-weight: 600;
 }
+
+/* ---------------- 体验优化：骨架屏流光 / 图片渐显 ---------------- */
+
+/* 骨架屏：灰块上叠一道缓慢扫过的流光，加载中的观感更顺 */
+.skeleton-line {
+    position: relative;
+    overflow: hidden;
+    background: linear-gradient(90deg, #eef0f5 30%, #f6f7fb 50%, #eef0f5 70%);
+    background-size: 200% 100%;
+    animation: skShimmer 1.4s ease-in-out infinite;
+}
+
+@keyframes skShimmer {
+    from { background-position: 140% 0; }
+    to { background-position: -40% 0; }
+}
+
+/* 图片出现时渐显，减少「啪一下跳出来」的突兀感 */
+.product-img,
+.hero-img {
+    animation: mpImgIn 0.3s ease both;
+}
+
+@keyframes mpImgIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}

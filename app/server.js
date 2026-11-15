@@ -316,7 +316,7 @@ async function refreshProducts() {
   const all = await store.adminListProducts();
   db.products = all
     .filter((p) => p.active)
-    .map(({ id, title, desc, amount, tag, memberDays, memberOnly, memberPrice, image }) => ({
+    .map(({ id, title, desc, amount, tag, memberDays, memberOnly, memberPrice, image, stock, skus }) => ({
       id,
       title,
       desc,
@@ -326,6 +326,8 @@ async function refreshProducts() {
       memberOnly: Boolean(memberOnly),
       memberPrice: Number(memberPrice) || 0,
       image: image || '',
+      stock: stock === null || stock === undefined ? null : Math.max(0, Number(stock) || 0),
+      skus: Array.isArray(skus) ? skus : [],
     }));
   return all;
 }
@@ -413,6 +415,56 @@ async function publicViewer(userId) {
       paidAt: o.paid_at ? new Date(o.paid_at).getTime() : null,
     })),
   };
+}
+
+
+/** 某商品的已支付销量（购物车订单按明细累加；库存可用量 = stock - 该值）
+ *  传 skuId 时只统计该规格的销量（规格库存独立核算） */
+function soldQtyOf(productId, orders = db.orders, skuId = null) {
+  let n = 0;
+  for (const o of orders) {
+    if (o.status !== 'paid') continue; // 退款/关闭的单不算销量，库存自然回补
+    if (Array.isArray(o.items) && o.items.length) {
+      for (const it of o.items) {
+        if (!it || it.productId !== productId) continue;
+        if (skuId && String(it.skuId || '') !== String(skuId)) continue;
+        n += Math.max(1, Number(it.qty) || 1);
+      }
+    } else if (o.productId === productId && !skuId) {
+      n += 1;
+    }
+  }
+  return n;
+}
+
+/** 商品剩余可售数量：stock 为 null 视为不限量，返回 Infinity
+ *  传 skuId 时按规格库存算；规格价为 0 时跟随商品价 */
+function stockLeftOf(p, orders = db.orders, skuId = null) {
+  if (!p) return Infinity;
+  if (skuId) {
+    const sku = skuListOf(p).find((k) => k.id === skuId);
+    if (!sku) return 0;
+    if (sku.stock === null || sku.stock === undefined) return Infinity;
+    return Math.max(0, Number(sku.stock) - soldQtyOf(p.id, orders, skuId));
+  }
+  if (p.stock === null || p.stock === undefined) return Infinity;
+  return Math.max(0, Number(p.stock) - soldQtyOf(p.id, orders));
+}
+
+/** 商品的启用规格（空数组 = 单规格商品） */
+function skuListOf(p) {
+  if (!p || !Array.isArray(p.skus)) return [];
+  return p.skus.filter((k) => k && k.id && k.active !== false);
+}
+
+function skuOf(p, skuId) {
+  return skuListOf(p).find((k) => String(k.id) === String(skuId)) || null;
+}
+
+/** 规格实际售价：规格价 > 0 用它，否则跟随商品价 */
+function skuPriceOf(p, sku) {
+  const price = sku && Number(sku.price) > 0 ? Number(sku.price) : Number(p.amount) || 0;
+  return Math.max(0, price);
 }
 
 function newOrderId() {
@@ -672,7 +724,75 @@ const CONTENT_IMAGE_MAX_BYTES = 400 * 1024;
 /** 商品图：前端压到 640px 的 JPEG，限制 300KB */
 const PRODUCT_IMAGE_MAX_BYTES = 300 * 1024;
 
-/** 解析前端传来的 data URL：data:image/png;base64,xxxx */
+/** 解析用户上传的 CSV（支持双引号包裹、逗号/制表符分隔、CRLF） */
+function parseCSV(text) {
+  const src = String(text || '').replace(/^\ufeff/, '').replace(/\r\n?/g, '\n');
+  const rows = [];
+  let row = [];
+  let cell = '';
+  let quoted = false;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (quoted) {
+      if (ch === '"') {
+        if (src[i + 1] === '"') {
+          cell += '"';
+          i++;
+        } else quoted = false;
+      } else cell += ch;
+      continue;
+    }
+    if (ch === '"') {
+      quoted = true;
+    } else if (ch === ',' || ch === '\t') {
+      row.push(cell.trim());
+      cell = '';
+    } else if (ch === '\n') {
+      row.push(cell.trim());
+      if (row.some((c) => c !== '')) rows.push(row);
+      row = [];
+      cell = '';
+    } else {
+      cell += ch;
+    }
+  }
+  row.push(cell.trim());
+  if (row.some((c) => c !== '')) rows.push(row);
+  return rows;
+}
+
+/** 取 CSV 里某一列的索引：先按表头名找，找不到用默认位置 */
+function csvColIndex(header, names, fallback) {
+  const h = (header || []).map((x) => String(x || '').toLowerCase());
+  for (const n of names) {
+    const i = h.findIndex((x) => x.includes(String(n).toLowerCase()));
+    if (i >= 0) return i;
+  }
+  return fallback;
+}
+
+/** 商品 CSV 导出的行（后台导出 / 库存导入共用同一套列） */
+function productCSVRows(products, salesMap) {
+  const rows = [['ID', '名称', '价格(元)', '总库存', '已售', '剩余', '规格数', '状态', '排序']];
+  products.forEach((p) => {
+    const sold = salesMap[p.id] || 0;
+    const left = p.stock === null || p.stock === undefined ? '' : Math.max(0, Number(p.stock) - sold);
+    rows.push([
+      p.id,
+      p.title,
+      (Number(p.amount || 0) / 100).toFixed(2),
+      p.stock === null || p.stock === undefined ? '' : p.stock,
+      sold,
+      left,
+      Array.isArray(p.skus) ? p.skus.length : 0,
+      p.active === false ? '下架' : '上架',
+      p.sort,
+    ]);
+  });
+  return rows;
+}
+
+
 function parseDataUrl(s) {
   const m = /^data:([\w/+.-]+);base64,([A-Za-z0-9+/=\s]+)$/.exec(String(s || ''));
   if (!m) return null;
@@ -780,12 +900,26 @@ function contentIdOfOrder(order) {
   return pid.startsWith(CONTENT_ORDER_PREFIX) ? pid.slice(CONTENT_ORDER_PREFIX.length) : null;
 }
 
+/** 收货信息快照：只保留三个有效字段，空单返回 null（充值/内容单不快照） */
+function shippingSnapshot(addr) {
+  if (!addr || typeof addr !== 'object') return null;
+  const out = {
+    name: String(addr.name || '').trim().slice(0, 20),
+    phone: String(addr.phone || '').replace(/\D/g, '').slice(0, 11),
+    detail: String(addr.detail || '').trim().slice(0, 120),
+  };
+  if (!out.name && !out.detail) return null;
+  return out;
+}
+
 /** 订单明细：购物车订单有多件，老订单没有 items 就按单件补一条 */
 function orderItems(order) {
   const list = Array.isArray(order && order.items) ? order.items : [];
   if (list.length) {
     return list.map((it) => ({
       productId: it.productId,
+      skuId: it.skuId || '',
+      skuName: it.skuName || '',
       title: it.title,
       price: Number(it.price) || 0,
       listPrice: Number(it.listPrice) || Number(it.price) || 0,
@@ -797,6 +931,8 @@ function orderItems(order) {
   return [
     {
       productId: order.productId,
+      skuId: order.skuId || '',
+      skuName: order.skuName || '',
       title: order.title || '',
       price: Number(order.amount) || 0,
       listPrice: Number(order.listAmount) || Number(order.amount) || 0,
@@ -836,6 +972,8 @@ function publicOrder(order) {
     shipNo: order.shipNo || '',
     shippedAt: order.shippedAt || null,
     receivedAt: order.receivedAt || null,
+    // 下单时快照的收货信息（充值/内容单没有）
+    shipping: order.shipping || null,
   };
 }
 
@@ -1371,6 +1509,7 @@ async function handleApi(req, res, url) {
     }
     // 商品销量（全站已支付/已退款订单的件数）：前端用来做「销量」排序和「已售 N」
     const salesMap = {};
+    const skuSalesMap = {};
     (db.orders || []).forEach((o) => {
       if (!o || (o.status !== 'paid' && o.status !== 'refunded')) return;
       const list =
@@ -1381,10 +1520,31 @@ async function handleApi(req, res, url) {
             : [];
       list.forEach((it) => {
         if (!it || !it.productId) return;
-        salesMap[it.productId] = (salesMap[it.productId] || 0) + Math.max(1, Number(it.qty) || 1);
+        const q = Math.max(1, Number(it.qty) || 1);
+        salesMap[it.productId] = (salesMap[it.productId] || 0) + q;
+        if (it.skuId) {
+          const key = it.productId + '|' + it.skuId;
+          skuSalesMap[key] = (skuSalesMap[key] || 0) + q;
+        }
       });
     });
-    const productsWithSales = db.products.map((p) => ({ ...p, sales: salesMap[p.id] || 0 }));
+    const productsWithSales = db.products.map((p) => {
+      const skus = skuListOf(p).map((k) => {
+        const sold = skuSalesMap[p.id + '|' + k.id] || 0;
+        const left = k.stock === null || k.stock === undefined ? null : Math.max(0, Number(k.stock) - sold);
+        return { ...k, price: skuPriceOf(p, k), sales: sold, left, soldOut: left !== null && left <= 0 };
+      });
+      const prices = skus.length ? skus.map((k) => k.price) : [Number(p.amount) || 0];
+      return {
+        ...p,
+        skus,
+        sales: salesMap[p.id] || 0,
+        priceMin: Math.min(...prices),
+        priceMax: Math.max(...prices),
+        // 所有规格都没货（不是所有规格都设了库存，就没货才算售罄）
+        soldOutAll: skus.length > 0 && skus.every((k) => k.left !== null && k.left <= 0),
+      };
+    });
     // 商品评分（全站可见评价的平均分/条数）：读不到不阻塞启动数据
     let reviewStats = {};
     try {
@@ -1962,23 +2122,28 @@ async function handleApi(req, res, url) {
     if (Array.isArray(body.items) && body.items.length) {
       if (body.items.length > 20) return sendJSON(res, 400, { message: '一次最多结算 20 种商品' });
       let cartMember = false;
+      let cartShipping = null;
       try {
         const buyer = await users.getUser(uid);
         cartMember = Boolean(buyer && users.isMember(buyer.profile));
+        cartShipping = shippingSnapshot(buyer && buyer.profile && buyer.profile.address);
       } catch (e) {
         console.warn('[order:cart] 读取会员状态失败:', e.message);
       }
-      // 同一商品传了多条就先合并数量
+      // 同一商品+同一规格传了多条就先合并数量
       const merged = new Map();
       for (const raw of body.items) {
         const pid = String((raw && raw.productId) || '');
+        const sid = String((raw && raw.skuId) || '');
         const qty = Math.floor(Number(raw && raw.qty) || 0);
         if (!pid) return sendJSON(res, 400, { message: '购物车里有商品信息不完整，请刷新后重试' });
         if (!(qty >= 1 && qty <= 99)) return sendJSON(res, 400, { message: '每件商品数量需在 1 ~ 99 之间' });
-        merged.set(pid, Math.min(99, (merged.get(pid) || 0) + qty));
+        const key = pid + '|' + sid;
+        merged.set(key, Math.min(99, (merged.get(key) || 0) + qty));
       }
       const items = [];
-      for (const [pid, qty] of merged) {
+      for (const [key, qty] of merged) {
+        const [pid, sid] = key.split('|');
         const p = db.products.find((x) => x.id === pid);
         if (!p) {
           return sendJSON(res, 400, {
@@ -1987,6 +2152,18 @@ async function handleApi(req, res, url) {
             message: '购物车里有商品已下架，请移除后再结算',
           });
         }
+        // 多规格商品必须带规格，且规格还在
+        let sku = null;
+        if (skuListOf(p).length) {
+          sku = skuOf(p, sid);
+          if (!sku) {
+            return sendJSON(res, 400, {
+              code: 'SKU_GONE',
+              productId: p.id,
+              message: `「${p.title}」的规格已下架，请重新选择`,
+            });
+          }
+        }
         if (p.memberOnly && !cartMember) {
           return sendJSON(res, 403, {
             message: `「${p.title}」为会员专享，开通会员后可购买`,
@@ -1994,13 +2171,37 @@ async function handleApi(req, res, url) {
             productId: p.id,
           });
         }
+        // 库存：可用量 = 总库存 - 已支付销量（下单即校验，避免付了钱发不出货）
+        const left = stockLeftOf(p, db.orders, sku ? sku.id : null);
+        const label = sku ? `${p.title}（${sku.name}）` : p.title;
+        if (left <= 0) {
+          return sendJSON(res, 409, {
+            code: 'OUT_OF_STOCK',
+            productId: p.id,
+            skuId: sku ? sku.id : '',
+            message: `「${label}」已售罄，请先移除`,
+          });
+        }
+        if (qty > left) {
+          return sendJSON(res, 409, {
+            code: 'OUT_OF_STOCK',
+            productId: p.id,
+            skuId: sku ? sku.id : '',
+            left,
+            message: `「${label}」仅剩 ${left} 件，请调整数量`,
+          });
+        }
+        const listPrice = sku ? skuPriceOf(p, sku) : Number(p.amount) || 0;
         const mp = Number(p.memberPrice) || 0;
-        const useMember = cartMember && mp > 0 && mp < p.amount;
+        // 规格自带价格时以规格价为准，会员价只在「跟随商品价」的规格上生效
+        const useMember = cartMember && !(sku && Number(sku.price) > 0) && mp > 0 && mp < listPrice;
         items.push({
           productId: p.id,
+          skuId: sku ? sku.id : '',
+          skuName: sku ? sku.name : '',
           title: p.title,
-          price: useMember ? mp : p.amount,
-          listPrice: p.amount,
+          price: useMember ? mp : listPrice,
+          listPrice,
           qty,
           memberPrice: useMember,
         });
@@ -2009,12 +2210,13 @@ async function handleApi(req, res, url) {
       const listAmount = items.reduce((s, it) => s + it.listPrice * it.qty, 0);
       if (!amount) return sendJSON(res, 400, { message: '订单金额不能为 0' });
       const totalQty = items.reduce((s, it) => s + it.qty, 0);
+      const itemName = (it) => (it.skuName ? `${it.title}（${it.skuName}）` : it.title);
       const title =
         items.length === 1
           ? totalQty > 1
-            ? `${items[0].title} ×${totalQty}`
-            : items[0].title
-          : `${items[0].title} 等 ${items.length} 种共 ${totalQty} 件`;
+            ? `${itemName(items[0])} ×${totalQty}`
+            : itemName(items[0])
+          : `${itemName(items[0])} 等 ${items.length} 种共 ${totalQty} 件`;
       const cartOrder = {
         id: newOrderId(),
         userId: uid,
@@ -2024,6 +2226,8 @@ async function handleApi(req, res, url) {
         listAmount,
         memberPrice: items.some((it) => it.memberPrice),
         items,
+        // 收货信息快照：用户「我的」里填了地址才落，充值/内容单没有
+        ...(cartShipping ? { shipping: cartShipping } : {}),
         channel: null,
         status: 'created',
         createdAt: Date.now(),
@@ -2044,10 +2248,12 @@ async function handleApi(req, res, url) {
 
     // 会员专享：只有生效中的会员能买（服务端判定，前端按钮只是展示）
     let buyerIsMember = false;
+    let buyerShipping = null;
     if (uid) {
       try {
         const buyer = await users.getUser(uid);
         buyerIsMember = Boolean(buyer && users.isMember(buyer.profile));
+        buyerShipping = shippingSnapshot(buyer && buyer.profile && buyer.profile.address);
       } catch (e) {
         console.warn('[order] 读取会员状态失败:', e.message);
       }
@@ -2059,18 +2265,58 @@ async function handleApi(req, res, url) {
         productId: product.id,
       });
     }
-    // 会员价优先（仅会员生效，且必须低于原价才有意义）
+    // 多规格：必须选定一个在售规格，价格与库存都按规格算
+    let sku = null;
+    if (skuListOf(product).length) {
+      sku = skuOf(product, body.skuId);
+      if (!sku) {
+        return sendJSON(res, 400, { code: 'SKU_REQUIRED', productId: product.id, message: '请先选择商品规格' });
+      }
+    }
+    const listPrice = sku ? skuPriceOf(product, sku) : product.amount;
+    {
+      const left = stockLeftOf(product, db.orders, sku ? sku.id : null);
+      const label = sku ? `${product.title}（${sku.name}）` : product.title;
+      if (left <= 0) {
+        return sendJSON(res, 409, {
+          code: 'OUT_OF_STOCK',
+          productId: product.id,
+          skuId: sku ? sku.id : '',
+          message: `「${label}」已售罄`,
+        });
+      }
+    }
+    // 会员价优先（仅会员生效，且必须低于原价才有意义；规格自带价格时不叠加）
     const memberPrice = Number(product.memberPrice) || 0;
-    const useMemberPrice = buyerIsMember && memberPrice > 0 && memberPrice < product.amount;
+    const useMemberPrice = buyerIsMember && !(sku && Number(sku.price) > 0) && memberPrice > 0 && memberPrice < listPrice;
+    const payPrice = useMemberPrice ? memberPrice : listPrice;
 
     const order = {
       id: newOrderId(),
       userId: uid,
       productId: product.id,
-      title: product.title,
-      amount: useMemberPrice ? memberPrice : product.amount, // 金额一律取服务端商品表，绝不信前端传的金额
-      listAmount: product.amount, // 原价，会员价订单用于展示「省了多少」
+      title: sku ? `${product.title}（${sku.name}）` : product.title,
+      amount: payPrice, // 金额一律取服务端商品/规格表，绝不信前端传的金额
+      listAmount: listPrice, // 原价，会员价订单用于展示「省了多少」
       memberPrice: useMemberPrice,
+      // 带规格的订单写明细，订单详情/后台/物流单都能看到买的是哪个规格
+      ...(sku
+        ? {
+            items: [
+              {
+                productId: product.id,
+                skuId: sku.id,
+                skuName: sku.name,
+                title: product.title,
+                price: payPrice,
+                listPrice,
+                qty: 1,
+                memberPrice: useMemberPrice,
+              },
+            ],
+          }
+        : {}),
+      ...(buyerShipping ? { shipping: buyerShipping } : {}),
       channel: null,
       status: 'created',
       createdAt: Date.now(),
@@ -2559,6 +2805,75 @@ async function handleApi(req, res, url) {
     }
   }
 
+  /* ---------------- 小游戏排行榜 ---------------- */
+
+  // 提交游戏成绩：登录用户，云库只保留每人最高分；返回 { best, rank }
+  if (pathname === '/api/game/score' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录后再上传成绩' });
+    const body = await readBody(req);
+    const score = Math.floor(Number(body.score) || 0);
+    if (!(score >= 0 && score <= 1000000)) return sendJSON(res, 400, { message: '成绩不合法' });
+    try {
+      const out = await store.gameScoreSubmit(uid, score);
+      return sendJSON(res, 200, { best: out.best || 0, rank: out.rank || null });
+    } catch (e) {
+      return sendJSON(res, 502, { message: '成绩保存失败：' + e.message });
+    }
+  }
+
+  // 排行榜前 20 名（昵称脱敏）；无需登录
+  if (pathname === '/api/game/leaderboard' && method === 'GET') {
+    try {
+      const list = await store.gameScoresTop(20);
+      return sendJSON(res, 200, { list: Array.isArray(list) ? list : [] });
+    } catch (e) {
+      return sendJSON(res, 502, { message: '排行榜读取失败：' + e.message });
+    }
+  }
+
+  /* ---------------- 在线客服 ---------------- */
+
+  // 我的会话：消息记录（顺带把未读清掉）
+  if (pathname === '/api/chat/thread' && method === 'GET') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录后再和客服聊天' });
+    try {
+      const out = await store.chatThread(uid);
+      return sendJSON(res, 200, { thread: out.thread, messages: out.messages });
+    } catch (e) {
+      return sendJSON(res, 502, { message: '读取会话失败：' + e.message });
+    }
+  }
+
+  // 我要发消息（role 固定 user，商家身份不能伪造）
+  if (pathname === '/api/chat/send' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录后再发消息' });
+    const body = await readBody(req);
+    const text = String(body.text || '').trim();
+    if (!text) return sendJSON(res, 400, { message: '说点什么再发送吧' });
+    if (text.length > 1000) return sendJSON(res, 400, { message: '单条消息最多 1000 字' });
+    try {
+      const msg = await store.chatSend(uid, 'user', text);
+      return sendJSON(res, 200, { message: msg });
+    } catch (e) {
+      return sendJSON(res, 502, { message: '发送失败：' + e.message });
+    }
+  }
+
+  // 未读条数（给首页入口红点用，未登录返回 0）
+  if (pathname === '/api/chat/unread' && method === 'GET') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 200, { unread: 0 });
+    try {
+      const unread = await store.chatUnread(uid);
+      return sendJSON(res, 200, { unread });
+    } catch (e) {
+      return sendJSON(res, 200, { unread: 0 });
+    }
+  }
+
   /* ---------------- 确认收货 ---------------- */
 
   // 用户确认收货：paid 订单记录 receivedAt（不改变 status，所有已支付判断不受影响）
@@ -2880,6 +3195,14 @@ async function handleApi(req, res, url) {
       } catch (e) {
         console.warn('[admin] 读取操作日志失败:', e.message);
       }
+      // 客服：只取「待回复」总数给导航徽标，明细在「客服」页按需加载
+      let chatPending = 0;
+      try {
+        const threads = await store.adminChatThreads();
+        chatPending = threads.reduce((s, t) => s + (Number(t.adminUnread) || 0), 0);
+      } catch (e) {
+        console.warn('[admin] 读取客服会话失败:', e.message);
+      }
       // 退款 / 退货申请（用户提交，待审核）
       let refunds = [];
       try {
@@ -2929,6 +3252,56 @@ async function handleApi(req, res, url) {
       const weekOrders = db.orders.filter((o) => o.createdAt >= today0 - 6 * DAY_MS);
       const weekPaid = weekOrders.filter((o) => o.status === 'paid' || o.status === 'refunded');
 
+      /* ---- 热销榜 + 库存预警（后台一眼看出该补什么货） ---- */
+      const salesByProduct = {};
+      const salesBySku = {};
+      for (const o of db.orders) {
+        if (o.status !== 'paid') continue;
+        if (Array.isArray(o.items) && o.items.length) {
+          for (const it of o.items) {
+            if (!it || !it.productId) continue;
+            const q = Math.max(1, Number(it.qty) || 1);
+            salesByProduct[it.productId] = (salesByProduct[it.productId] || 0) + q;
+            if (it.skuId) salesBySku[it.productId + '|' + it.skuId] = (salesBySku[it.productId + '|' + it.skuId] || 0) + q;
+          }
+        } else if (o.productId) {
+          salesByProduct[o.productId] = (salesByProduct[o.productId] || 0) + 1;
+        }
+      }
+      const productsWithSales = products.map((p) => {
+        const sales = salesByProduct[p.id] || 0;
+        const skus = skuListOf(p).map((k) => {
+          const sold = salesBySku[p.id + '|' + k.id] || 0;
+          const left = k.stock === null || k.stock === undefined ? null : Math.max(0, Number(k.stock) - sold);
+          return { ...k, sales: sold, left };
+        });
+        const left = skus.length
+          ? skus.every((k) => k.left !== null)
+            ? skus.reduce((s, k) => s + k.left, 0)
+            : null
+          : p.stock === null || p.stock === undefined
+            ? null
+            : Math.max(0, Number(p.stock) - sales);
+        return { ...p, sales, skus, left };
+      });
+      const topProducts = productsWithSales
+        .slice()
+        .sort((a, b) => b.sales - a.sales || String(a.title).localeCompare(String(b.title)))
+        .slice(0, 5);
+      // 库存预警：多规格商品按规格逐条列，避免「总数够但某个规格断了」
+      const lowStock = [];
+      for (const p of productsWithSales) {
+        if (p.skus.length) {
+          p.skus.forEach((k) => {
+            if (k.left !== null && k.left <= 5) {
+              lowStock.push({ id: p.id, title: p.title, left: k.left, stock: k.stock, skuId: k.id, skuName: k.name });
+            }
+          });
+        } else if (p.left !== null && p.left <= 5) {
+          lowStock.push({ id: p.id, title: p.title, left: p.left, stock: p.stock });
+        }
+      }
+
       return sendJSON(res, 200, {
         stats: {
           orders: db.orders.length,
@@ -2954,13 +3327,18 @@ async function handleApi(req, res, url) {
           contentCount: contents.length,
           feedbackPending: feedbacks.filter((f) => f.status === 'pending').length,
           feedbackTotal: feedbacks.length,
+          chatPending,
           refundPending: refunds.filter((r) => r.status === 'pending').length,
           refundTotal: refunds.length,
+          lowStockCount: lowStock.length,
+          stockTracked: productsWithSales.filter((p) => p.left !== null).length,
           trend,
         },
+        topProducts,
+        lowStock,
         orders: sortOrdersDesc(db.orders).slice(0, 200).map((o) => adminOrder(o, umap)),
         orderTtlMinutes: ORDER_TTL_MINUTES, // 后台按这个数算「剩余支付时间」
-        products,
+        products: productsWithSales,
         contents,
         feedbacks,
         refunds,
@@ -3198,10 +3576,26 @@ async function handleApi(req, res, url) {
           memberOnly: Boolean(body.memberOnly),
           memberPrice: Math.max(0, Math.floor(Number(body.memberPrice)) || 0),
           image,
+          // 库存：不给或给空 = 不限量；给数字 = 总库存
+          stock:
+            body.stock === undefined || body.stock === null || String(body.stock).trim() === ''
+              ? null
+              : Math.max(0, Math.floor(Number(body.stock)) || 0),
         });
+        // 多规格：传了 skus 才整组覆盖（不传 = 不动规格）
+        let skus = null;
+        if (Array.isArray(body.skus)) {
+          if (body.skus.length > 30) return sendJSON(res, 400, { message: '一个商品最多 30 个规格' });
+          for (const k of body.skus) {
+            if (k && String(k.name || '').trim().length > 30) {
+              return sendJSON(res, 400, { message: '规格名最多 30 个字' });
+            }
+          }
+          skus = await store.adminSetSkus(id, body.skus);
+        }
         await refreshProducts();
-        audit('保存商品', `「${saved.title}」 ¥${(saved.amount / 100).toFixed(2)}`);
-        return sendJSON(res, 200, { product: saved });
+        audit('保存商品', `「${saved.title}」 ¥${(saved.amount / 100).toFixed(2)}${skus && skus.length ? ` · ${skus.length} 个规格` : ''}`);
+        return sendJSON(res, 200, { product: { ...saved, skus: skus || undefined } });
       } catch (e) {
         await refreshProducts().catch(() => {});
         return sendJSON(res, 502, { message: '保存失败：' + e.message });
@@ -3221,6 +3615,211 @@ async function handleApi(req, res, url) {
         await refreshProducts().catch(() => {});
         return sendJSON(res, 502, { message: '删除失败：' + e.message });
       }
+    }
+
+    // 快捷改库存（商品列表内直接编辑）
+    if (pathname === '/api/admin/product/stock' && method === 'POST') {
+      const body = await readBody(req);
+      const id = String(body.id || '').trim();
+      if (!id) return sendJSON(res, 400, { message: '缺少商品 ID' });
+      const raw = body.stock;
+      let stock = null;
+      if (raw !== null && raw !== undefined && String(raw).trim() !== '') {
+        const n = Math.floor(Number(raw));
+        if (!Number.isFinite(n) || n < 0) return sendJSON(res, 400, { message: '库存需为 0 或正整数' });
+        if (n > 1000000) return sendJSON(res, 400, { message: '库存最多 1000000 件' });
+        stock = n;
+      }
+      try {
+        const saved = await store.adminSetStock(id, stock);
+        await refreshProducts();
+        audit('修改库存', `「${(saved && saved.title) || id}」${stock === null ? '不限量' : stock + ' 件'}`);
+        return sendJSON(res, 200, { product: saved });
+      } catch (e) {
+        await refreshProducts().catch(() => {});
+        return sendJSON(res, 502, { message: '修改失败：' + e.message });
+      }
+    }
+
+    // 批量操作商品：批量上下架 / 批量改价 / 批量改库存 / 批量删除
+    if (pathname === '/api/admin/product/batch' && method === 'POST') {
+      const body = await readBody(req);
+      const ids = (Array.isArray(body.ids) ? body.ids : []).map((x) => String(x || '').trim()).filter(Boolean);
+      if (!ids.length) return sendJSON(res, 400, { message: '请先勾选商品' });
+      if (ids.length > 500) return sendJSON(res, 400, { message: '一次最多操作 500 个商品' });
+      const action = String(body.action || '');
+      const allowed = ['active', 'inactive', 'amount_set', 'amount_delta', 'amount_percent', 'stock_set', 'sort_set', 'delete'];
+      if (!allowed.includes(action)) return sendJSON(res, 400, { message: '不支持的批量操作' });
+
+      let value = null;
+      if (action === 'amount_set' || action === 'amount_delta' || action === 'amount_percent') {
+        const n = Math.floor(Number(body.value));
+        if (!Number.isFinite(n)) return sendJSON(res, 400, { message: '请填写调整数值' });
+        if (action === 'amount_percent' && (n <= -100 || n > 1000)) {
+          return sendJSON(res, 400, { message: '涨跌幅需在 -99% ~ 1000% 之间' });
+        }
+        if (action === 'amount_set' && n < 1) return sendJSON(res, 400, { message: '价格至少 1 分' });
+        if (action === 'amount_set' && n > 100000000) return sendJSON(res, 400, { message: '价格不能超过 100 万元' });
+        value = n;
+      } else if (action === 'stock_set') {
+        const raw = body.value;
+        if (raw !== null && raw !== undefined && String(raw).trim() !== '') {
+          const n = Math.floor(Number(raw));
+          if (!Number.isFinite(n) || n < 0) return sendJSON(res, 400, { message: '库存需为 0 或正整数' });
+          if (n > 1000000) return sendJSON(res, 400, { message: '库存最多 1000000 件' });
+          value = n;
+        }
+      } else if (action === 'sort_set') {
+        value = Math.floor(Number(body.value)) || 0;
+      }
+
+      try {
+        const affected = await store.adminBatchProducts(ids, action, value);
+        await refreshProducts();
+        const actionText = {
+          active: '批量上架',
+          inactive: '批量下架',
+          amount_set: '批量改价',
+          amount_delta: '批量加减价',
+          amount_percent: '批量按比例调价',
+          stock_set: '批量改库存',
+          sort_set: '批量改排序',
+          delete: '批量删除',
+        }[action];
+        audit(actionText, `${affected} 个商品`);
+        return sendJSON(res, 200, { affected });
+      } catch (e) {
+        await refreshProducts().catch(() => {});
+        return sendJSON(res, 502, { message: '批量操作失败：' + e.message });
+      }
+    }
+
+    // 商品导出（含库存/销量，可改完库存再导回）
+    if (pathname === '/api/admin/products/export' && method === 'GET') {
+      let list = [];
+      try {
+        list = await store.adminListProducts();
+      } catch (e) {
+        return sendJSON(res, 502, { message: '读取商品失败：' + e.message });
+      }
+      const salesMap = {};
+      for (const o of db.orders) {
+        if (o.status !== 'paid') continue;
+        const rows = Array.isArray(o.items) && o.items.length ? o.items : o.productId ? [{ productId: o.productId, qty: 1 }] : [];
+        rows.forEach((it) => {
+          if (it && it.productId) salesMap[it.productId] = (salesMap[it.productId] || 0) + Math.max(1, Number(it.qty) || 1);
+        });
+      }
+      const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      audit('导出商品', `${list.length} 条`);
+      return sendCSV(res, `products-${stamp}.csv`, productCSVRows(list, salesMap));
+    }
+
+    // 库存导入：CSV（ID, 总库存 ...），留空 = 不限量
+    if (pathname === '/api/admin/products/stock-import' && method === 'POST') {
+      const body = await readBody(req);
+      const rows = parseCSV(body.csv);
+      if (!rows.length) return sendJSON(res, 400, { message: '文件是空的' });
+      const header = rows[0];
+      const hasHeader = /id|名称|库存/i.test(header.join(','));
+      const bodyRows = hasHeader ? rows.slice(1) : rows;
+      const idIdx = csvColIndex(header, ['id', '商品'], 0);
+      const stockIdx = csvColIndex(header, ['总库存', '库存', 'stock'], 3);
+      const results = [];
+      let ok = 0;
+      for (const row of bodyRows) {
+        const id = String(row[idIdx] || '').trim();
+        if (!id) continue;
+        const raw = String(row[stockIdx] || '').trim();
+        let stock = null;
+        if (raw !== '') {
+          const n = Math.floor(Number(raw));
+          if (!Number.isFinite(n) || n < 0) {
+            results.push({ id, ok: false, message: '库存不是有效数字：' + raw });
+            continue;
+          }
+          stock = n;
+        }
+        try {
+          await store.adminSetStock(id, stock);
+          ok++;
+        } catch (e) {
+          results.push({ id, ok: false, message: /not_found|不存在/.test(e.message) ? '商品不存在' : e.message });
+        }
+      }
+      await refreshProducts().catch(() => {});
+      audit('导入库存', `成功 ${ok} 条，失败 ${results.length} 条`);
+      return sendJSON(res, 200, { ok, failed: results });
+    }
+
+    // 待发货订单导出：后台填好运单号可直接导回（批量发货）
+    if (pathname === '/api/admin/orders/pending-export' && method === 'GET') {
+      const umap = await userMap();
+      const list = sortOrdersDesc(db.orders).filter((o) => o.status === 'paid' && !o.shipNo);
+      const rows = [['订单号', '商品', '买家手机号', '金额(元)', '收货人', '收货电话', '收货地址', '快递公司', '运单号']];
+      list.forEach((o) => {
+        const buyer = (o.userId && umap[o.userId]) || {};
+        const sp = o.shipping || {};
+        rows.push([
+          o.id,
+          o.title || '',
+          buyer.phone || '',
+          (Number(o.amount || 0) / 100).toFixed(2),
+          sp.name || '',
+          sp.phone || '',
+          sp.detail || '',
+          '',
+          '',
+        ]);
+      });
+      const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, '');
+      audit('导出待发货', `${list.length} 条`);
+      return sendCSV(res, `pending-ship-${stamp}.csv`, rows);
+    }
+
+    // 运单号导入：CSV（订单号, 快递公司, 运单号），一行一单
+    if (pathname === '/api/admin/orders/ship-import' && method === 'POST') {
+      const body = await readBody(req);
+      const rows = parseCSV(body.csv);
+      if (!rows.length) return sendJSON(res, 400, { message: '文件是空的' });
+      const header = rows[0];
+      const hasHeader = /订单|运单|快递/i.test(header.join(','));
+      const list = hasHeader ? rows.slice(1) : rows;
+      const idIdx = csvColIndex(header, ['订单号', '订单'], 0);
+      const companyIdx = csvColIndex(header, ['快递公司', '快递', '物流'], 1);
+      const noIdx = csvColIndex(header, ['运单号', '单号'], 2);
+      const results = [];
+      let ok = 0;
+      for (const row of list) {
+        const id = String(row[idIdx] || '').trim();
+        if (!id) continue;
+        const company = String(row[companyIdx] || '').trim().slice(0, 30);
+        const no = String(row[noIdx] || '').trim().replace(/\s+/g, '').slice(0, 40);
+        const order = db.orders.find((o) => o.id === id);
+        if (!order) {
+          results.push({ orderId: id, ok: false, message: '订单不存在' });
+          continue;
+        }
+        if (order.status !== 'paid') {
+          results.push({ orderId: id, ok: false, message: '只有已支付订单才能发货' });
+          continue;
+        }
+        if (!company || !no) {
+          results.push({ orderId: id, ok: false, message: '快递公司或运单号为空' });
+          continue;
+        }
+        order.shipCompany = company;
+        order.shipNo = no;
+        order.shippedAt = Date.now();
+        try {
+          await persistOrder(order);
+          ok++;
+        } catch (e) {
+          results.push({ orderId: id, ok: false, message: '保存失败：' + e.message });
+        }
+      }
+      audit('导入运单', `成功 ${ok} 条，失败 ${results.length} 条`);
+      return sendJSON(res, 200, { ok, failed: results });
     }
 
     // 保存首页内容（新增或更新）
@@ -3557,6 +4156,63 @@ async function handleApi(req, res, url) {
       return sendJSON(res, okN ? 200 : 400, { results, ok: okN, fail: results.length - okN });
     }
 
+    /* ---------------- 在线客服（后台） ---------------- */
+
+    if (pathname === '/api/admin/chat/threads' && method === 'GET') {
+      try {
+        const list = await store.adminChatThreads();
+        const umap = await userMap();
+        const threads = list.map((t) => {
+          const u = umap[t.userId] || {};
+          return {
+            ...t,
+            nickname: t.nickname || u.nickname || '',
+            phone: u.phone || '',
+          };
+        });
+        return sendJSON(res, 200, {
+          threads,
+          pending: threads.reduce((s, t) => s + (Number(t.adminUnread) || 0), 0),
+        });
+      } catch (e) {
+        return sendJSON(res, 502, { message: '读取客服会话失败：' + e.message });
+      }
+    }
+
+    if (pathname === '/api/admin/chat/messages' && method === 'GET') {
+      const url = new URL(req.url, 'http://x');
+      const target = String(url.searchParams.get('user') || '').trim();
+      if (!target) return sendJSON(res, 400, { message: '缺少用户标识' });
+      try {
+        const out = await store.adminChatMsgs(target);
+        const umap = await userMap();
+        const u = umap[target] || {};
+        return sendJSON(res, 200, {
+          thread: out.thread ? { ...out.thread, nickname: out.thread.nickname || u.nickname || '', phone: u.phone || '' } : null,
+          messages: out.messages,
+          buyer: { nickname: u.nickname || '', phone: u.phone || '' },
+        });
+      } catch (e) {
+        return sendJSON(res, 502, { message: '读取对话失败：' + e.message });
+      }
+    }
+
+    if (pathname === '/api/admin/chat/reply' && method === 'POST') {
+      const body = await readBody(req);
+      const target = String(body.user || '').trim();
+      const text = String(body.text || '').trim();
+      if (!target) return sendJSON(res, 400, { message: '缺少用户标识' });
+      if (!text) return sendJSON(res, 400, { message: '回复内容不能为空' });
+      if (text.length > 1000) return sendJSON(res, 400, { message: '单条回复最多 1000 字' });
+      try {
+        const msg = await store.chatSend(target, 'admin', text);
+        audit('客服回复', `${target.slice(0, 10)} · ${text.slice(0, 40)}`);
+        return sendJSON(res, 200, { message: msg });
+      } catch (e) {
+        return sendJSON(res, 502, { message: '回复失败：' + e.message });
+      }
+    }
+
     /* ---------------- 用户反馈（后台） ---------------- */
 
     if (pathname === '/api/admin/feedback' && method === 'GET') {
@@ -3685,6 +4341,65 @@ async function handleApi(req, res, url) {
 }
 
 /* ------------------------------------------------------------------ */
+/* 支付宝跳转中转页                                                     */
+/* ------------------------------------------------------------------ */
+
+/**
+ * GET /pay/alipay/<orderId>：站内中转页。
+ * 用户浏览器先进这个本站页面，页面再用「自动提交的 POST 表单」把签名参数
+ * 交给支付宝网关。相比 GET 直跳网关，签名参数不经过 URL —— 无论浏览器、
+ * 旧缓存脚本还是中间层往 URL 上追加 sharecode 之类的参数，都不会再破坏
+ * 支付宝的验签（invalid-signature 的根治方案）。
+ */
+async function alipayRelayPage(req, res, url) {
+  const html = (status, body) => {
+    res.writeHead(status, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' });
+    res.end(body);
+  };
+  const orderId = decodeURIComponent(url.pathname.split('/').pop() || '');
+  const order = db.orders.find((o) => o.id === orderId);
+  if (!order) {
+    return html(
+      404,
+      '<meta charset="utf-8"><p style="font-family:sans-serif;text-align:center;margin-top:20vh">订单不存在，请返回店铺重新下单。</p>'
+    );
+  }
+  if (order.status === 'paid') {
+    const qs = new URLSearchParams({ result: 'paid', orderId: order.id });
+    if (PUBLIC_SHARECODE) qs.set('sharecode', PUBLIC_SHARECODE);
+    res.writeHead(302, { Location: '/?' + qs.toString() });
+    return res.end();
+  }
+  if (order.status !== 'pending' && order.status !== 'created') {
+    return html(
+      410,
+      '<meta charset="utf-8"><p style="font-family:sans-serif;text-align:center;margin-top:20vh">这笔订单已关闭或已超时，请返回店铺重新下单。</p>'
+    );
+  }
+  const client = Alipay.fromEnv();
+  if (!client) {
+    return html(
+      503,
+      '<meta charset="utf-8"><p style="font-family:sans-serif;text-align:center;margin-top:20vh">支付通道暂未配置，请联系商家。</p>'
+    );
+  }
+  const ua = String(req.headers['user-agent'] || '');
+  const mobile = /Android|iPhone|iPad|iPod|Mobile|HarmonyOS|Windows Phone/i.test(ua);
+  // 电脑网站支付需单独签约；默认统一走 wap（电脑上会展示扫码页），签约后设 ALIPAY_PAGE_PAY=1 开启
+  const allowPagePay = String(process.env.ALIPAY_PAGE_PAY || '') === '1';
+  const form = client.buildPayFormHTML(
+    client.buildPagePayParams({
+      outTradeNo: order.id,
+      totalAmountFen: order.amount,
+      subject: order.title,
+      body: order.title,
+      wap: allowPagePay ? !mobile : true,
+    })
+  );
+  html(200, form);
+}
+
+/* ------------------------------------------------------------------ */
 /* 静态资源                                                            */
 /* ------------------------------------------------------------------ */
 
@@ -3693,6 +4408,8 @@ function serveStatic(req, res, url) {
   if (pathname === '/' || pathname === '') pathname = '/index.html';
   if (pathname === '/cashier') pathname = '/cashier.html';
   if (pathname === '/admin') pathname = '/admin.html';
+  if (pathname === '/game') pathname = '/game.html';
+  if (pathname === '/chat') pathname = '/chat.html';
 
   const filePath = path.join(PUBLIC_DIR, path.normalize(pathname).replace(/^(\.\.[/\\])+/, ''));
   if (!filePath.startsWith(PUBLIC_DIR)) {
@@ -3777,6 +4494,8 @@ const server = http.createServer(async (req, res) => {
     }
     if (url.pathname.startsWith('/api/') || url.pathname === '/manifest.webmanifest') {
       await handleApi(req, res, url);
+    } else if (/^\/pay\/alipay\/[^/]+$/.test(url.pathname)) {
+      await alipayRelayPage(req, res, url);
     } else {
       serveStatic(req, res, url);
     }

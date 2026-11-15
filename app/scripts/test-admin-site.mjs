@@ -12,6 +12,7 @@ const js = fs.readFileSync(path.join(ROOT, 'public/admin.js'), 'utf8');
 
 const dom = new JSDOM(html, { runScripts: 'outside-only', url: 'http://localhost/admin?sharecode=TEST' });
 const w = dom.window;
+w.confirm = () => true;
 
 let pass = 0;
 const fails = [];
@@ -185,6 +186,30 @@ check(
   all('#panel tbody tr')[0].textContent.replace(/\s+/g, ' ').slice(0, 60)
 );
 
+// 商品页：多规格编辑器 + 批量操作条
+check('商品表有勾选框', Boolean($('#panel [data-pchk]')) && Boolean($('#pAll')));
+$('#skuAdd').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+$('#skuAdd').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+await new Promise((r) => setTimeout(r, 30));
+check('点「添加规格」生成两行', all('#skuBox .sku-row').length === 2, String(all('#skuBox .sku-row').length));
+const skuNameInput = $('#skuBox [data-sku-field="name"]');
+skuNameInput.value = '大杯';
+skuNameInput.dispatchEvent(new w.Event('input', { bubbles: true }));
+check('规格名可编辑', $('#skuBox [data-sku-field="name"]').value === '大杯');
+$('#skuClear').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+await new Promise((r) => setTimeout(r, 30));
+check('清空规格回到单规格提示', /单规格商品/.test($('#skuBox').textContent), $('#skuBox').textContent.trim().slice(0, 24));
+
+const chk = $('#panel [data-pchk]');
+chk.checked = true;
+chk.dispatchEvent(new w.Event('change', { bubbles: true }));
+check('勾选商品后出现批量操作条', $('#bulkBar').style.display === 'flex' && $('#bulkCount').textContent === '1');
+check('批量条有改价与改库存', Boolean($('#bulkBar [data-bulk="price"]')) && Boolean($('#bulkBar [data-bulk="stock"]')));
+$('#bulkBar [data-bulk="price"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+await new Promise((r) => setTimeout(r, 30));
+check('批量改价弹窗弹出', Boolean(w.document.querySelector('.amask #bpMode')));
+w.document.querySelector('.amask [data-close]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+
 // 内容页：单篇解锁价
 nav('contents');
 await new Promise((r) => setTimeout(r, 60));
@@ -203,6 +228,19 @@ await new Promise((r) => setTimeout(r, 60));
 check('订单页显示未支付剩余时间', /剩余 \d+:\d{2}/.test($('#panel').textContent), ($('#panel').textContent.match(/剩余 [\d:]+/) || [''])[0]);
 check('未支付订单有「延长」按钮', Boolean($('#panel [data-extend="O-new"]')));
 check('已支付订单没有延长按钮', !$('#panel [data-extend="O-paid"]'));
+
+// 订单页：批量发货
+check('已支付订单有勾选框', Boolean($('#panel [data-ochk="O-paid"]')));
+check('待支付订单没有勾选框', !$('#panel [data-ochk="O-new"]'));
+check('有「待发货 CSV / 导入运单」入口', Boolean($('#orderPending')) && Boolean($('#orderShipImport')));
+const ochk = $('#panel [data-ochk="O-paid"]');
+ochk.checked = true;
+ochk.dispatchEvent(new w.Event('change', { bubbles: true }));
+check('勾选订单后出现批量发货条', $('#orderBulkBar').style.display === 'flex' && $('#orderBulkCount').textContent === '1');
+$('#orderBulkBar [data-obulk="ship"]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
+await new Promise((r) => setTimeout(r, 30));
+check('批量发货弹窗有快递公司与运单号', Boolean(w.document.querySelector('.amask #sbCompany')) && Boolean(w.document.querySelector('.amask #sbNos')));
+w.document.querySelector('.amask [data-close]').dispatchEvent(new w.MouseEvent('click', { bubbles: true }));
 
 // 用户页：状态列 + 封禁/调余额/送会员
 nav('users');

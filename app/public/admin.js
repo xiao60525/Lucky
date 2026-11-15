@@ -47,6 +47,92 @@ async function api(path, opts = {}) {
   return data;
 }
 
+/* ---------------- 通用弹窗 ---------------- */
+
+/**
+ * 打开一个弹窗：标题 + 内容 + 底部按钮
+ * @returns {{ close: Function, body: HTMLElement }}
+ */
+function openModal({ title, body, okText = '确定', cancelText = '取消', danger = false, onOk }) {
+  const mask = document.createElement('div');
+  mask.className = 'amask';
+  mask.innerHTML = `
+    <div class="amodal">
+      <div class="amodal-head"><h3>${esc(title)}</h3><button type="button" data-close aria-label="关闭">✕</button></div>
+      <div class="amodal-body">${body}</div>
+      <div class="amodal-foot">
+        <button class="op" type="button" data-close>${esc(cancelText)}</button>
+        <button class="op ${danger ? 'danger' : 'primary'}" type="button" data-ok>${esc(okText)}</button>
+      </div>
+    </div>`;
+  document.body.appendChild(mask);
+  const close = () => {
+    mask.remove();
+    document.removeEventListener('keydown', onKey);
+  };
+  const onKey = (e) => {
+    if (e.key === 'Escape') close();
+  };
+  document.addEventListener('keydown', onKey);
+  mask.querySelectorAll('[data-close]').forEach((b) => (b.onclick = close));
+  mask.addEventListener('click', (e) => {
+    if (e.target === mask) close();
+  });
+  const okBtn = mask.querySelector('[data-ok]');
+  if (!onOk) okBtn.style.display = 'none';
+  else
+    okBtn.onclick = async () => {
+      okBtn.disabled = true;
+      const old = okBtn.textContent;
+      okBtn.textContent = '处理中…';
+      try {
+        const keep = await onOk(mask);
+        if (keep !== false) close();
+      } catch (e) {
+        toast(e.message || '操作失败');
+      } finally {
+        okBtn.disabled = false;
+        okBtn.textContent = old;
+      }
+    };
+  return { close, body: mask.querySelector('.amodal-body'), mask };
+}
+
+/** 触发浏览器下载（服务端返回 CSV 时用，带 x-admin-token 只能走 fetch） */
+async function downloadCsv(path, fallbackName) {
+  const res = await fetch(apiPath(path), { headers: state.token ? { 'x-admin-token': state.token } : {} });
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.message || `下载失败(${res.status})`);
+  }
+  const blob = await res.blob();
+  const name = /filename\*=UTF-8''([^;]+)/.exec(res.headers.get('Content-Disposition') || '');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = name ? decodeURIComponent(name[1]) : fallbackName;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  toast('已开始下载');
+}
+
+/** 选一个 CSV 文件并读出文本 */
+function pickCsvFile() {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.csv,text/csv,text/plain';
+    input.onchange = () => {
+      const f = input.files && input.files[0];
+      if (!f) return resolve(null);
+      const r = new FileReader();
+      r.onload = () => resolve({ name: f.name, text: String(r.result || '') });
+      r.onerror = () => resolve(null);
+      r.readAsText(f, 'utf-8');
+    };
+    input.click();
+  });
+}
+
 /* ---------------- 登录 ---------------- */
 
 function renderLogin() {
@@ -109,6 +195,7 @@ async function load() {
       document.title = state.data.site.name + ' · 管理后台';
     }
     render();
+
   } catch (e) {
     if (state.token) toast(e.message);
   }
@@ -126,7 +213,8 @@ const NAV = [
   ['members', '👑', '会员'],
   ['users', '👥', '用户'],
   ['contents', '📝', '首页内容'],
-  ['feedback', '💬', '反馈'],
+  ['feedback', '📮', '反馈'],
+  ['chat', '💬', '客服'],
   ['logs', '📜', '日志'],
   ['site', '🎨', '外观'],
   ['preview', '📱', '页面预览'],
@@ -149,15 +237,22 @@ function render() {
           <span class="side-logo">⚡</span>
           <div class="side-brand-txt"><b>管理后台</b><i>${esc(siteName)}</i></div>
         </div>
-        <nav class="side-nav">${NAV.map(
-          ([k, ic, label]) =>
-            `<button class="nav-btn ${state.tab === k ? 'on' : ''}" data-tab="${k}"><span class="ic">${ic}</span>${label}${
-              ((k === 'feedback' && d.stats && d.stats.feedbackPending) ||
-                (k === 'refunds' && d.stats && d.stats.refundPending))
-                ? `<span class="nav-badge">${k === 'refunds' ? d.stats.refundPending : d.stats.feedbackPending}</span>`
-                : ''
-            }</button>`
-        ).join('')}</nav>
+        <nav class="side-nav">${NAV.map(([k, ic, label]) => {
+          const st = d.stats || {};
+          const badge =
+            k === 'chat'
+              ? st.chatPending || 0
+              : k === 'feedback'
+                ? st.feedbackPending || 0
+                : k === 'refunds'
+                  ? st.refundPending || 0
+                  : k === 'products'
+                    ? st.lowStockCount || 0
+                    : 0;
+          return `<button class="nav-btn ${state.tab === k ? 'on' : ''}" data-tab="${k}"><span class="ic">${ic}</span>${label}${
+            badge ? `<span class="nav-badge">${badge}</span>` : ''
+          }</button>`;
+        }).join('')}</nav>
         <div class="side-foot">
           <span class="muted">管理员 ${esc(sessionStorage.getItem('admin_user') || 'admin')} · 商户号 ${d.pay.mchid || '未配置'}</span>
           <button id="logoutBtn">退出登录</button>
@@ -167,7 +262,7 @@ function render() {
     </div>`;
   document.querySelectorAll('.nav-btn').forEach((b) => (b.onclick = () => { state.tab = b.dataset.tab; render(); }));
   $('#logoutBtn').onclick = () => { state.token = ''; sessionStorage.removeItem('admin_token'); render(); };
-  ({ overview: renderOverview, products: renderProducts, members: renderMembers, contents: renderContents, orders: renderOrders, refunds: renderRefunds, reviews: renderReviews, users: renderUsers, site: renderSite, preview: renderPreview, pay: renderPay, settings: renderSettings, feedback: renderFeedback, logs: renderLogs })[state.tab]();
+  ({ overview: renderOverview, products: renderProducts, members: renderMembers, contents: renderContents, orders: renderOrders, refunds: renderRefunds, reviews: renderReviews, users: renderUsers, site: renderSite, preview: renderPreview, pay: renderPay, settings: renderSettings, feedback: renderFeedback, chat: renderChat, logs: renderLogs })[state.tab]();
 }
 
 function renderOverview() {
@@ -186,8 +281,9 @@ function renderOverview() {
   const barsHTML = trend.length
     ? `<div class="trend-bars">${trend
         .map((t) => {
-          const h = Math.max(4, Math.round(((t.gmv || 0) / maxGmv) * 100));
-          return `<div class="trend-col" title="${t.date}：¥${yuan(t.gmv || 0)} / ${t.paid || 0} 笔">
+          const h = Math.max(4, Math.round(((t.gmv || 0) / maxGmv) * 72));
+          const peak = (t.gmv || 0) >= maxGmv && maxGmv > 0;
+          return `<div class="trend-col${peak ? ' is-peak' : ''}" title="${t.date}：¥${yuan(t.gmv || 0)} / ${t.paid || 0} 笔">
             <span class="trend-val">${t.gmv ? '¥' + yuan(t.gmv) : ''}</span>
             <span class="trend-bar" style="height:${h}%"></span>
             <span class="trend-label">${t.label}</span>
@@ -205,11 +301,12 @@ function renderOverview() {
         ${stat('hl-ok', '💰', '净收入', `<small>¥</small>${yuan(s.net)}`)}
         ${stat('', '📥', '累计收款', `<small>¥</small>${yuan(s.gross)}`)}
         ${stat('hl-bad', '↩️', '累计退款', `<small>¥</small>${yuan(s.refundSum)}`)}
-        ${stat('', '👛', '账户余额', `<small>¥</small>${yuan(s.balance)}`)}
+        ${stat('', '🧮', '客单价', `<small>¥</small>${yuan(s.paidOrders ? Math.round(s.gross / s.paidOrders) : 0)}`)}
         ${stat('', '📦', '订单总数', `${s.orders} <small>笔</small>`)}
         ${stat('hl-ok', '✅', '已支付订单', `${s.paidOrders} <small>笔</small>`)}
         ${stat(s.pendingOrders ? 'hl-warn' : '', '⏳', '待支付订单', `${s.pendingOrders} <small>笔</small>`)}
       </div>
+      <p class="muted" style="font-size:11.5px;margin:10px 2px 0">以上金额均为站内订单流水统计（含模拟与真实支付），不是支付宝 / 微信账户余额。</p>
     </div>
 
     <div class="card">
@@ -262,6 +359,44 @@ function renderOverview() {
     </div>
 
     <div class="card">
+      <h3>热销商品</h3>
+      ${
+        (state.data.topProducts || []).filter((p) => p.sales > 0).length
+          ? `<table><thead><tr><th>商品</th><th>已售</th><th>剩余库存</th></tr></thead><tbody>${state.data.topProducts
+              .filter((p) => p.sales > 0)
+              .map(
+                (p) => `<tr>
+                  <td>${esc(p.title)}${p.active ? '' : ' <span class="tag off">已下架</span>'}</td>
+                  <td><b>${p.sales}</b> 件</td>
+                  <td class="muted">${p.left === null ? '不限量' : p.left + ' 件'}</td>
+                </tr>`
+              )
+              .join('')}</tbody></table>`
+          : '<p class="muted">还没有成交记录，卖出第一单后这里会出现排行。</p>'
+      }
+    </div>
+
+    <div class="card">
+      <h3>库存预警${s.lowStockCount ? ` <span class="nav-badge">${s.lowStockCount}</span>` : ''}</h3>
+      ${
+        s.lowStockCount
+          ? `<table><thead><tr><th>商品</th><th>剩余</th><th>状态</th></tr></thead><tbody>${state.data.lowStock
+              .map(
+                (p) => `<tr>
+                  <td>${esc(p.title)}${p.skuName ? ` <span class="muted">· ${esc(p.skuName)}</span>` : ''}</td>
+                  <td><b style="color:${p.left <= 0 ? '#d93025' : '#d97706'}">${p.left}</b> 件</td>
+                  <td>${p.left <= 0 ? '<span class="tag off">已售罄</span>' : '<span class="tag tag-gold">快卖完了</span>'}</td>
+                </tr>`
+              )
+              .join('')}</tbody></table>
+             <div class="row-actions" style="margin-top:12px"><button class="btn ghost" id="ovGoStock">去补货</button></div>`
+          : s.stockTracked
+            ? '<p class="muted">已设置库存的商品都还有货，暂时不用补。</p>'
+            : '<p class="muted">还没有商品设置库存。到「商品管理」里给商品填上库存，卖到只剩 5 件时这里会提醒你。</p>'
+      }
+    </div>
+
+    <div class="card">
       <h3>最近订单</h3>
       ${orderTable(state.data.orders.slice(0, 8))}
     </div>`;
@@ -276,6 +411,8 @@ function renderOverview() {
   if (gf) gf.onclick = () => go('feedback');
   const gr = $('#ovGoRefund');
   if (gr) gr.onclick = () => go('refunds');
+  const gs = $('#ovGoStock');
+  if (gs) gs.onclick = () => go('products');
 }
 
 /** 订单页筛选状态（内存态，切标签页后保留） */
@@ -375,6 +512,8 @@ function renderOrderControls() {
       <div class="osearch">
         <input id="orderSearch" placeholder="搜订单号 / 手机号 / 昵称 / 商品 / 交易号" value="${esc(orderFilter.q)}" />
         <button class="op" id="orderExport">导出 CSV</button>
+        <button class="op" id="orderPending" title="导出待发货订单（含空运单号列），填好后可一键导回">待发货 CSV</button>
+        <button class="op" id="orderShipImport" title="导入填好运单号的 CSV，批量发货">导入运单</button>
       </div>
     </div>
     <div class="obar" style="border-top:none;padding-top:0">
@@ -388,6 +527,9 @@ function refundBadgeOf(orderId) {
   const rf = list.find((r) => r.orderId === orderId && r.status === 'pending');
   return rf ? ' <span class="tag tag-gold">退款待审</span>' : '';
 }
+
+/** 订单多选（批量发货用） */
+let orderSel = new Set();
 
 function orderTable(orders) {  const list = filteredOrders(orders);
   if (!orders.length) return '<p class="muted">还没有订单</p>';
@@ -419,24 +561,42 @@ function orderTable(orders) {  const list = filteredOrders(orders);
     const sec = Math.floor((left % 60000) / 1000);
     return `<div class="muted" style="font-size:11px">剩余 ${m}:${String(sec).padStart(2, '0')}</div>`;
   };
-  return `<div class="otable-wrap"><table><thead><tr><th>订单号</th><th>商品</th><th>买家</th><th>金额</th><th>渠道</th><th>状态</th><th>物流</th><th>下单时间</th><th>支付时间</th><th>第三方交易号</th><th>操作</th></tr></thead>
+  return `<div class="bulkbar" id="orderBulkBar" style="display:none">
+      <span>已选 <b id="orderBulkCount">0</b> 单</span>
+      <button class="op" data-obulk="ship">批量发货</button>
+      <button class="op" data-obulk="export">导出所选</button>
+      <button class="op" data-obulk="cancel">取消选择</button>
+    </div>
+    <div class="otable-wrap"><table><thead><tr><th style="width:32px"><input class="chk" id="oAll" type="checkbox" title="全选本页可发货订单" /></th><th>订单号</th><th>商品</th><th>买家</th><th>金额</th><th>渠道</th><th>状态</th><th>收货信息</th><th>物流</th><th>下单时间</th><th>支付时间</th><th>第三方交易号</th><th>操作</th></tr></thead>
     <tbody>${pageList
       .map(
         (o) => `<tr>
+      <td>${
+        o.status === 'paid' ? `<input class="chk" type="checkbox" data-ochk="${esc(o.id)}" ${orderSel.has(o.id) ? 'checked' : ''} />` : ''
+      }</td>
       <td style="font-family:monospace;font-size:12px;max-width:150px;word-break:break-all">
         <span class="oid" data-copy="${esc(o.id)}" title="点击复制">${esc(o.id)}</span>
       </td>
       <td style="max-width:130px;word-break:break-all">${esc(o.title)}${
         Number(o.itemCount) > 1
           ? `<div class="muted" style="font-size:11px" title="${esc(
-              (o.items || []).map((it) => `${it.title} ×${it.qty}`).join('、')
+              (o.items || []).map((it) => `${it.title}${it.skuName ? `（${it.skuName}）` : ''} ×${it.qty}`).join('、')
             )}">共 ${o.itemCount} 件</div>`
-          : ''
+          : (o.items || []).some((it) => it.skuName)
+            ? `<div class="muted" style="font-size:11px">规格：${esc((o.items || []).map((it) => it.skuName).filter(Boolean).join('、'))}</div>`
+            : ''
       }</td>
       <td style="white-space:nowrap">${orderBuyerText(o)}</td>
       <td style="white-space:nowrap">¥${o.amountText}</td>
       <td class="muted" style="white-space:nowrap">${o.channelName || '-'}</td>
       <td><span class="tag ${o.status}">${STATUS_TEXT[o.status] || o.status}</span>${refundBadgeOf(o.id)}${leftText(o)}</td>
+      <td style="max-width:170px;word-break:break-all">${
+        o.shipping && (o.shipping.name || o.shipping.detail)
+          ? `<div style="font-size:12px">${esc(o.shipping.name || '未填收货人')}${
+              o.shipping.phone ? ` <span class="muted">${esc(o.shipping.phone)}</span>` : ''
+            }</div><div class="muted" style="font-size:11px" title="${esc(o.shipping.detail || '')}">${esc(o.shipping.detail || '')}</div>`
+          : '<span class="muted">—</span>'
+      }</td>
       <td style="white-space:nowrap;max-width:150px">${
         o.status === 'paid'
           ? o.shipNo
@@ -468,7 +628,7 @@ function orderTable(orders) {  const list = filteredOrders(orders);
 
 function exportOrdersCsv(orders) {
   const list = filteredOrders(orders);
-  const head = ['订单号', '商品', '买家昵称', '买家手机号', '金额(元)', '渠道', '状态', '下单时间', '支付时间', '第三方交易号', '快递公司', '运单号'];
+  const head = ['订单号', '商品', '买家昵称', '买家手机号', '金额(元)', '渠道', '状态', '收货人', '收货电话', '收货地址', '下单时间', '支付时间', '第三方交易号', '快递公司', '运单号'];
   const escCell = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
   const rows = list.map((o) =>
     [
@@ -479,6 +639,9 @@ function exportOrdersCsv(orders) {
       o.amountText,
       o.channelName || o.channel || '',
       STATUS_TEXT[o.status] || o.status,
+      (o.shipping && o.shipping.name) || '',
+      (o.shipping && o.shipping.phone) || '',
+      (o.shipping && o.shipping.detail) || '',
       o.createdAt ? fmtTime(o.createdAt) : '',
       o.paidAt ? fmtTime(o.paidAt) : '',
       o.transactionId || '',
@@ -499,13 +662,16 @@ function exportOrdersCsv(orders) {
 }
 
 /** 正在编辑的商品图（dataURL，空串 = 无图） */
-const productDraft = { image: '' };
+const productDraft = { image: '', skus: [] };
+/** 商品多选（批量操作用） */
+let productSel = new Set();
 
 function renderProducts() {
   const ps = state.data.products;
   let pfilter = 'all';
   // 正在编辑的商品图（dataURL；空串 = 不要图）
   productDraft.image = '';
+  productDraft.skus = [];
   const pChips = () => {
     const counts = { all: ps.length, active: 0, inactive: 0, member: 0, only: 0 };
     ps.forEach((p) => {
@@ -537,6 +703,17 @@ function renderProducts() {
         <div><label>会员天数（0=普通商品）</label><input id="f-memberdays" type="number" min="0" step="1" value="0" placeholder="如 30" /></div>
         <div><label>会员专享</label><select id="f-memberonly"><option value="0">否 · 所有人可买</option><option value="1">是 · 仅会员可买</option></select></div>
         <div><label>会员价（元，0=无优惠）</label><input id="f-memberprice" type="number" min="0" step="0.01" value="0" placeholder="如 9.90" /></div>
+        <div><label>库存（留空 = 不限量）</label><input id="f-stock" type="number" min="0" step="1" placeholder="如 100" /></div>
+        <div class="full">
+          <label>规格（不添加 = 单规格商品；添加后每个规格独立价格与库存）</label>
+          <div class="brand-btns" style="margin-bottom:8px">
+            <button class="op" type="button" id="skuAdd">+ 添加规格</button>
+            <button class="op" type="button" id="skuPreset">套用常用规格</button>
+            <button class="op" type="button" id="skuClear">清空规格</button>
+            <span class="muted" style="font-size:12px">价格留空 = 跟随商品价；库存留空 = 不限量</span>
+          </div>
+          <div id="skuBox"></div>
+        </div>
         <div class="full"><label>描述</label><input id="f-desc" /></div>
         <div class="full">
           <label>商品图片（可选，显示在手机端商品卡上）</label>
@@ -554,9 +731,25 @@ function renderProducts() {
       </div>
     </div>
     <div class="card">
-      <h3>全部商品（${ps.length}）</h3>
+      <div class="card-head">
+        <h3>全部商品（${ps.length}）</h3>
+        <div>
+          <button class="op" id="prodExport">导出 CSV</button>
+          <button class="op" id="prodStockImport">导入库存</button>
+        </div>
+      </div>
       ${ps.length
-        ? `<div class="ochips">${pChips()}</div><div class="search-box"><input id="productSearch" placeholder="🔍 搜商品 ID / 名称" /></div><div id="productRows"></div>`
+        ? `<div class="ochips">${pChips()}</div><div class="search-box"><input id="productSearch" placeholder="🔍 搜商品 ID / 名称" /></div>
+           <div class="bulkbar" id="bulkBar" style="display:none">
+             <span>已选 <b id="bulkCount">0</b> 个</span>
+             <button class="op" data-bulk="active">批量上架</button>
+             <button class="op" data-bulk="inactive">批量下架</button>
+             <button class="op" data-bulk="price">批量改价</button>
+             <button class="op" data-bulk="stock">批量改库存</button>
+             <button class="op danger" data-bulk="delete">批量删除</button>
+             <button class="op" data-bulk="cancel">取消选择</button>
+           </div>
+           <div id="productRows"></div>`
         : '<p class="muted">还没有商品，先在上面新增一个</p>'}
     </div>`;
 
@@ -576,6 +769,49 @@ function renderProducts() {
     toast('商品图已移除，点保存生效');
   };
   renderProductPreview();
+  // 规格编辑器
+  const skuAdd = $('#skuAdd');
+  if (skuAdd)
+    skuAdd.onclick = () => {
+      if (productDraft.skus.length >= 30) return toast('一个商品最多 30 个规格');
+      productDraft.skus.push({ id: '', name: '', price: '', stock: '' });
+      renderSkuBox();
+    };
+  const skuClear = $('#skuClear');
+  if (skuClear)
+    skuClear.onclick = () => {
+      if (!productDraft.skus.length) return;
+      if (!confirm('清空所有规格？保存后该商品回到单规格模式。')) return;
+      productDraft.skus = [];
+      renderSkuBox();
+    };
+  const skuPreset = $('#skuPreset');
+  if (skuPreset)
+    skuPreset.onclick = () => {
+      const raw = prompt('输入规格名，用逗号分隔（会依次生成价格/库存为空的行）', 'S,M,L');
+      if (raw === null) return;
+      const names = raw
+        .split(/[,，、]/)
+        .map((s) => s.trim())
+        .filter(Boolean)
+        .slice(0, 30);
+      if (!names.length) return;
+      productDraft.skus = names.map((n) => ({ id: '', name: n, price: '', stock: '' }));
+      renderSkuBox();
+      toast(`已生成 ${names.length} 个规格，填好价格与库存后保存`);
+    };
+  renderSkuBox();
+
+  // 批量操作 / 导出 / 库存导入
+  productSel = new Set([...productSel].filter((id) => ps.some((p) => p.id === id)));
+  const selIds = () => ps.filter((p) => productSel.has(p.id)).map((p) => p.id);
+  document.querySelectorAll('[data-bulk]').forEach((b) => {
+    b.onclick = () => bulkProductAction(b.dataset.bulk, selIds);
+  });
+  const pe = $('#prodExport');
+  if (pe) pe.onclick = () => downloadCsv('/api/admin/products/export', 'products.csv').catch((e) => toast(e.message));
+  const pi = $('#prodStockImport');
+  if (pi) pi.onclick = importStockCsv;
   if (ps.length) {
     const renderProductRows = () => {
       const box = $('#productRows');
@@ -593,16 +829,52 @@ function renderProducts() {
       // 销量 / 销售额：已支付订单按商品聚合（前台详情页也会显示「已售 N」）
       const soldMap = {};
       const revenueMap = {};
+      const skuSoldMap = {};
       (state.data.orders || []).forEach((o) => {
-        if (o.status === 'paid' && o.productId) {
-          soldMap[o.productId] = (soldMap[o.productId] || 0) + 1;
-          revenueMap[o.productId] = (revenueMap[o.productId] || 0) + Number(o.amount || 0);
-        }
+        if (o.status !== 'paid') return;
+        const rows = Array.isArray(o.items) && o.items.length ? o.items : [{ productId: o.productId, qty: 1 }];
+        rows.forEach((it) => {
+          if (!it || !it.productId) return;
+          const q = Math.max(1, Number(it.qty) || 1);
+          soldMap[it.productId] = (soldMap[it.productId] || 0) + q;
+          revenueMap[it.productId] = (revenueMap[it.productId] || 0) + q * Number(it.price || o.amount || 0);
+          if (it.skuId) {
+            const key = it.productId + '|' + it.skuId;
+            skuSoldMap[key] = (skuSoldMap[key] || 0) + q;
+          }
+        });
       });
+
+      // 库存格子：可用 = 总库存 - 已支付销量；空值表示不限量；多规格按规格逐条
+      const stockCell = (p) => {
+        const skus = Array.isArray(p.skus) ? p.skus : [];
+        if (skus.length) {
+          const parts = skus.map((k) => {
+            const sold = skuSoldMap[p.id + '|' + k.id] || 0;
+            const left = k.stock === null || k.stock === undefined ? null : Math.max(0, Number(k.stock) - sold);
+            const color = left === null ? 'inherit' : left <= 0 ? '#d93025' : left <= 5 ? '#d97706' : 'inherit';
+            return `<div style="font-size:11.5px;white-space:nowrap">${esc(k.name)} <b style="color:${color}">${
+              left === null ? '∞' : left
+            }</b></div>`;
+          });
+          return `<div class="muted" style="font-size:11px">多规格</div>${parts.join('')}<button class="op" data-pedit="${esc(
+            p.id
+          )}" style="margin-top:4px">改规格</button>`;
+        }
+        if (p.stock === null || p.stock === undefined) {
+          return '<span class="muted">不限量</span>';
+        }
+        const left = Math.max(0, Number(p.stock) - (soldMap[p.id] || 0));
+        const color = left <= 0 ? '#d93025' : left <= 5 ? '#d97706' : 'inherit';
+        return `<b style="color:${color}">${left}</b><span class="muted" style="font-size:11.5px"> / ${p.stock}</span><br><button class="op" data-pstock="${esc(p.id)}" style="margin-top:4px">改</button>`;
+      };
       box.innerHTML = fl.length
-        ? `<table><thead><tr><th>图片</th><th>ID</th><th>名称</th><th>价格</th><th>会员</th><th>销量</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${fl
+        ? `<table><thead><tr><th style="width:32px"><input class="chk" id="pAll" type="checkbox" title="全选当前筛选" /></th><th>图片</th><th>ID</th><th>名称</th><th>规格</th><th>价格</th><th>会员</th><th>销量</th><th>库存</th><th>排序</th><th>状态</th><th>操作</th></tr></thead><tbody>${fl
             .map(
               (p) => `<tr>
+            <td><input class="chk" type="checkbox" data-pchk="${esc(p.id)}" ${
+              productSel.has(p.id) ? 'checked' : ''
+            } /></td>
             <td>${
               p.image
                 ? `<img src="${esc(p.image)}" alt="" style="width:46px;height:46px;border-radius:10px;object-fit:cover;display:block" />`
@@ -610,6 +882,9 @@ function renderProducts() {
             }</td>
             <td style="font-family:monospace;font-size:12px">${esc(p.id)}</td>
             <td>${esc(p.title)}${p.tag ? ` <span class="muted">·${esc(p.tag)}</span>` : ''}</td>
+            <td class="muted" style="font-size:12px;white-space:nowrap">${
+              Array.isArray(p.skus) && p.skus.length ? `${p.skus.length} 个规格` : '单规格'
+            }</td>
             <td>¥${yuan(p.amount)}${Number(p.memberPrice) > 0 ? `<div class="muted" style="font-size:11.5px">会员 ¥${yuan(p.memberPrice)}</div>` : ''}</td>
             <td>${
               [
@@ -620,6 +895,7 @@ function renderProducts() {
                 .join(' ') || '<span class="muted">—</span>'
             }</td>
             <td class="muted">${soldMap[p.id] ? `已售 ${soldMap[p.id]}<div style="font-size:11.5px">¥${yuan(revenueMap[p.id] || 0)}</div>` : '—'}</td>
+            <td>${stockCell(p)}</td>
             <td class="muted">${p.sort}</td>
             <td>${p.active ? '<span class="tag paid">上架</span>' : '<span class="tag off">下架</span>'}</td>
             <td style="white-space:nowrap">
@@ -648,6 +924,38 @@ function renderProducts() {
         };
       });
       box.querySelectorAll('[data-del]').forEach((b) => (b.onclick = () => delProduct(b.dataset.del)));
+      box.querySelectorAll('[data-pstock]').forEach((b) => {
+        b.onclick = () => {
+          const p = ps.find((x) => x.id === b.dataset.pstock);
+          if (!p) return;
+          setStock(p);
+        };
+      });
+
+      // 多选：勾选 / 全选当前筛选，批量条随之出现
+      const syncBulk = () => {
+        const bar = $('#bulkBar');
+        if (bar) bar.style.display = productSel.size ? 'flex' : 'none';
+        const c = $('#bulkCount');
+        if (c) c.textContent = String(productSel.size);
+        const allEl = $('#pAll');
+        if (allEl) allEl.checked = fl.length > 0 && fl.every((p) => productSel.has(p.id));
+      };
+      box.querySelectorAll('[data-pchk]').forEach((el) => {
+        el.onchange = () => {
+          if (el.checked) productSel.add(el.dataset.pchk);
+          else productSel.delete(el.dataset.pchk);
+          syncBulk();
+        };
+      });
+      const allEl = $('#pAll');
+      if (allEl) {
+        allEl.onchange = () => {
+          fl.forEach((p) => (allEl.checked ? productSel.add(p.id) : productSel.delete(p.id)));
+          renderProductRows();
+        };
+      }
+      syncBulk();
     };
     renderProductRows();
     let ptimer = null;
@@ -665,6 +973,143 @@ function renderProducts() {
   }
 }
 
+/** 规格编辑区（表单内）：名称 / 价格 / 库存 三列 */
+function renderSkuBox() {
+  const box = $('#skuBox');
+  if (!box) return;
+  if (!productDraft.skus.length) {
+    box.innerHTML = '<div class="sku-empty">当前是单规格商品：价格与库存用上面的「价格 / 库存」字段。</div>';
+    return;
+  }
+  box.innerHTML =
+    '<div class="sku-head"><div>规格名</div><div>价格（元）</div><div>库存</div><div></div></div>' +
+    productDraft.skus
+      .map(
+        (k, i) => `<div class="sku-row">
+      <input data-sku-field="name" data-i="${i}" value="${esc(k.name)}" placeholder="如 红色 / 30 天" maxlength="30" />
+      <input data-sku-field="price" data-i="${i}" value="${esc(k.price)}" type="number" min="0" step="0.01" placeholder="跟随商品价" />
+      <input data-sku-field="stock" data-i="${i}" value="${esc(k.stock)}" type="number" min="0" step="1" placeholder="不限量" />
+      <button class="op danger" type="button" data-sku-del="${i}" title="删除该规格">✕</button>
+    </div>`
+      )
+      .join('');
+  box.querySelectorAll('[data-sku-field]').forEach((el) => {
+    el.oninput = () => {
+      const k = productDraft.skus[Number(el.dataset.i)];
+      if (k) k[el.dataset.skuField] = el.value;
+    };
+  });
+  box.querySelectorAll('[data-sku-del]').forEach((b) => {
+    b.onclick = () => {
+      productDraft.skus.splice(Number(b.dataset.skuDel), 1);
+      renderSkuBox();
+    };
+  });
+}
+
+/** 商品批量操作入口：kind = active|inactive|price|stock|delete|cancel */
+async function bulkProductAction(kind, selIds) {
+  const ids = typeof selIds === 'function' ? selIds() : selIds;
+  if (kind === 'cancel') {
+    productSel.clear();
+    renderProducts();
+    return;
+  }
+  if (!ids.length) return toast('请先勾选商品');
+  const run = async (action, value) => {
+    const res = await api('/api/admin/product/batch', {
+      method: 'POST',
+      body: JSON.stringify({ ids, action, value }),
+    });
+    toast(`已处理 ${res.affected || 0} 个商品`);
+    productSel.clear();
+    await load();
+  };
+  try {
+    if (kind === 'active' || kind === 'inactive') {
+      await run(kind);
+      return;
+    }
+    if (kind === 'delete') {
+      if (!confirm(`确定删除选中的 ${ids.length} 个商品？已产生的订单不受影响。`)) return;
+      await run('delete');
+      return;
+    }
+    if (kind === 'price') {
+      openModal({
+        title: `批量改价（${ids.length} 个商品）`,
+        body: `
+          <label>调整方式</label>
+          <select id="bpMode">
+            <option value="amount_percent">按百分比调整（如 10 = 涨价 10%，-5 = 降价 5%）</option>
+            <option value="amount_delta">按金额加减（如 2 = 每个涨 2 元，-1.5 = 降 1.5 元）</option>
+            <option value="amount_set">统一设为（元）</option>
+          </select>
+          <div style="height:10px"></div>
+          <label>数值</label>
+          <input id="bpValue" type="number" step="0.01" placeholder="如 10 / -5 / 2.5" />
+          <p class="amodal-tip">改价会同时调整<b>该商品下已单独定价的规格</b>；规格价为 0（跟随商品价）的会自动跟随。</p>`,
+        okText: '开始调整',
+        onOk: async () => {
+          const mode = $('#bpMode').value;
+          const raw = parseFloat($('#bpValue').value);
+          if (!Number.isFinite(raw)) throw new Error('请填写调整数值');
+          const value = mode === 'amount_percent' ? Math.round(raw) : Math.round(raw * 100);
+          if (!value) throw new Error('调整数值不能为 0');
+          await run(mode, value);
+          return true;
+        },
+      });
+      return;
+    }
+    if (kind === 'stock') {
+      openModal({
+        title: `批量改库存（${ids.length} 个商品）`,
+        body: `
+          <label>统一库存</label>
+          <input id="bsValue" type="number" min="0" step="1" placeholder="留空 = 不限量" />
+          <p class="amodal-tip">只影响<b>单规格商品</b>的总库存；多规格商品请进「编辑 → 规格」逐个改。</p>`,
+        okText: '确定修改',
+        onOk: async () => {
+          const raw = String($('#bsValue').value).trim();
+          await run('stock_set', raw === '' ? null : Math.max(0, parseInt(raw, 10) || 0));
+          return true;
+        },
+      });
+    }
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
+/** 库存导入：下载的 CSV 改完「总库存」列后直接导回 */
+async function importStockCsv() {
+  const file = await pickCsvFile();
+  if (!file) return;
+  try {
+    const res = await api('/api/admin/products/stock-import', {
+      method: 'POST',
+      body: JSON.stringify({ csv: file.text }),
+    });
+    const failed = res.failed || [];
+    if (!failed.length) toast(`导入完成：成功 ${res.ok} 条`);
+    else
+      openModal({
+        title: '导入结果',
+        body: `<p class="amodal-tip">成功 <b>${res.ok}</b> 条，失败 <b>${failed.length}</b> 条</p>
+          <div style="max-height:240px;overflow:auto;font-size:12.5px;line-height:1.9">
+            ${failed.map((f) => `<div>${esc(f.id)}：${esc(f.message)}</div>`).join('')}
+          </div>`,
+        okText: '知道了',
+        cancelText: '关闭',
+        onOk: () => true,
+      });
+    await load();
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
 function fillForm(p) {
   $('#formTitle').textContent = p ? '编辑商品：' + p.title : '新增商品';
   $('#f-id').value = p ? p.id : '';
@@ -676,7 +1121,15 @@ function fillForm(p) {
   $('#f-memberdays').value = p ? Number(p.memberDays) || 0 : 0;
   $('#f-memberonly').value = p && p.memberOnly ? '1' : '0';
   $('#f-memberprice').value = p && Number(p.memberPrice) > 0 ? (Number(p.memberPrice) / 100).toFixed(2) : '0';
+  $('#f-stock').value = p && p.stock !== null && p.stock !== undefined ? p.stock : '';
   $('#f-desc').value = p ? p.desc || '' : '';
+  productDraft.skus = (p && Array.isArray(p.skus) ? p.skus : []).map((k) => ({
+    id: k.id || '',
+    name: k.name || '',
+    price: Number(k.price) > 0 ? (Number(k.price) / 100).toFixed(2) : '',
+    stock: k.stock === null || k.stock === undefined ? '' : String(k.stock),
+  }));
+  renderSkuBox();
   productDraft.image = p && p.image ? p.image : '';
   renderProductPreview();
 }
@@ -721,6 +1174,20 @@ async function saveProduct() {
   const btn = $('#saveBtn');
   const amountYuan = parseFloat($('#f-amount').value);
   if (!Number.isFinite(amountYuan) || amountYuan <= 0) return toast('请填写正确的价格');
+  // 规格：价格留空 = 跟随商品价（0），库存留空 = 不限量（null）
+  const skus = productDraft.skus.map((k, i) => {
+    const name = String(k.name || '').trim();
+    const priceYuan = String(k.price ?? '').trim() === '' ? 0 : parseFloat(k.price);
+    const stockRaw = String(k.stock ?? '').trim();
+    return {
+      id: k.id || '',
+      name,
+      price: Number.isFinite(priceYuan) ? Math.max(0, Math.round(priceYuan * 100)) : 0,
+      stock: stockRaw === '' ? null : Math.max(0, parseInt(stockRaw, 10) || 0),
+      sort: i,
+    };
+  });
+  if (skus.some((s) => !s.name)) return toast('规格名不能为空，填好再保存');
   btn.disabled = true;
   btn.textContent = '保存中…';
   try {
@@ -738,6 +1205,10 @@ async function saveProduct() {
         memberOnly: $('#f-memberonly').value === '1',
         memberPrice: Math.round((parseFloat($('#f-memberprice').value) || 0) * 100),
         image: productDraft.image || '',
+        // 留空 = 不限量
+        stock: $('#f-stock').value.trim() === '' ? null : Math.max(0, parseInt($('#f-stock').value, 10) || 0),
+        // 规格：整组覆盖（空数组 = 回到单规格）
+        skus,
       }),
     });
     toast('已保存');
@@ -746,6 +1217,24 @@ async function saveProduct() {
     toast(e.message);
     btn.disabled = false;
     btn.textContent = '保存';
+  }
+}
+
+/** 列表里快捷改库存：留空 = 不限量 */
+async function setStock(p) {
+  const current = p.stock === null || p.stock === undefined ? '' : String(p.stock);
+  const input = prompt(`「${p.title}」总库存（留空 = 不限量）`, current);
+  if (input === null) return;
+  const raw = String(input).trim();
+  try {
+    await api('/api/admin/product/stock', {
+      method: 'POST',
+      body: JSON.stringify({ id: p.id, stock: raw === '' ? null : Math.max(0, parseInt(raw, 10) || 0) }),
+    });
+    toast(raw === '' ? '已设为不限量' : `库存已改为 ${raw} 件`);
+    await load();
+  } catch (e) {
+    toast(e.message);
   }
 }
 
@@ -1084,6 +1573,7 @@ async function exportCSV(type) {
 
 function renderOrders() {
   const orders = state.data.orders || [];
+  orderSel = new Set([...orderSel].filter((id) => orders.some((o) => o.id === id)));
   $('#panel').innerHTML = `
     <div class="card">
       <div class="card-head">
@@ -1097,6 +1587,12 @@ function renderOrders() {
   bindOrderOps();
   const eo = $('#exportOrders');
   if (eo) eo.onclick = () => exportCSV('orders');
+  const op = $('#orderPending');
+  if (op)
+    op.onclick = () =>
+      downloadCsv('/api/admin/orders/pending-export', 'pending-ship.csv').catch((e) => toast(e.message));
+  const osi = $('#orderShipImport');
+  if (osi) osi.onclick = importShipCsv;
 
   // 状态筛选
   document.querySelectorAll('[data-of]').forEach((b) => {
@@ -1154,6 +1650,33 @@ function renderOrders() {
   bindCopy();
 }
 
+/** 导入运单 CSV：先用「待发货 CSV」导出，填好快递公司/运单号再导回 */
+async function importShipCsv() {
+  const file = await pickCsvFile();
+  if (!file) return;
+  try {
+    const res = await api('/api/admin/orders/ship-import', {
+      method: 'POST',
+      body: JSON.stringify({ csv: file.text }),
+    });
+    await load();
+    const failed = res.failed || [];
+    if (!failed.length) return toast(`导入完成：已发货 ${res.ok} 单`);
+    openModal({
+      title: '导入结果',
+      body: `<p class="amodal-tip">成功 <b>${res.ok}</b> 单，失败 <b>${failed.length}</b> 单</p>
+        <div style="max-height:240px;overflow:auto;font-size:12.5px;line-height:1.9">
+          ${failed.map((f) => `<div>${esc(f.orderId)}：${esc(f.message)}</div>`).join('')}
+        </div>`,
+      okText: '知道了',
+      cancelText: '关闭',
+      onOk: () => true,
+    });
+  } catch (e) {
+    toast(e.message);
+  }
+}
+
 function bindCopy() {
   document.querySelectorAll('[data-copy]').forEach((el) => {
     el.onclick = () => {
@@ -1188,6 +1711,130 @@ function bindOrderOps() {
   document.querySelectorAll('[data-sync]').forEach((b) => (b.onclick = () => syncOrder(b.dataset.sync, b)));
   document.querySelectorAll('[data-extend]').forEach((b) => (b.onclick = () => extendOrder(b.dataset.extend)));
   document.querySelectorAll('[data-ship]').forEach((b) => (b.onclick = () => shipOrder(b.dataset.ship)));
+
+  // 批量发货：勾选已支付订单 → 填快递公司与运单号
+  const syncOBulk = () => {
+    const bar = $('#orderBulkBar');
+    if (bar) bar.style.display = orderSel.size ? 'flex' : 'none';
+    const c = $('#orderBulkCount');
+    if (c) c.textContent = String(orderSel.size);
+    const boxes = [...document.querySelectorAll('[data-ochk]')];
+    const allEl = $('#oAll');
+    if (allEl) allEl.checked = boxes.length > 0 && boxes.every((b) => b.checked);
+  };
+  document.querySelectorAll('[data-ochk]').forEach((el) => {
+    el.onchange = () => {
+      if (el.checked) orderSel.add(el.dataset.ochk);
+      else orderSel.delete(el.dataset.ochk);
+      syncOBulk();
+    };
+  });
+  const oAll = $('#oAll');
+  if (oAll)
+    oAll.onchange = () => {
+      document.querySelectorAll('[data-ochk]').forEach((el) => {
+        el.checked = oAll.checked;
+        if (oAll.checked) orderSel.add(el.dataset.ochk);
+        else orderSel.delete(el.dataset.ochk);
+      });
+      syncOBulk();
+    };
+  document.querySelectorAll('[data-obulk]').forEach((b) => {
+    b.onclick = () => {
+      if (b.dataset.obulk === 'ship') return shipBatchDialog([...orderSel]);
+      if (b.dataset.obulk === 'export') {
+        const list = (state.data.orders || []).filter((o) => orderSel.has(o.id));
+        if (!list.length) return toast('请先勾选订单');
+        return exportOrdersCsv(list);
+      }
+      orderSel.clear();
+      const box2 = $('#orderTableBox');
+      if (box2) box2.innerHTML = orderTable(state.data.orders || []);
+      bindOrderOps();
+      bindCopy();
+    };
+  });
+  syncOBulk();
+}
+
+/** 批量发货：选快递公司 + 逐行填运单号；也支持粘贴「订单号,快递公司,运单号」整行 */
+function shipBatchDialog(ids) {
+  if (!ids.length) return toast('请先勾选要发货的订单');
+  const orders = (state.data.orders || []).filter((o) => ids.includes(o.id));
+  const need = orders.filter((o) => !o.shipNo || true);
+  const lastCompany = localStorage.getItem('admin_ship_company') || '顺丰速运';
+  const rowsHTML = orders
+    .map(
+      (o, i) => `<div class="sku-row" data-ship-row="${i}" style="grid-template-columns:1.3fr 1fr">
+        <div style="font-size:11.5px;line-height:1.4;word-break:break-all">
+          <b>${esc(o.id)}</b><div class="muted">${esc(o.title)}</div>
+        </div>
+        <input data-ship-no="${i}" placeholder="运单号" value="${esc(o.shipNo || '')}" />
+      </div>`
+    )
+    .join('');
+  openModal({
+    title: `批量发货（${orders.length} 单）`,
+    body: `
+      <label>快递公司（应用到全部订单）</label>
+      <input id="sbCompany" type="text" value="${esc(lastCompany)}" maxlength="30" placeholder="如 顺丰速运 / 中通快递 / EMS" />
+      <div style="height:12px"></div>
+      <label>运单号（一行一单，按顺序对应下面的订单）</label>
+      <textarea id="sbNos" rows="4" placeholder="SF1234567890&#10;SF1234567891"></textarea>
+      <p class="amodal-tip">也可以留空运单号框，直接粘贴「<b>订单号,快递公司,运单号</b>」整行，系统会按订单号匹配。</p>
+      <div style="max-height:220px;overflow:auto;margin-top:10px">${rowsHTML}</div>`,
+    okText: '确认发货',
+    onOk: async () => {
+      const company = $('#sbCompany').value.trim();
+      const lines = String($('#sbNos').value || '')
+        .split(/\r?\n/)
+        .map((s) => s.trim())
+        .filter(Boolean);
+      const items = [];
+      if (lines.length && lines.every((l) => /[,，\t]/.test(l))) {
+        // 整行粘贴：订单号,快递公司,运单号
+        lines.forEach((l) => {
+          const parts = l.split(/[,，\t]/).map((s) => s.trim());
+          items.push({ orderId: parts[0], company: parts[1] || company, no: parts[2] || '' });
+        });
+      } else if (lines.length) {
+        if (lines.length !== orders.length) {
+          throw new Error(`运单号 ${lines.length} 行，订单 ${orders.length} 单，数量不一致`);
+        }
+        orders.forEach((o, i) => items.push({ orderId: o.id, company, no: lines[i] }));
+      } else {
+        orders.forEach((o, i) => {
+          const el = document.querySelector(`[data-ship-no="${i}"]`);
+          const no = el ? el.value.trim() : '';
+          if (no) items.push({ orderId: o.id, company, no });
+        });
+      }
+      if (!items.length) throw new Error('还没有填写运单号');
+      if (!company) throw new Error('请填写快递公司');
+      const bad = items.find((it) => !it.no);
+      if (bad) throw new Error(`订单 ${bad.orderId} 没填运单号`);
+      localStorage.setItem('admin_ship_company', company);
+      const res = await api('/api/admin/order/ship', { method: 'POST', body: JSON.stringify({ items }) });
+      orderSel.clear();
+      await load();
+      if (res.fail) {
+        toast(`成功 ${res.ok} 单，失败 ${res.fail} 单`);
+        const failed = (res.results || []).filter((r) => !r.ok);
+        openModal({
+          title: '部分订单发货失败',
+          body: `<div style="font-size:12.5px;line-height:1.9">${failed
+            .map((f) => `<div>${esc(f.orderId)}：${esc(f.message)}</div>`)
+            .join('')}</div>`,
+          okText: '知道了',
+          cancelText: '关闭',
+          onOk: () => true,
+        });
+      } else {
+        toast(`已发货 ${res.ok} 单`);
+      }
+      return true;
+    },
+  });
 }
 
 /** 发货 / 修改物流：填快递公司 + 运单号，已发货的会带出旧值方便改 */
@@ -1274,7 +1921,7 @@ async function closeOrder(id) {
 
 /** 导出会员名单 CSV（含普通用户，带会员状态列，Excel 打开不乱码） */
 function exportMembersCsv(web) {
-  const head = ['手机号', '昵称', '会员状态', '到期时间', '自动续费', '余额(元)', '订单数', '注册时间'];
+  const head = ['手机号', '昵称', '会员状态', '到期时间', '自动续费', '用户余额(元)', '订单数', '注册时间'];
   const escCell = (v) => `"${String(v == null ? '' : v).replace(/"/g, '""')}"`;
   const rows = (web || []).map((u) =>
     [
@@ -1619,7 +2266,7 @@ function renderUsers() {
           }</p>`;
         rows.innerHTML = fl.length
           ? `<table>
-          <thead><tr><th>手机号</th><th>昵称</th><th>来源</th><th>身份</th><th>余额</th><th>累计消费</th><th>注册时间</th><th>最近登录</th><th>订单数</th><th>状态</th><th>操作</th></tr></thead>
+          <thead><tr><th>手机号</th><th>昵称</th><th>来源</th><th>身份</th><th>用户余额</th><th>累计消费</th><th>注册时间</th><th>最近登录</th><th>订单数</th><th>状态</th><th>操作</th></tr></thead>
           <tbody>${fl
             .map(
               (u) => `<tr>
@@ -1912,7 +2559,7 @@ function renderMembers() {
           return true;
         });
         rows.innerHTML = fl.length
-          ? `<table><thead><tr><th>手机号</th><th>昵称</th><th>会员状态</th><th>来源</th><th>余额</th><th>订单数</th><th>操作</th></tr></thead><tbody>${fl
+          ? `<table><thead><tr><th>手机号</th><th>昵称</th><th>会员状态</th><th>来源</th><th>用户余额</th><th>订单数</th><th>操作</th></tr></thead><tbody>${fl
               .map(
                 (u) => `<tr>
                 <td style="font-family:monospace;font-size:13px">${u.phone || '<span class="muted">未绑定</span>'}</td>
@@ -2888,6 +3535,283 @@ function renderSettings() {
 
 const fbFilter = { status: 'all', q: '' };
 
+/* ---------------- 在线客服 ---------------- */
+
+const chatState = { threads: [], pending: 0, active: '', activeInfo: null, msgs: [], q: '', timer: null, lastKey: '' };
+
+/** 会话时间：今天只显示时分，昨天加前缀，更早显示月-日 */
+function chatWhen(ts) {
+  if (!ts) return '';
+  const d = new Date(ts);
+  const now = new Date();
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  if (d.toDateString() === now.toDateString()) return hm;
+  const y = new Date(now);
+  y.setDate(now.getDate() - 1);
+  if (d.toDateString() === y.toDateString()) return '昨天 ' + hm;
+  return `${d.getMonth() + 1}-${d.getDate()} ${hm}`;
+}
+
+function paintChatThreads() {
+  const box = $('#chatThreads');
+  if (!box) return;
+  const cnt = $('#chatCount');
+  if (cnt) cnt.textContent = String(chatState.threads.length);
+  const q = chatState.q.trim().toLowerCase();
+  const list = chatState.threads.filter(
+    (t) => !q || `${t.nickname || ''} ${t.phone || ''} ${t.lastBody || ''}`.toLowerCase().includes(q)
+  );
+  if (!list.length) {
+    box.innerHTML = `<p class="muted" style="padding:18px 4px;text-align:center">${
+      chatState.threads.length ? '没有匹配的会话' : '还没有用户来咨询'
+    }</p>`;
+    return;
+  }
+  box.innerHTML = list
+    .map((t) => {
+      const name = t.nickname || '匿名用户';
+      return `<button class="chat-item ${chatState.active === t.userId ? 'on' : ''}" data-chat="${esc(t.userId)}">
+        <span class="chat-ava">${esc(String(name).slice(0, 1))}</span>
+        <span class="chat-item-main">
+          <span class="chat-item-top"><b>${esc(name)}</b><i>${esc(chatWhen(t.lastAt))}</i></span>
+          <span class="chat-item-bottom">
+            <em>${t.lastRole === 'admin' ? '我：' : ''}${esc(t.lastBody || '')}</em>
+            ${t.adminUnread ? `<span class="chat-unread">${t.adminUnread}</span>` : ''}
+          </span>
+        </span>
+      </button>`;
+    })
+    .join('');
+  box.querySelectorAll('[data-chat]').forEach((b) => {
+    b.onclick = () => openChatThread(b.dataset.chat);
+  });
+}
+
+function paintChatHead() {
+  const head = $('#chatHead');
+  if (!head) return;
+  if (!chatState.active) {
+    head.hidden = true;
+    return;
+  }
+  const info = chatState.activeInfo || {};
+  head.hidden = false;
+  head.innerHTML = `<div><b>${esc(info.nickname || '匿名用户')}</b><i>${esc(info.phone || '未绑定手机号')} · ${esc(
+    chatState.active
+  )}</i></div><span class="chat-tip-line">${chatState.msgs.length} 条消息</span>`;
+}
+
+function paintChatMsgs(forceBottom) {
+  const box = $('#chatMsgs');
+  if (!box) return;
+  const empty = $('#chatEmpty');
+  const reply = $('#chatReplyBox');
+  if (!chatState.active) {
+    box.hidden = true;
+    if (reply) reply.hidden = true;
+    if (empty) empty.hidden = false;
+    paintChatHead();
+    return;
+  }
+  if (empty) empty.hidden = true;
+  box.hidden = false;
+  if (reply) reply.hidden = false;
+  paintChatHead();
+  const nearBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 90;
+  box.innerHTML = chatState.msgs.length
+    ? chatState.msgs
+        .map(
+          (m) => `<div class="cm-row ${m.role === 'admin' ? 'me' : ''}">
+            <div class="cm-bubble">${esc(m.body)}</div>
+            <span class="cm-time">${esc(chatWhen(m.createdAt))}</span>
+          </div>`
+        )
+        .join('')
+    : '<p class="muted" style="text-align:center;margin:24px 0">对方还没有发过消息</p>';
+  if (forceBottom || nearBottom) box.scrollTop = box.scrollHeight;
+}
+
+/** 同步导航「客服」角标 */
+function updateChatNavBadge(n) {
+  if (state.data && state.data.stats) state.data.stats.chatPending = n;
+  const btn = document.querySelector('.nav-btn[data-tab="chat"]');
+  if (!btn) return;
+  let badge = btn.querySelector('.nav-badge');
+  if (!n) {
+    if (badge) badge.remove();
+    return;
+  }
+  if (!badge) {
+    badge = document.createElement('span');
+    badge.className = 'nav-badge';
+    btn.appendChild(badge);
+  }
+  badge.textContent = n;
+}
+
+async function syncChatMsgs(silent) {
+  if (!chatState.active) return;
+  const uid = chatState.active;
+  try {
+    const r = await api('/api/admin/chat/messages?user=' + encodeURIComponent(uid));
+    if (chatState.active !== uid) return;
+    if (r.thread || r.buyer) {
+      chatState.activeInfo = Object.assign({}, chatState.activeInfo, r.thread || {}, r.buyer || {});
+    }
+    const list = r.messages || [];
+    const key = list.map((m) => m.id).join(',');
+    const th = chatState.threads.find((x) => x.userId === uid);
+    if (th) th.adminUnread = 0;
+    if (key === chatState.lastKey && silent) {
+      paintChatHead();
+      return;
+    }
+    chatState.lastKey = key;
+    chatState.msgs = list;
+    paintChatMsgs(true);
+    paintChatThreads();
+  } catch (e) {
+    if (!silent) toast(e.message);
+  }
+}
+
+async function refreshChatAll(silent) {
+  try {
+    const r = await api('/api/admin/chat/threads');
+    chatState.threads = r.threads || [];
+    chatState.pending = Number(r.pending) || 0;
+    paintChatThreads();
+    updateChatNavBadge(chatState.pending);
+    if (chatState.active) await syncChatMsgs(silent);
+  } catch (e) {
+    if (!silent) toast(e.message);
+  }
+}
+
+async function openChatThread(uid) {
+  chatState.active = uid;
+  chatState.msgs = [];
+  chatState.lastKey = '';
+  const t = chatState.threads.find((x) => x.userId === uid);
+  chatState.activeInfo = t ? { nickname: t.nickname, phone: t.phone } : null;
+  paintChatThreads();
+  paintChatMsgs(true);
+  await syncChatMsgs(false);
+  const ta = $('#chatReply');
+  if (ta) ta.focus();
+}
+
+async function sendChatReply() {
+  const uid = chatState.active;
+  if (!uid) return;
+  const ta = $('#chatReply');
+  const text = (ta && ta.value ? ta.value : '').trim();
+  if (!text) {
+    toast('先写点回复内容');
+    return;
+  }
+  const btn = $('#chatSend');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '发送中…';
+  }
+  try {
+    const r = await api('/api/admin/chat/reply', { method: 'POST', body: JSON.stringify({ user: uid, text }) });
+    if (r.message) chatState.msgs.push(r.message);
+    if (ta) ta.value = '';
+    chatState.lastKey = chatState.msgs.map((m) => m.id).join(',');
+    paintChatMsgs(true);
+    const th = chatState.threads.find((x) => x.userId === uid);
+    if (th) {
+      th.lastBody = text;
+      th.lastRole = 'admin';
+      th.lastAt = Date.now();
+      th.adminUnread = 0;
+    }
+    chatState.threads.sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
+    paintChatThreads();
+    toast('已发送，用户手机上能看到');
+  } catch (e) {
+    toast(e.message);
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '发送';
+    }
+  }
+}
+
+function stopChatPoll() {
+  if (chatState.timer) {
+    clearInterval(chatState.timer);
+    chatState.timer = null;
+  }
+}
+
+function startChatPoll() {
+  stopChatPoll();
+  chatState.timer = setInterval(() => {
+    if (state.tab !== 'chat') {
+      stopChatPoll();
+      return;
+    }
+    if (document.hidden) return;
+    refreshChatAll(true);
+  }, 6000);
+}
+
+async function renderChat() {
+  chatState.active = '';
+  chatState.msgs = [];
+  chatState.lastKey = '';
+  $('#panel').innerHTML = `
+    <div class="chat-layout">
+      <div class="card chat-side">
+        <div class="chat-side-head">
+          <h3>会话（<span id="chatCount">0</span>）</h3>
+          <button class="mini-btn" id="chatRefresh">刷新</button>
+        </div>
+        <p class="muted" style="font-size:12px;line-height:1.7;margin:6px 0 10px">
+          用户在手机端「首页 💬」或「我的 → 在线客服」发来的消息会到这里。点开就能回复，用户 3 秒内收到。
+        </p>
+        <div class="search-box"><input id="chatSearch" placeholder="🔍 搜昵称 / 手机号 / 消息" /></div>
+        <div class="chat-threads" id="chatThreads"><p class="muted" style="padding:16px;text-align:center">加载中…</p></div>
+      </div>
+      <div class="card chat-main">
+        <div class="chat-empty" id="chatEmpty">
+          <div style="font-size:34px">💬</div>
+          <p>选择左侧的一个会话开始回复</p>
+        </div>
+        <div class="chat-head" id="chatHead" hidden></div>
+        <div class="chat-msgs" id="chatMsgs" hidden></div>
+        <div class="chat-reply" id="chatReplyBox" hidden>
+          <textarea id="chatReply" rows="2" maxlength="1000" placeholder="输入回复，Enter 发送，Shift+Enter 换行"></textarea>
+          <div class="chat-reply-foot">
+            <span class="chat-tip-line">以「商家客服」身份发出 · 最多 1000 字</span>
+            <button class="btn" id="chatSend" style="padding:8px 20px;font-size:13px">发送</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
+
+  $('#chatSearch').oninput = (e) => {
+    chatState.q = e.target.value || '';
+    paintChatThreads();
+  };
+  $('#chatRefresh').onclick = () => refreshChatAll(false);
+  $('#chatSend').onclick = sendChatReply;
+  $('#chatReply').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) {
+      e.preventDefault();
+      sendChatReply();
+    }
+  });
+
+  await refreshChatAll(false);
+  paintChatMsgs(true);
+  startChatPoll();
+}
+
 function renderFeedback() {
   const list = state.data.feedbacks || [];
   const counts = { all: list.length, pending: 0, done: 0 };
@@ -3081,6 +4005,28 @@ function renderLogs() {
 }
 
 /* ---------------- 启动 ---------------- */
+
+/* 支持用 ?_tok=<管理令牌> 直接进入（令牌本身仍是有效凭据，只是省去手输密码；用于调试与自动化） */
+(() => {
+  try {
+    const u = new URL(location.href);
+    const tok = (u.searchParams.get('_tok') || '').trim();
+    if (tok && /^[0-9a-z]+\.[A-Za-z0-9_-]+$/.test(tok)) {
+      sessionStorage.setItem('admin_token', tok);
+      u.searchParams.delete('_tok');
+      state.token = tok;
+    }
+    // 支持 ?tab=客服 等直达某个页面（便于收藏书签 / 自动化）
+    const tab = (u.searchParams.get('tab') || '').trim();
+    if (tab && NAV.some(([k]) => k === tab)) {
+      state.tab = tab;
+      u.searchParams.delete('tab');
+    }
+    if (u.searchParams.get('_tok') != null || u.searchParams.get('tab') != null) {
+      history.replaceState(null, '', u.pathname + u.search + u.hash);
+    }
+  } catch {}
+})();
 
 if (state.token) load();
 else renderLogin();

@@ -10,7 +10,15 @@
 
   <block wx:else>
     <view class="hero">
-      <view class="hero-inner">{{product.initial}}</view>
+      <image
+        wx:if="{{product.image}}"
+        class="hero-img"
+        src="{{product.image}}"
+        mode="aspectFill"
+        binderror="onHeroError"
+        bindtap="onPreviewHero"
+      />
+      <view wx:else class="hero-inner">{{product.initial}}</view>
       <view class="hero-tag" wx:if="{{product.tag}}">{{product.tag}}</view>
     </view>
 

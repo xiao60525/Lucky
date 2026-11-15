@@ -171,3 +171,28 @@
     color: #4f6ef7;
 }
 
+
+.points-banner {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.points-num {
+    font-size: 40rpx;
+    font-weight: 700;
+    color: #4f6ef7;
+    line-height: 1.2;
+}
+
+.points-label {
+    font-size: 24rpx;
+    color: #8a8f99;
+    margin-top: 4rpx;
+}
+
+.points-cta {
+    font-size: 26rpx;
+    color: #4f6ef7;
+    font-weight: 500;
+}

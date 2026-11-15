@@ -1,0 +1,555 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no" />
+<meta name="theme-color" content="#f4f5f9" />
+<meta name="robots" content="noindex, nofollow" />
+<title>在线客服</title>
+<link rel="icon" href="data:," />
+<style>
+  :root {
+    --bg:#f4f5f9; --card:#fff; --text:#10131c; --muted:#8b91a1; --line:#edeff5;
+    --accent:#5a5cf0; --accent2:#8b5cf6; --danger:#f05252;
+    --safe-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  body.dark {
+    --bg:#12141c; --card:#1c1f2b; --text:#e9ecf5; --muted:#8b93a7; --line:#262a38;
+  }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { height:100%; margin:0; }
+  body {
+    background:var(--bg); color:var(--text); font-size:15px; line-height:1.55;
+    font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Helvetica Neue','Microsoft YaHei',sans-serif;
+    display:flex; justify-content:center; overflow:hidden;
+  }
+  button, textarea { font-family:inherit; font-size:inherit; color:inherit; }
+  button { border:0; background:none; cursor:pointer; }
+
+  .page {
+    position:relative; width:100%; max-width:430px; height:100dvh;
+    background:var(--bg); display:flex; flex-direction:column; overflow:hidden;
+  }
+  @media (min-width:480px) and (min-height:700px) {
+    body { align-items:center; background:#e6e8f0; }
+    .page { height:min(880px,95dvh); border-radius:34px; box-shadow:0 24px 70px rgba(15,20,40,.18); }
+  }
+  body.dark { background:#0c0e14; }
+
+  /* ---------- 顶栏 ---------- */
+  .top {
+    flex:none; display:flex; align-items:center; gap:10px;
+    padding:calc(env(safe-area-inset-top,0px) + 12px) 14px 12px;
+    background:var(--card); border-bottom:1px solid var(--line);
+  }
+  .back {
+    flex:none; width:34px; height:34px; border-radius:12px; border:1px solid var(--line);
+    display:flex; align-items:center; justify-content:center; font-size:18px; color:var(--text);
+  }
+  .back:active { transform:scale(.94); }
+  .who { flex:1; min-width:0; display:flex; align-items:center; gap:9px; }
+  .who-ic {
+    flex:none; width:34px; height:34px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff; font-size:16px;
+  }
+  .who-txt { min-width:0; }
+  .who-txt b { display:block; font-size:15px; font-weight:600; line-height:1.2; }
+  .who-txt i {
+    display:flex; align-items:center; gap:4px; font-style:normal; font-size:11.5px; color:var(--muted);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+  }
+  .dot { width:6px; height:6px; border-radius:50%; background:#22c55e; flex:none; box-shadow:0 0 0 3px rgba(34,197,94,.16); }
+  .top-tip { flex:none; font-size:11px; color:var(--muted); }
+
+  /* ---------- 消息区 ---------- */
+  .msgs {
+    flex:1; min-height:0; overflow-y:auto; -webkit-overflow-scrolling:touch;
+    padding:14px 14px 6px; display:flex; flex-direction:column; gap:12px;
+    overscroll-behavior:contain;
+  }
+  .msgs::-webkit-scrollbar { width:0; }
+  .notice {
+    text-align:center; font-size:11.5px; color:var(--muted);
+    background:var(--card); border:1px solid var(--line); border-radius:10px;
+    padding:7px 12px; margin:0 auto 2px; max-width:92%;
+  }
+  .day { text-align:center; font-size:11px; color:var(--muted); margin:4px 0 2px; }
+
+  .row { display:flex; gap:8px; align-items:flex-end; max-width:100%; }
+  .row.me { flex-direction:row-reverse; }
+  .ava {
+    flex:none; width:30px; height:30px; border-radius:50%; display:flex; align-items:center; justify-content:center;
+    font-size:15px; background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff;
+  }
+  .ava.hide { visibility:hidden; }
+  .bubble-wrap { max-width:76%; display:flex; flex-direction:column; gap:3px; }
+  .row.me .bubble-wrap { align-items:flex-end; }
+  .bubble {
+    padding:9px 13px; border-radius:16px; font-size:14.5px; line-height:1.55;
+    white-space:pre-wrap; word-break:break-word;
+    background:var(--card); border:1px solid var(--line); color:var(--text);
+    border-bottom-left-radius:6px;
+  }
+  .row.me .bubble {
+    background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff; border-color:transparent;
+    border-bottom-left-radius:16px; border-bottom-right-radius:6px;
+  }
+  .stamp { font-size:10.5px; color:var(--muted); padding:0 2px; }
+  .pending .bubble { opacity:.62; }
+  .failed .bubble { box-shadow:inset 0 0 0 1px var(--danger); }
+  .failed .stamp { color:var(--danger); }
+
+  /* ---------- 快捷提问 ---------- */
+  .quick { flex:none; display:flex; gap:8px; flex-wrap:wrap; padding:0 14px 10px; }
+  .quick button {
+    border:1px solid var(--line); background:var(--card); color:var(--text);
+    border-radius:999px; padding:7px 13px; font-size:12.5px;
+  }
+  .quick button:active { transform:scale(.97); }
+
+  /* ---------- 输入区 ---------- */
+  .composer {
+    flex:none; background:var(--card); border-top:1px solid var(--line);
+    padding:9px 12px calc(9px + var(--safe-bottom));
+    display:flex; align-items:flex-end; gap:9px;
+  }
+  .input-wrap { flex:1; min-width:0; background:var(--bg); border:1px solid var(--line); border-radius:18px; padding:7px 12px; }
+  body.dark .input-wrap { background:#232735; }
+  textarea {
+    width:100%; border:0; outline:0; background:transparent; resize:none;
+    font-size:14.5px; line-height:1.5; max-height:96px; min-height:22px; display:block; color:var(--text);
+  }
+  textarea::placeholder { color:var(--muted); }
+  .send {
+    flex:none; min-width:58px; height:38px; border-radius:19px; font-size:14px; font-weight:600;
+    background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff; padding:0 16px;
+    transition:opacity .15s,transform .12s;
+  }
+  .send:active { transform:scale(.96); }
+  .send[disabled] { opacity:.4; }
+
+  /* ---------- 未登录 / 空状态 ---------- */
+  .gate { flex:1; display:flex; align-items:center; justify-content:center; padding:20px; }
+  .gate-card {
+    width:100%; max-width:320px; background:var(--card); border:1px solid var(--line);
+    border-radius:18px; padding:26px 22px; text-align:center; box-shadow:0 10px 30px rgba(20,24,45,.06);
+  }
+  .gate-card .ic { font-size:34px; line-height:1; }
+  .gate-card h2 { font-size:17px; margin:12px 0 6px; }
+  .gate-card p { margin:0; font-size:12.5px; color:var(--muted); line-height:1.7; }
+  .gate-card button {
+    margin-top:18px; width:100%; height:42px; border-radius:12px; font-size:14.5px; font-weight:600;
+    background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff;
+  }
+
+  /* ---------- 新消息提示 ---------- */
+  .newtip {
+    position:absolute; left:50%; transform:translateX(-50%); bottom:86px;
+    background:var(--accent); color:#fff; font-size:12px; padding:7px 14px; border-radius:999px;
+    box-shadow:0 8px 20px rgba(90,92,240,.3); display:none; z-index:4;
+  }
+  .newtip.show { display:block; }
+  .toast {
+    position:absolute; left:50%; transform:translate(-50%,0); bottom:150px; z-index:9;
+    background:rgba(16,19,28,.9); color:#fff; font-size:12.5px; padding:9px 16px; border-radius:10px;
+    opacity:0; pointer-events:none; transition:opacity .2s; max-width:80%; text-align:center;
+  }
+  .toast.show { opacity:1; }
+</style>
+</head>
+<body>
+<div class="page">
+  <header class="top">
+    <button class="back" id="backBtn" aria-label="返回">‹</button>
+    <div class="who">
+      <span class="who-ic">🎧</span>
+      <span class="who-txt">
+        <b id="shopName">在线客服</b>
+        <i><span class="dot"></span>在线 · 通常几分钟内回复</i>
+      </span>
+    </div>
+    <span class="top-tip" id="topTip"></span>
+  </header>
+
+  <main class="msgs" id="msgs"></main>
+
+  <div class="quick" id="quick">
+    <button data-q="这件商品什么时候能发货？">什么时候发货</button>
+    <button data-q="可以开发票吗？">开发票</button>
+    <button data-q="收到货有问题，怎么申请售后？">售后怎么申请</button>
+  </div>
+
+  <footer class="composer">
+    <div class="input-wrap">
+      <textarea id="input" rows="1" maxlength="1000" placeholder="说点什么…" enterkeyhint="send"></textarea>
+    </div>
+    <button class="send" id="sendBtn" disabled>发送</button>
+  </footer>
+
+  <div class="newtip" id="newTip">有新消息 ↓</div>
+  <div class="toast" id="toast"></div>
+</div>
+<script>
+(function () {
+  'use strict';
+
+  var TOKEN_KEY = 'user_token_v1';
+  var DARK_KEY = 'dark_mode';
+  var API = '';
+
+  var $ = function (id) { return document.getElementById(id); };
+  var msgsEl = $('msgs');
+  var inputEl = $('input');
+  var sendBtn = $('sendBtn');
+  var quickEl = $('quick');
+  var newTip = $('newTip');
+  var toastEl = $('toast');
+
+  var state = {
+    me: null,          // 登录用户 id
+    messages: [],      // 服务端消息
+    pending: [],       // 本地待发送 / 失败
+    loaded: false,
+    gate: false,       // 未登录
+    timer: null,
+    lastKey: '',
+  };
+
+  var params = new URLSearchParams(location.search);
+  var sharecode = params.get('sharecode') || '';
+  var shareQs = sharecode ? 'sharecode=' + encodeURIComponent(sharecode) : '';
+
+  /* ---------- 基础 ---------- */
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) {
+      return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+    });
+  }
+
+  function token() {
+    try { return localStorage.getItem(TOKEN_KEY) || ''; } catch (e) { return ''; }
+  }
+
+  function tokenPayload(t) {
+    try {
+      var p = t.split('.')[0].replace(/-/g, '+').replace(/_/g, '/');
+      while (p.length % 4) p += '=';
+      var txt = decodeURIComponent(escape(atob(p)));
+      return txt.split('|')[0] || null;
+    } catch (e) { return null; }
+  }
+
+  function toast(msg) {
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    clearTimeout(toast._t);
+    toast._t = setTimeout(function () { toastEl.classList.remove('show'); }, 2200);
+  }
+
+  function applyDark() {
+    var on = false;
+    try { on = localStorage.getItem(DARK_KEY) === '1'; } catch (e) {}
+    document.body.classList.toggle('dark', on);
+    var meta = document.querySelector('meta[name="theme-color"]');
+    if (meta) meta.setAttribute('content', on ? '#12141c' : '#f4f5f9');
+  }
+
+  function api(path, options) {
+    options = options || {};
+    var headers = { 'Content-Type': 'application/json' };
+    var t = token();
+    var url = API + path;
+    if (t) {
+      headers.Authorization = 'Bearer ' + t;
+      headers['x-user-token'] = t;
+      url += (path.indexOf('?') >= 0 ? '&' : '?') + 't=' + encodeURIComponent(t);
+    }
+    return fetch(url, Object.assign({ credentials: 'same-origin' }, options, {
+      headers: Object.assign(headers, options.headers || {}),
+    })).then(function (res) {
+      return res.json().catch(function () { return {}; }).then(function (body) {
+        if (!res.ok) {
+          var err = new Error(body.message || '请求失败（' + res.status + '）');
+          err.status = res.status;
+          throw err;
+        }
+        return body;
+      });
+    });
+  }
+
+  /* ---------- 时间 ---------- */
+  function sameDay(a, b) {
+    return a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  }
+  function hm(d) {
+    return ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+  }
+  function fmtStamp(ts) {
+    if (!ts) return '';
+    var d = new Date(ts), now = new Date(), hmTxt = hm(d);
+    if (sameDay(d, now)) return hmTxt;
+    var y = new Date(now); y.setDate(now.getDate() - 1);
+    if (sameDay(d, y)) return '昨天 ' + hmTxt;
+    return (d.getMonth() + 1) + '月' + d.getDate() + '日 ' + hmTxt;
+  }
+  function dayLabel(ts) {
+    var d = new Date(ts), now = new Date();
+    if (sameDay(d, now)) return '今天';
+    var y = new Date(now); y.setDate(now.getDate() - 1);
+    if (sameDay(d, y)) return '昨天';
+    return (d.getFullYear() !== now.getFullYear() ? d.getFullYear() + '年' : '') + (d.getMonth() + 1) + '月' + d.getDate() + '日';
+  }
+
+  /* ---------- 渲染 ---------- */
+  function isNearBottom() {
+    return msgsEl.scrollHeight - msgsEl.scrollTop - msgsEl.clientHeight < 90;
+  }
+  function scrollBottom(smooth) {
+    msgsEl.scrollTo({ top: msgsEl.scrollHeight, behavior: smooth ? 'smooth' : 'auto' });
+  }
+
+  function bubbleHTML(m, showAva) {
+    var mine = m.role === 'user';
+    var cls = mine ? 'row me' : 'row';
+    if (m.sending) cls += ' pending';
+    if (m.failed) cls += ' failed';
+    var stamp = m.failed ? '发送失败，点一下重试' : fmtStamp(m.createdAt);
+    return '<div class="' + cls + '"' + (m.failed ? ' data-retry="' + esc(m.localId) + '"' : '') + '>' +
+      (mine ? '' : '<span class="ava' + (showAva ? '' : ' hide') + '">🎧</span>') +
+      '<div class="bubble-wrap">' +
+        '<div class="bubble">' + esc(m.body) + '</div>' +
+        (stamp ? '<span class="stamp">' + esc(stamp) + '</span>' : '') +
+      '</div></div>';
+  }
+
+  function render() {
+    if (state.gate) return;
+    var all = state.messages.concat(state.pending);
+    if (!all.length) {
+      msgsEl.innerHTML =
+        '<div class="notice">你好呀，这里是商家客服。有商品、发货、售后的问题，直接说就行。</div>' +
+        '<div style="flex:1"></div>';
+      quickEl.style.display = 'flex';
+      return;
+    }
+    quickEl.style.display = all.length < 3 ? 'flex' : 'none';
+
+    var html = '<div class="notice">消息会保存在云端，换设备登录也能看到</div>';
+    var lastDay = '';
+    var prevRole = '';
+    for (var i = 0; i < all.length; i++) {
+      var m = all[i];
+      var day = dayLabel(m.createdAt);
+      if (day !== lastDay) {
+        html += '<div class="day">' + esc(day) + '</div>';
+        lastDay = day;
+        prevRole = '';
+      }
+      var showAva = m.role !== 'user' && prevRole !== 'admin';
+      html += bubbleHTML(m, showAva);
+      prevRole = m.role;
+    }
+    msgsEl.innerHTML = html;
+
+    msgsEl.querySelectorAll('[data-retry]').forEach(function (el) {
+      el.onclick = function () { retry(el.dataset.retry); };
+    });
+  }
+
+  function paint(forceBottom) {
+    var stick = forceBottom || isNearBottom();
+    render();
+    if (stick) scrollBottom(false);
+    else newTip.classList.add('show');
+  }
+
+  /* ---------- 数据 ---------- */
+  function keyOf(list) {
+    if (!list.length) return '0';
+    var last = list[list.length - 1];
+    return list.length + '|' + last.id;
+  }
+
+  function load(silent) {
+    return api('/api/chat/thread').then(function (r) {
+      state.loaded = true;
+      var list = (r.messages || []).map(function (m) {
+        return { id: m.id, role: m.role === 'admin' ? 'admin' : 'user', body: m.body, createdAt: m.createdAt };
+      });
+      var key = keyOf(list);
+      var changed = key !== state.lastKey;
+      state.messages = list;
+      state.lastKey = key;
+      if (changed) paint(!silent || isNearBottom());
+      return r;
+    }).catch(function (e) {
+      if (e.status === 401) { showGate(); return; }
+      if (!silent) {
+        msgsEl.innerHTML = '<div class="gate"><div class="gate-card"><div class="ic">😵</div><h2>没连上客服</h2><p>' +
+          esc(e.message) + '</p><button id="retryLoad">重新加载</button></div></div>';
+        var b = $('retryLoad');
+        if (b) b.onclick = function () { load(false); };
+      }
+    });
+  }
+
+  function showGate() {
+    state.gate = true;
+    stopPoll();
+    quickEl.style.display = 'none';
+    msgsEl.innerHTML =
+      '<div class="gate"><div class="gate-card">' +
+        '<div class="ic">💬</div>' +
+        '<h2>登录后就能聊</h2>' +
+        '<p>客服消息和你的订单账号绑定，登录后商家才能看到你的订单情况，回复也更准确。</p>' +
+        '<button id="goLogin">去登录</button>' +
+      '</div></div>';
+    $('goLogin').onclick = back;
+  }
+
+  function send(text) {
+    var body = String(text || '').trim();
+    if (!body) return;
+    if (body.length > 1000) { toast('单条消息最多 1000 字'); return; }
+
+    var local = {
+      localId: 'tmp_' + Date.now() + '_' + Math.random().toString(36).slice(2, 6),
+      role: 'user',
+      body: body,
+      createdAt: Date.now(),
+      sending: true,
+    };
+    state.pending.push(local);
+    paint(true);
+    inputEl.value = '';
+    autoGrow();
+    sendBtn.disabled = true;
+
+    api('/api/chat/send', { method: 'POST', body: JSON.stringify({ text: body }) })
+      .then(function (r) {
+        state.pending = state.pending.filter(function (p) { return p.localId !== local.localId; });
+        if (r && r.message) {
+          if (!state.messages.some(function (m) { return m.id === r.message.id; })) {
+            state.messages.push({ id: r.message.id, role: 'user', body: r.message.body, createdAt: r.message.createdAt });
+          }
+          state.lastKey = keyOf(state.messages);
+        }
+        // 发出后立刻拉一次，顺带确认服务端已落库
+        return load(true).then(function () { paint(true); });
+      })
+      .catch(function (e) {
+        state.pending = state.pending.map(function (p) {
+          if (p.localId === local.localId) { p.sending = false; p.failed = true; }
+          return p;
+        });
+        paint(true);
+        toast(e.message || '发送失败');
+      });
+  }
+
+  function retry(localId) {
+    var item = state.pending.find(function (p) { return p.localId === localId; });
+    if (!item) return;
+    state.pending = state.pending.filter(function (p) { return p.localId !== localId; });
+    paint(true);
+    send(item.body);
+  }
+
+  /* ---------- 轮询 ---------- */
+  function startPoll() {
+    stopPoll();
+    state.timer = setInterval(function () {
+      if (document.hidden || state.gate) return;
+      load(true);
+    }, 3000);
+  }
+  function stopPoll() {
+    if (state.timer) { clearInterval(state.timer); state.timer = null; }
+  }
+
+  /* ---------- 交互 ---------- */
+  function autoGrow() {
+    inputEl.style.height = 'auto';
+    inputEl.style.height = Math.min(inputEl.scrollHeight, 96) + 'px';
+  }
+
+  function back() {
+    location.href = '/' + (sharecode ? '?' + shareQs : '');
+  }
+
+  inputEl.addEventListener('input', function () {
+    autoGrow();
+    sendBtn.disabled = !inputEl.value.trim();
+  });
+  inputEl.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter' && !e.shiftKey && window.matchMedia('(pointer:fine)').matches) {
+      e.preventDefault();
+      if (!sendBtn.disabled) send(inputEl.value);
+    }
+  });
+  sendBtn.addEventListener('click', function () { send(inputEl.value); });
+  $('backBtn').addEventListener('click', back);
+  quickEl.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-q]');
+    if (!b) return;
+    send(b.dataset.q);
+  });
+  msgsEl.addEventListener('scroll', function () {
+    if (isNearBottom()) newTip.classList.remove('show');
+  });
+  newTip.addEventListener('click', function () {
+    newTip.classList.remove('show');
+    scrollBottom(true);
+  });
+  document.addEventListener('visibilitychange', function () {
+    if (!document.hidden && !state.gate) load(true);
+  });
+  window.addEventListener('focus', function () { if (!state.gate) load(true); });
+
+  /* ---------- 启动 ---------- */
+  function boot() {
+    applyDark();
+    // 支持 ?t=<令牌> 直达（分享链接 / 调试用），存到本地后照常用
+    var tParam = params.get('t');
+    if (tParam && /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(tParam)) {
+      try { localStorage.setItem(TOKEN_KEY, tParam); } catch (e) {}
+    }
+    var t = token();
+    if (!t) { showGate(); return; }
+    state.me = tokenPayload(t);
+
+    // 店铺名 / 主题色（拿不到就用默认，不影响聊天）
+    fetch(API + '/api/bootstrap' + (shareCodeQs())).then(function (r) { return r.json(); }).then(function (b) {
+      var site = (b && b.site) || {};
+      if (site.name) $('shopName').textContent = site.name + ' · 客服';
+      var theme = (b && b.home && b.home.theme) || {};
+      var accent = theme.accent || '';
+      if (/^#[0-9a-fA-F]{6}$/.test(accent)) {
+        document.documentElement.style.setProperty('--accent', accent);
+        if (/^#[0-9a-fA-F]{6}$/.test(theme.accent2 || '')) {
+          document.documentElement.style.setProperty('--accent2', theme.accent2);
+        }
+      }
+    }).catch(function () {});
+
+    load(false).then(function () {
+      paint(true);
+      startPoll();
+    });
+  }
+
+  function shareCodeQs() {
+    return sharecode ? '?sharecode=' + encodeURIComponent(sharecode) : '';
+  }
+
+  // 输入框聚焦时，移动端键盘弹出要把消息顶上去
+  inputEl.addEventListener('focus', function () {
+    setTimeout(function () { scrollBottom(false); }, 260);
+  });
+
+  boot();
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,81 @@
+.hero-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 36rpx 28rpx;
+}
+
+.hero-left,
+.hero-right {
+    text-align: center;
+    flex: 1;
+}
+
+.hero-right {
+    border-left: 1rpx solid #eef0f4;
+}
+
+.balance {
+    font-size: 56rpx;
+    font-weight: 700;
+    color: #4f6ef7;
+}
+
+.streak-num {
+    font-size: 56rpx;
+    font-weight: 700;
+    color: #1f2329;
+}
+
+.checkin-card {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.checkin-title {
+    font-size: 30rpx;
+    font-weight: 600;
+    margin-bottom: 6rpx;
+}
+
+.checkin-btn {
+    min-width: 140rpx;
+    text-align: center;
+    padding: 16rpx 32rpx;
+    border-radius: 999rpx;
+    background: #4f6ef7;
+    color: #ffffff;
+    font-size: 28rpx;
+    font-weight: 600;
+}
+
+.checkin-btn.is-done {
+    background: #eef1fe;
+    color: #4f6ef7;
+}
+
+.ledger {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.ledger-title {
+    font-size: 28rpx;
+    font-weight: 500;
+    margin-bottom: 4rpx;
+}
+
+.ledger-points {
+    font-size: 32rpx;
+    font-weight: 700;
+}
+
+.ledger-points.is-plus {
+    color: #0ca678;
+}
+
+.ledger-points.is-minus {
+    color: #e8590c;
+}

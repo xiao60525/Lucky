@@ -345,7 +345,12 @@ check('板块标题用后台配置的文案', text('.section-head h2').includes(
 // 后台配置的横幅 / 快捷入口 / 主题色
 check('首页横幅显示后台文案', text('.home-banner').includes('双 11 全场 8 折'), text('.home-banner').replace(/\s+/g, ' ').slice(0, 40));
 check('首页横幅有副文案与按钮', text('.home-banner').includes('下单再送 60 金币') && text('.home-banner').includes('去看看'));
-check('快捷入口按后台配置渲染', window.document.querySelectorAll('.entry-item').length === 4, String(window.document.querySelectorAll('.entry-item').length));
+check(
+  '快捷入口按后台配置渲染（含固定的游戏入口）',
+  window.document.querySelectorAll('.entry-item').length === 4 + 1 &&
+    text('.entry-grid').includes('大西瓜'),
+  String(window.document.querySelectorAll('.entry-item').length)
+);
 check('快捷入口文案正确', text('.entry-grid').includes('优惠活动') && text('.entry-grid').includes('联系客服'));
 const themeAccent = window.document.documentElement.style.getPropertyValue('--accent');
 check('后台主题色已生效', themeAccent === '#f97316', themeAccent || '(空)');
@@ -1040,6 +1045,9 @@ $('[data-act="goods"][data-id="demo_001"]').dispatchEvent(new window.MouseEvent(
 await wait(80);
 const addBtn = $('.sheet [data-act="cart-add"]');
 check('商品详情有「加入购物车」', Boolean(addBtn), addBtn ? addBtn.textContent.trim() : '未找到');
+// 回归：未设置库存（stockInfoOf left=null）的商品，0 >= null 在 JS 里是 true，
+// 曾导致「加入购物车」按钮对所有不追踪库存的商品永远禁用
+check('未设库存商品「加入购物车」按钮可点', Boolean(addBtn) && !addBtn.disabled, addBtn ? `disabled=${addBtn.disabled}` : '未找到');
 if (addBtn) {
   addBtn.dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
   await wait(60);
@@ -1129,3 +1137,5 @@ if (failed.length) {
   console.log('失败项：' + failed.map((f) => f.name).join('、'));
   process.exit(1);
 }
+// 页面里跑着 60s 未读轮询（window.setInterval 在 jsdom 里会挂住事件循环），主动退出
+process.exit(0);

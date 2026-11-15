@@ -34,6 +34,14 @@
       </view>
     </view>
 
+    <view class="card points-banner" bindtap="onGoPoints" hover-class="order-hover">
+      <view class="points-left">
+        <view class="points-num">{{pointsBalance}}</view>
+        <view class="points-label">我的积分</view>
+      </view>
+      <view class="points-cta">{{pointsChecked ? '今日已签到' : '签到 +50'}} ›</view>
+    </view>
+
     <view class="filters">
       <view
         wx:for="{{filters}}"

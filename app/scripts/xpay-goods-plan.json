@@ -1,0 +1,29 @@
+[
+  {
+    "productId": "demo_001",
+    "title": "测试商品",
+    "goodsPrice": 1,
+    "buyQuantity": 1,
+    "remark": "示例",
+    "image": "缺图：需要 200×200 PNG/JPG，<200KB",
+    "hasImage": false
+  },
+  {
+    "productId": "vip_month",
+    "title": "会员月卡",
+    "goodsPrice": 1200,
+    "buyQuantity": 1,
+    "remark": "示例",
+    "image": "缺图：需要 200×200 PNG/JPG，<200KB",
+    "hasImage": false
+  },
+  {
+    "productId": "coin_60",
+    "title": "60 金币",
+    "goodsPrice": 600,
+    "buyQuantity": 1,
+    "remark": "示例",
+    "image": "缺图：需要 200×200 PNG/JPG，<200KB",
+    "hasImage": false
+  }
+]

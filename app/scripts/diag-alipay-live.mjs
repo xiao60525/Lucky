@@ -59,26 +59,48 @@ d = await j(r);
 console.log('4. pay mode:', d.mode, '| channel:', d.channel, '| payUrl:', d.payUrl ? d.payUrl.slice(0, 110) + '…' : JSON.stringify(d).slice(0, 250));
 if (!d.payUrl) process.exit(0);
 
-// 5. 手机 UA 请求支付宝网关
-r = await fetch(d.payUrl, { headers: { 'User-Agent': UA_MOBILE }, redirect: 'follow' });
-const buf = Buffer.from(await r.arrayBuffer());
-let html;
-try { html = new TextDecoder('gbk').decode(buf); } catch { html = buf.toString('utf8'); }
+// 5. 模拟浏览器：先拉站内中转页 → 解析自动 POST 表单 → 提交给支付宝网关
+async function relayToGateway(payUrl, ua) {
+  // 中转页是站内地址，预览网关要求带 sharecode（前端 withShare 会自动追加，这里保持一致）
+  const relay = await fetch(`${BASE}${payUrl}${payUrl.includes('?') ? '&' : '?'}${SC}`, { headers: { 'User-Agent': ua } });
+  const relayHtml = await relay.text();
+  if (!relayHtml.includes('alipayForm')) {
+    return { status: relay.status, url: `${BASE}${payUrl}`, html: relayHtml, relayError: true };
+  }
+  const action = (relayHtml.match(/action="([^"]+)"/) || [])[1] || '';
+  const inputs = {};
+  for (const m of relayHtml.matchAll(/<input[^>]*name="([^"]+)"[^>]*value="([^"]*)"/g)) {
+    inputs[m[1]] = m[2].replace(/&quot;/g, '"').replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+  }
+  const body = new URLSearchParams(inputs).toString();
+  const gr = await fetch(action, {
+    method: 'POST',
+    headers: { 'User-Agent': ua, 'Content-Type': 'application/x-www-form-urlencoded' },
+    body,
+    redirect: 'follow',
+  });
+  const buf = Buffer.from(await gr.arrayBuffer());
+  let gh;
+  try { gh = new TextDecoder('gbk').decode(buf); } catch { gh = buf.toString('utf8'); }
+  return { status: gr.status, url: gr.url, html: gh };
+}
+
+r = await relayToGateway(d.payUrl, UA_MOBILE);
+let html = r.html;
 console.log('5. 网关 status:', r.status, '| 最终 host:', new URL(r.url).host);
 const acq = (html.match(/ACQ\.[A-Z_]+/g) || []).slice(0, 3);
 console.log('   notSigned(未签约):', /insufficient-isv-permissions|isv\.insufficient/i.test(html));
 console.log('   acq业务错误:', acq);
+console.log('   invalid签名错误:', /invalid-signature|验签出错/i.test(html));
 console.log('   debug调试页:', /调试错误|debugger-error|aliPayDebug/i.test(html));
 console.log('   cashier收银台:', /cashier|收银台|confirmForm/i.test(html));
 console.log('   alipays唤起App:', html.includes('alipays://'));
 console.log('   htmlLen:', html.length);
 
 // 6. PC UA 对照
-r = await fetch(d.payUrl, { headers: { 'User-Agent': UA_PC }, redirect: 'follow' });
-const bufPc = Buffer.from(await r.arrayBuffer());
-let htmlPc;
-try { htmlPc = new TextDecoder('gbk').decode(bufPc); } catch { htmlPc = bufPc.toString('utf8'); }
-console.log('6. PC UA:', r.status, '| host:', new URL(r.url).host, '| 含扫码:', /qr|二维码|扫码/i.test(htmlPc), '| 未签约错误:', /insufficient/i.test(htmlPc));
+r = await relayToGateway(d.payUrl, UA_PC);
+const htmlPc = r.html;
+console.log('6. PC UA:', r.status, '| host:', new URL(r.url).host, '| 含扫码:', /qr|二维码|扫码/i.test(htmlPc), '| 未签约/验签错误:', /insufficient|invalid-signature/i.test(htmlPc));
 
 // 7. 同步回跳
 r = await fetch(`${BASE}/api/alipay/return?${SC}&out_trade_no=${orderId}&trade_status=TRADE_SUCCESS`, { redirect: 'manual' });

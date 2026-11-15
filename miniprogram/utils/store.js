@@ -12,8 +12,10 @@ const ORDER_STATUS_TEXT = {
 const ERROR_TEXT = {
     unauthorized: '请先登录后再操作',
     product_not_found: '商品不存在或已下架',
+    order_not_found: '订单不存在或不属于当前账号',
     order_not_cancellable: '订单状态已变化，刷新后重试',
     order_not_payable: '订单状态已变化，刷新后重试',
+    already_checked_in: '今天已经签到过啦，明天再来',
 };
 
 function readable(error, fallback) {
@@ -72,7 +74,7 @@ function decorateOrder(row) {
 async function listProducts() {
     const { data, error } = await cloud.database
         .from('products')
-        .select('id, title, description, amount, tag, sort')
+        .select('id, title, description, amount, tag, sort, image')
         .order('sort', { ascending: true });
 
     if (error) {
@@ -83,6 +85,7 @@ async function listProducts() {
         title: row.title,
         description: row.description || '',
         tag: row.tag || '',
+        image: row.image || '',
         initial: String(row.title || '商').slice(0, 1),
         amountText: fenToYuan(row.amount),
         amount: row.amount,
@@ -94,7 +97,7 @@ async function listProducts() {
 async function getProduct(id) {
     const { data, error } = await cloud.database
         .from('products')
-        .select('id, title, description, amount, tag')
+        .select('id, title, description, amount, tag, image')
         .eq('id', id)
         .maybeSingle();
 
@@ -106,6 +109,7 @@ async function getProduct(id) {
             title: data.title,
             description: data.description || '',
             tag: data.tag || '',
+            image: data.image || '',
             initial: String(data.title || '商').slice(0, 1),
             amount: Number(data.amount || 0),
             amountText: fenToYuan(data.amount),
@@ -174,6 +178,42 @@ async function demoPay(id) {
     return { data: data ? decorateOrder(data) : null, error: null };
 }
 
+/**
+ * 发起支付前取支付参数（支付单号 / 金额 / 商品）。
+ * 同一订单重复调用复用同一支付单号，并累加 pay_attempts。
+ */
+async function preparePayment(id) {
+    const { data, error } = await cloud.database.rpc('app_prepare_payment', { p_order_id: id });
+    if (error) return { data: null, error: { message: readable(error, '支付单初始化失败') } };
+    if (!data) return { data: null, error: { message: '支付单初始化失败' } };
+    return {
+        data: {
+            orderId: data.orderId,
+            outTradeNo: data.outTradeNo,
+            amount: Number(data.amount || 0),
+            productId: data.productId,
+            title: data.title,
+            qty: Number(data.qty || 1),
+            attempts: Number(data.attempts || 0),
+        },
+        error: null,
+    };
+}
+
+/**
+ * 支付成功落库：校验支付单号一致后置为已支付，并按金额返积分（同单幂等）。
+ * 真实支付接入后，这一步应在服务端回调里做权威校验。
+ */
+async function markPaidOrder(id, outTradeNo, channel) {
+    const { data, error } = await cloud.database.rpc('app_mark_paid_order', {
+        p_order_id: id,
+        p_out_trade_no: outTradeNo,
+        p_channel: channel || 'xpay',
+    });
+    if (error) return { data: null, error: { message: readable(error, '支付结果记录失败') } };
+    return { data: data ? decorateOrder(data) : null, error: null };
+}
+
 /** 订单统计：给「我的」页顶部的状态入口用 */
 function orderStats(orders) {
     const list = orders || [];
@@ -182,6 +222,63 @@ function orderStats(orders) {
         paid: list.filter((o) => o.status === 'paid').length,
         closed: list.filter((o) => o.status === 'closed').length,
     };
+}
+
+/* ===================== 积分签到 ===================== */
+
+const POINTS_KIND_TEXT = {
+    checkin: '每日签到',
+    order: '订单返积分',
+};
+
+function decorateLedger(row) {
+    return {
+        points: Number(row.points || 0),
+        pointsText: (Number(row.points || 0) > 0 ? '+' : '') + Number(row.points || 0),
+        kind: row.kind || '',
+        kindText: POINTS_KIND_TEXT[row.kind] || row.kind || '积分变动',
+        note: row.note || '',
+        createdText: formatTime(row.created_at),
+    };
+}
+
+/** 签到状态：余额 / 今天是否已签 / 连续天数 */
+async function checkinStatus() {
+    const { data, error } = await cloud.database.rpc('app_checkin_status');
+    if (error) return { data: null, error: { message: readable(error, '积分读取失败') } };
+    if (!data) return { data: null, error: { message: '积分读取失败' } };
+    return {
+        data: {
+            balance: Number(data.balance || 0),
+            checkedToday: data.checkedToday === true,
+            streak: Number(data.streak || 0),
+            todayPoints: Number(data.todayPoints || 0),
+        },
+        error: null,
+    };
+}
+
+/** 今日签到：成功返回最新状态，重复签抛 already_checked_in */
+async function checkin() {
+    const { data, error } = await cloud.database.rpc('app_checkin');
+    if (error) return { data: null, error: { message: readable(error, '签到失败，请稍后重试') } };
+    if (!data) return { data: null, error: { message: '签到失败，请稍后重试' } };
+    return {
+        data: {
+            balance: Number(data.balance || 0),
+            checkedToday: data.checkedToday === true,
+            streak: Number(data.streak || 0),
+            todayPoints: Number(data.todayPoints || 0),
+        },
+        error: null,
+    };
+}
+
+/** 积分明细：最近 50 条流水 */
+async function pointsHistory() {
+    const { data, error } = await cloud.database.rpc('app_points_history');
+    if (error) return { data: [], error: { message: readable(error, '积分明细读取失败') } };
+    return { data: (data || []).map(decorateLedger), error: null };
 }
 
 /**
@@ -217,7 +314,12 @@ module.exports = {
     placeOrder,
     cancelOrder,
     demoPay,
+    preparePayment,
+    markPaidOrder,
     orderStats,
+    checkinStatus,
+    checkin,
+    pointsHistory,
     saveMyProfile,
     maskPhone,
     fenToYuan,

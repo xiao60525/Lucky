@@ -266,10 +266,18 @@ try {
   const paid = await post(`/api/orders/${order.id}/pay`, { channel: 'alipay' }, H);
   ok('发起支付宝支付', paid.status === 200, `mode=${paid.data.mode}`);
   ok('返回跳转模式', paid.data.mode === 'redirect');
-  ok('返回支付宝收银台地址', /openapi\.alipay\.com\/gateway\.do/.test(paid.data.payUrl || ''));
-  const payParams = Object.fromEntries(new URL(paid.data.payUrl).searchParams);
-  ok('支付地址含商户订单号', JSON.parse(payParams.biz_content).out_trade_no === order.id);
-  ok('支付金额与订单一致', Math.round(Number(JSON.parse(payParams.biz_content).total_amount) * 100) === order.amount);
+  ok('返回站内跳转中转页', /^\/pay\/alipay\//.test(paid.data.payUrl || ''), paid.data.payUrl || '');
+  // 中转页应输出「自动提交 POST 表单」，参数走表单而不走 URL（防止 URL 被追加参数破坏签名）
+  const relay = await fetch(`${BASE}${paid.data.payUrl}`);
+  const relayHtml = await relay.text();
+  ok('中转页可访问', relay.status === 200);
+  ok('中转页是自动提交表单', relayHtml.includes("id=\"alipayForm\"") && /method="post"/i.test(relayHtml));
+  const bizMatch = relayHtml.match(/name="biz_content" value="([^"]*)"/);
+  ok('表单含 biz_content', !!bizMatch);
+  const bizJson = JSON.parse(String(bizMatch ? bizMatch[1] : '{}').replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
+  ok('支付表单含商户订单号', bizJson.out_trade_no === order.id);
+  ok('支付金额与订单一致', Math.round(Number(bizJson.total_amount) * 100) === order.amount);
+  ok('表单指向支付宝网关', relayHtml.includes('openapi.alipay.com/gateway.do'));
 
   // 伪造一条合法异步通知（模拟支付宝回调）
   const n2 = {

@@ -1,0 +1,55 @@
+<view class="page">
+  <view wx:if="{{loading}}" class="state">
+    <view class="state-desc">正在加载积分…</view>
+  </view>
+
+  <block wx:elif="{{error}}">
+    <view class="error-box">{{error}}</view>
+    <view class="btn-ghost" bindtap="onRetry">重新加载</view>
+  </block>
+
+  <block wx:else>
+    <view class="card hero-card">
+      <view class="hero-left">
+        <view class="balance">{{balanceText}}</view>
+        <view class="muted">我的积分</view>
+      </view>
+      <view class="hero-right">
+        <view class="streak-num">{{streak}}</view>
+        <view class="muted">连续签到（天）</view>
+      </view>
+    </view>
+
+    <view class="card checkin-card">
+      <view class="checkin-info">
+        <view class="checkin-title">每日签到</view>
+        <view class="muted">每天签到得 +{{todayPoints}} 积分，连续签到不断档</view>
+      </view>
+      <view
+        class="checkin-btn {{checkedToday ? 'is-done' : ''}}"
+        bindtap="onCheckin"
+      >{{checking ? '签到中…' : (checkedToday ? '已签到' : '签到')}}</view>
+    </view>
+
+    <view class="section-title">积分明细</view>
+
+    <view wx:if="{{historyLoading}}" class="card">
+      <view class="skeleton-line w60"></view>
+      <view class="skeleton-line w40"></view>
+    </view>
+
+    <view wx:elif="{{history.length === 0}}" class="card">
+      <view class="muted">还没有积分记录。今天签个到，或下一单拿返积分。</view>
+    </view>
+
+    <block wx:else>
+      <view class="card ledger" wx:for="{{history}}" wx:key="index">
+        <view class="ledger-left">
+          <view class="ledger-title">{{item.kindText}}</view>
+          <view class="muted">{{item.createdText}}</view>
+        </view>
+        <view class="ledger-points {{item.points > 0 ? 'is-plus' : 'is-minus'}}">{{item.pointsText}}</view>
+      </view>
+    </block>
+  </block>
+</view>

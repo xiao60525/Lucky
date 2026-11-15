@@ -50,6 +50,23 @@ function toMs(ts) {
   return ts ? new Date(ts).getTime() : null;
 }
 
+/** 规格行：price 为 0 表示跟随商品价；stock 为 null 表示该规格不限量 */
+function skuRow(k) {
+  if (!k) return null;
+  return {
+    id: String(k.id || ''),
+    name: String(k.name || ''),
+    price: Math.max(0, Number(k.price) || 0),
+    stock: k.stock === null || k.stock === undefined ? null : Math.max(0, Number(k.stock) || 0),
+    sort: Number(k.sort) || 0,
+    active: k.active !== false,
+  };
+}
+
+function skuRows(list) {
+  return (Array.isArray(list) ? list : []).map(skuRow).filter(Boolean);
+}
+
 function fromRow(row) {
   return {
     id: row.id,
@@ -62,6 +79,8 @@ function fromRow(row) {
     transactionId: row.transaction_id,
     settleSource: row.settle_source,
     items: Array.isArray(row.items) ? row.items : [],
+    // 下单时快照的收货信息（充值/内容单为 NULL）
+    shipping: row.shipping && typeof row.shipping === 'object' ? row.shipping : null,
     shipCompany: row.ship_company || '',
     shipNo: row.ship_no || '',
     shippedAt: toMs(row.shipped_at),
@@ -92,6 +111,8 @@ async function getState() {
       memberOnly: p.member_only === true,
       memberPrice: Number(p.member_price) || 0,
       image: p.image || '',
+      stock: p.stock === null || p.stock === undefined ? null : Math.max(0, Number(p.stock) || 0),
+      skus: skuRows(p.skus),
     })),
   };
 }
@@ -113,6 +134,8 @@ async function insertOrder(order) {
         created_at_ms: order.createdAt,
         // 购物车订单：明细一起落库；单件订单传空数组
         items: Array.isArray(order.items) ? order.items : [],
+        // 收货信息快照（仅商品单有；不传则落 NULL）
+        shipping: order.shipping && typeof order.shipping === 'object' ? order.shipping : null,
       },
     },
     '写入'
@@ -167,6 +190,9 @@ function productRow(p) {
     memberOnly: p.member_only === true,
     memberPrice: Number(p.member_price) || 0,
     image: p.image || '',
+    // null = 不限量；数字 = 总库存（可用量 = stock - 已支付销量）
+    stock: p.stock === null || p.stock === undefined ? null : Math.max(0, Number(p.stock) || 0),
+    skus: skuRows(p.skus),
   };
 }
 
@@ -192,12 +218,62 @@ async function adminUpsertProduct(p) {
   };
   // 传了 image 才写图片列：不传 = 保留原图，传空串 = 清空
   if (p.image !== undefined && p.image !== null) product.image = p.image;
+  // 传了 stock 才写库存列：null = 设为不限量，数字 = 指定库存
+  if (p.stock !== undefined) product.stock = p.stock === null ? null : Math.max(0, Math.floor(Number(p.stock)) || 0);
   const row = await call(
     'app_admin_upsert_product',
     { p_secret: secret, p_product: product },
     '保存商品'
   );
   return row ? productRow(row) : null;
+}
+
+/** 只改库存（商品列表里快捷编辑用） */
+async function adminSetStock(id, stock) {
+  const row = await call(
+    'app_admin_set_stock',
+    { p_secret: secret, p_id: id, p_stock: stock === null ? null : Math.max(0, Math.floor(Number(stock)) || 0) },
+    '修改库存'
+  );
+  return row ? productRow(row) : null;
+}
+
+/** 整组覆盖某商品的规格（空数组 = 回到单规格） */
+async function adminSetSkus(productId, skus) {
+  const payload = (Array.isArray(skus) ? skus : []).map((k) => ({
+    id: k.id ? String(k.id).slice(0, 64) : '',
+    name: String(k.name || '').slice(0, 30),
+    price: Math.max(0, Math.floor(Number(k.price) || 0)),
+    stock: k.stock === null || k.stock === undefined || String(k.stock).trim() === ''
+      ? null
+      : Math.max(0, Math.floor(Number(k.stock)) || 0),
+    sort: Math.floor(Number(k.sort) || 0),
+    active: k.active !== false,
+  }));
+  const rows = await call(
+    'app_admin_set_skus',
+    { p_secret: secret, p_product_id: productId, p_skus: payload },
+    '保存规格'
+  );
+  return skuRows(rows);
+}
+
+/**
+ * 批量操作商品
+ * action: active | inactive | amount_set | amount_delta | amount_percent | stock_set | sort_set | delete
+ */
+async function adminBatchProducts(ids, action, value = null) {
+  const r = await call(
+    'app_admin_batch_products',
+    {
+      p_secret: secret,
+      p_ids: (Array.isArray(ids) ? ids : []).map(String),
+      p_action: String(action || ''),
+      p_value: value === null || value === undefined ? null : Math.floor(Number(value)),
+    },
+    '批量操作商品'
+  );
+  return Number((r && r.affected) || 0);
 }
 
 /** 删除商品 */
@@ -745,6 +821,99 @@ async function setAdminCredentials({ user, pwdHash, pwdSalt }) {
   return adminCredRow(row);
 }
 
+/* ---------------- 小游戏排行榜 ---------------- */
+
+/** 提交游戏成绩（云库只保留每人最高分），返回 { best, rank } */
+async function gameScoreSubmit(userId, score) {
+  return call(
+    'app_game_score_submit',
+    { p_secret: secret, p_user: userId, p_score: Math.floor(Number(score) || 0) },
+    '提交游戏成绩'
+  );
+}
+
+/** 排行榜前 N 名 [{ nickname, score }] */
+async function gameScoresTop(limit = 20) {
+  return call('app_game_scores_top', { p_secret: secret, p_limit: Math.floor(Number(limit) || 20) }, '读取排行榜');
+}
+
+/* ---------------- 在线客服 ---------------- */
+
+function chatMsgRow(row) {
+  if (!row) return null;
+  return {
+    id: String(row.id || ''),
+    userId: String(row.user_id || ''),
+    role: row.role === 'admin' ? 'admin' : 'user',
+    body: String(row.body || ''),
+    createdAt: toMs(row.created_at),
+  };
+}
+
+function chatThreadRow(row) {
+  if (!row) return null;
+  return {
+    userId: String(row.user_id || ''),
+    nickname: String(row.nickname || ''),
+    lastBody: String(row.last_body || ''),
+    lastRole: row.last_role === 'admin' ? 'admin' : 'user',
+    lastAt: toMs(row.last_at),
+    userUnread: Math.max(0, Number(row.user_unread) || 0),
+    adminUnread: Math.max(0, Number(row.admin_unread) || 0),
+  };
+}
+
+/** 发消息，role: 'user' | 'admin' */
+async function chatSend(userId, role, body) {
+  const r = await call(
+    'app_chat_send',
+    {
+      p_secret: secret,
+      p_user: String(userId || ''),
+      p_role: role === 'admin' ? 'admin' : 'user',
+      p_body: String(body || ''),
+    },
+    '发送消息'
+  );
+  return chatMsgRow(r && r.message);
+}
+
+/** 用户取自己的会话（顺带清掉用户未读） */
+async function chatThread(userId) {
+  if (!userId) return { thread: null, messages: [] };
+  const r = await call('app_chat_thread', { p_secret: secret, p_user: String(userId) }, '读取会话');
+  return {
+    thread: chatThreadRow(r && r.thread),
+    messages: (Array.isArray(r && r.messages) ? r.messages : []).map(chatMsgRow).filter(Boolean),
+  };
+}
+
+/** 用户未读条数（首页红点） */
+async function chatUnread(userId) {
+  if (!userId) return 0;
+  const r = await call('app_chat_unread', { p_secret: secret, p_user: String(userId) }, '读取未读消息');
+  return Math.max(0, Number(r && r.unread) || 0);
+}
+
+/** 后台：全部会话（按最后消息倒序） */
+async function adminChatThreads() {
+  const rows = await call('app_admin_chat_threads', { p_secret: secret }, '读取客服会话');
+  return (Array.isArray(rows) ? rows : []).map(chatThreadRow).filter(Boolean);
+}
+
+/** 后台：某个用户的对话（顺带清掉后台未读） */
+async function adminChatMsgs(userId) {
+  const r = await call(
+    'app_admin_chat_msgs',
+    { p_secret: secret, p_user: String(userId || '') },
+    '读取客服对话'
+  );
+  return {
+    thread: chatThreadRow(r && r.thread),
+    messages: (Array.isArray(r && r.messages) ? r.messages : []).map(chatMsgRow).filter(Boolean),
+  };
+}
+
 module.exports = {
   enabled,
   endpoint,
@@ -758,6 +927,9 @@ module.exports = {
   adminListProducts,
   adminUpsertProduct,
   adminDeleteProduct,
+  adminSetStock,
+  adminSetSkus,
+  adminBatchProducts,
   listContents,
   adminListContents,
   adminUpsertContent,
@@ -778,6 +950,13 @@ module.exports = {
   adminLogAdd,
   adminLogList,
   adminLogClear,
+  gameScoreSubmit,
+  gameScoresTop,
+  chatSend,
+  chatThread,
+  chatUnread,
+  adminChatThreads,
+  adminChatMsgs,
   applyRefund,
   myRefunds,
   cancelRefund,

@@ -1,5 +1,5 @@
 const { cloud } = require('../../utils/cloud');
-const { listMyOrders, saveMyProfile, maskPhone, orderStats } = require('../../utils/store');
+const { listMyOrders, saveMyProfile, maskPhone, orderStats, checkinStatus } = require('../../utils/store');
 const { getBrand, refreshBrand, applyNavTitle } = require('../../utils/brand');
 
 const FILTERS = [
@@ -21,6 +21,8 @@ Page({
         filter: 'all',
         ordersLoading: false,
         ordersError: '',
+        pointsBalance: '0',
+        pointsChecked: false,
         brand: getBrand(),
     },
 
@@ -80,6 +82,20 @@ Page({
             saveMyProfile(phone);
         }
         this.loadOrders();
+        this.loadPoints();
+    },
+
+    async loadPoints() {
+        const { data, error } = await checkinStatus();
+        if (error || !data) return;
+        this.setData({
+            pointsBalance: String(data.balance),
+            pointsChecked: data.checkedToday,
+        });
+    },
+
+    onGoPoints() {
+        wx.navigateTo({ url: '/pages/points/points' });
     },
 
     async loadOrders() {

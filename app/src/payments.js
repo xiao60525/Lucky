@@ -156,19 +156,11 @@ const providers = {
           .join('、');
         throw new Error(`支付宝缺少配置：${missing}`);
       }
-      const ua = ctx.ua || '';
-      const mobile = /Android|iPhone|iPad|iPod|Mobile|HarmonyOS|Windows Phone/i.test(ua);
-      // 电脑网站支付（alipay.trade.page.pay）需要单独签约，未签约时会报
-      // insufficient-isv-permissions；手机网站支付（wap.pay）在电脑上会展示扫码页，
-      // 因此默认统一走 wap，签约了电脑网站支付再设 ALIPAY_PAGE_PAY=1 开启。
-      const allowPagePay = String(process.env.ALIPAY_PAGE_PAY || '') === '1';
-      const payUrl = client.buildPagePayUrl({
-        outTradeNo: order.id,
-        totalAmountFen: order.amount,
-        subject: order.title,
-        body: order.title,
-        wap: allowPagePay ? !mobile : true,
-      });
+      // payUrl 指向站内中转页 /pay/alipay/<orderId>：中转页按浏览器 UA 决定
+      // wap.pay / page.pay，并用 POST 表单把签名参数提交给支付宝网关。
+      // 参数不经过 URL，浏览器/中间层往 URL 上追加 sharecode 等参数也不会
+      // 破坏签名（GET 直跳曾导致支付宝 invalid-signature 验签错误）。
+      const payUrl = `/pay/alipay/${encodeURIComponent(order.id)}`;
       return { mode: 'redirect', payUrl };
     },
     async closePayment(order) {

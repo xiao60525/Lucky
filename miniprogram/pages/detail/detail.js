@@ -40,6 +40,19 @@ Page({
         this.load();
     },
 
+    /** 主图挂了就回退到首字占位 */
+    onHeroError() {
+        if (!this.data.product) return;
+        this.setData({ 'product.image': '' });
+    },
+
+    /** 点主图全屏预览 */
+    onPreviewHero() {
+        const { product } = this.data;
+        if (!product || !product.image) return;
+        wx.previewImage({ urls: [product.image] });
+    },
+
     onMinus() {
         this.changeQty((Number(this.data.qty) || 1) - 1);
     },

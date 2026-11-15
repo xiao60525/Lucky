@@ -1,4 +1,5 @@
-const { getOrder, cancelOrder, demoPay } = require('../../utils/store');
+const { getOrder, cancelOrder } = require('../../utils/store');
+const { payOrder, isDemoMode } = require('../../utils/payment');
 
 const STATUS_HINT = {
     created: '订单已生成，等待付款',
@@ -53,9 +54,13 @@ Page({
         wx.setClipboardData({ data: id });
     },
 
-    /** 演示支付：真实微信支付接入前用，只改状态不扣款 */
+    /** 支付：演示模式二次确认，真实支付直接调起 */
     onPay() {
         if (this.data.acting) return;
+        if (!isDemoMode()) {
+            this.runPay();
+            return;
+        }
         wx.showModal({
             title: '演示支付',
             content: '目前还没有接入微信支付，这一步只把订单标记为「已支付」，不会真实扣款。',
@@ -68,7 +73,7 @@ Page({
 
     async runPay() {
         this.setData({ acting: true });
-        const { data, error } = await demoPay(this.orderId);
+        const { data, error } = await payOrder(this.orderId);
         this.setData({ acting: false });
         if (error || !data) {
             wx.showToast({ title: (error && error.message) || '支付失败', icon: 'none' });
@@ -76,7 +81,7 @@ Page({
             return;
         }
         this.setData({ order: data, hint: STATUS_HINT[data.status] || '', isNew: false });
-        wx.showToast({ title: '已标记为已支付', icon: 'success' });
+        wx.showToast({ title: isDemoMode() ? '已标记为已支付' : '支付成功', icon: 'success' });
     },
 
     onCancel() {

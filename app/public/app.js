@@ -38,6 +38,7 @@ const state = {
   orderQuery: '', // 我的订单搜索词（商品名 / 订单号）
   contentQuery: '', // 内容页搜索词
   contentCat: 'all', // 内容页分类筛选：all / 分类名 / __fav
+  chatUnread: 0, // 客服未读消息数（首页红点）
 };
 
 const sheetState = { type: null, product: null, order: null, channel: 'wechat', productId: '', reviewStars: 5 };
@@ -183,14 +184,19 @@ function clearSearchHistory() {
 }
 
 /* ---------------- 购物车（本机存储） ---------------- */
-/* 只存「商品 id + 数量」，单价与会员价永远按服务端下发的商品表现算，避免改价后算错 */
+/* 只存「商品 id + 规格 id + 数量」，单价与会员价永远按服务端下发的商品表现算，避免改价后算错 */
 
 function cartList() {
   const v = lsGet(LS_CART, []);
   if (!Array.isArray(v)) return [];
   return v
     .filter((x) => x && x.id && Number(x.qty) > 0)
-    .map((x) => ({ id: String(x.id), qty: Math.min(99, Math.max(1, Math.floor(Number(x.qty) || 1))), at: Number(x.at) || 0 }));
+    .map((x) => ({
+      id: String(x.id),
+      skuId: String(x.skuId || ''),
+      qty: Math.min(99, Math.max(1, Math.floor(Number(x.qty) || 1))),
+      at: Number(x.at) || 0,
+    }));
 }
 
 function cartSave(list) {
@@ -207,34 +213,42 @@ function cartHas(id) {
   return cartList().some((x) => String(x.id) === String(id));
 }
 
+/** 购物车行键：商品 + 规格（不同规格算两行） */
+function cartKey(id, skuId) {
+  return `${String(id || '')}|${String(skuId || '')}`;
+}
+
 /** 加购，返回加完后的总件数 */
-function cartAdd(id, qty) {
+function cartAdd(id, qty, skuId) {
   const key = String(id || '');
   if (!key) return cartCount();
+  const sid = String(skuId || '');
   const add = Math.max(1, Math.floor(Number(qty) || 1));
   const list = cartList();
-  const hit = list.find((x) => x.id === key);
+  const hit = list.find((x) => x.id === key && x.skuId === sid);
   if (hit) hit.qty = Math.min(99, hit.qty + add);
-  else list.unshift({ id: key, qty: Math.min(99, add), at: Date.now() });
+  else list.unshift({ id: key, skuId: sid, qty: Math.min(99, add), at: Date.now() });
   cartSave(list);
   return cartCount();
 }
 
-function cartSetQty(id, qty) {
+function cartSetQty(id, qty, skuId) {
   const key = String(id || '');
+  const sid = String(skuId || '');
   const n = Math.floor(Number(qty) || 0);
   let list = cartList();
-  if (n <= 0) list = list.filter((x) => x.id !== key);
+  if (n <= 0) list = list.filter((x) => !(x.id === key && x.skuId === sid));
   else {
-    const hit = list.find((x) => x.id === key);
+    const hit = list.find((x) => x.id === key && x.skuId === sid);
     if (hit) hit.qty = Math.min(99, n);
   }
   cartSave(list);
 }
 
-function cartRemove(id) {
+function cartRemove(id, skuId) {
   const key = String(id || '');
-  cartSave(cartList().filter((x) => x.id !== key));
+  const sid = String(skuId || '');
+  cartSave(cartList().filter((x) => !(x.id === key && x.skuId === sid)));
 }
 
 function cartClear() {
@@ -242,30 +256,40 @@ function cartClear() {
 }
 
 /**
- * 购物车明细：把本机 id/数量 和当前商品表拼起来
- * gone = 商品已下架/被删；locked = 会员专享但当前不是会员
+ * 购物车明细：把本机 id/规格/数量 和当前商品表拼起来
+ * gone = 商品已下架/被删/规格没了；locked = 会员专享但当前不是会员
  */
 function cartRows() {
   return cartList().map((it) => {
     const p = (state.products || []).find((x) => String(x.id) === String(it.id)) || null;
     const qty = Math.max(1, Number(it.qty) || 1);
-    const price = p ? memberPriceOf(p) : 0;
+    const skus = p ? skuListOf(p) : [];
+    const sku = it.skuId ? skus.find((k) => String(k.id) === String(it.skuId)) || null : null;
+    const skuGone = Boolean(p && (it.skuId ? !sku : skus.length > 0));
+    const st = p ? stockInfoOf(p, sku ? sku.id : null) : { tracked: false, left: null, soldOut: false };
+    const price = p ? (sku ? skuPriceOf(p, sku) : memberPriceOf(p)) : 0;
     return {
       id: it.id,
+      skuId: it.skuId || '',
+      skuName: sku ? sku.name : '',
       qty,
       at: it.at,
       product: p,
       price,
       sum: price * qty,
-      gone: !p,
+      gone: !p || skuGone,
       locked: Boolean(p && p.memberOnly && !viewerIsMember()),
+      // 加购数量超过剩余库存：结算前挡掉，避免付了钱发不出货
+      over: Boolean(p && st.tracked && st.left < qty),
+      left: st.left,
+      soldOut: Boolean(p && st.soldOut),
     };
   });
 }
 
 /** 可结算的明细（排除下架/会员受限的） */
 function cartPayableRows() {
-  return cartRows().filter((r) => !r.gone && !r.locked);
+  return cartRows().filter((r) => !r.gone && !r.locked && !r.over && !r.soldOut);
 }
 
 function cartTotal() {
@@ -275,16 +299,26 @@ function cartTotal() {
 /** 加购（页面与弹层两套监听共用）：会员专享商品先引导开通 */
 function handleCartAdd(el) {
   const id = el && el.dataset ? el.dataset.id : '';
+  const skuId = el && el.dataset ? el.dataset.sku || '' : '';
   const p = (state.products || []).find((x) => String(x.id) === String(id));
   if (!p) return toast('商品不存在或已下架');
+  const skus = skuListOf(p);
+  const sku = skus.length ? skus.find((k) => String(k.id) === String(skuId || sheetState.skuId || '')) : null;
+  if (skus.length && !sku) return toast('请先选择规格');
   if (p.memberOnly && !viewerIsMember()) {
     toast('该商品为会员专享，开通会员后可购买');
     return memberSheet();
   }
-  const n = cartAdd(id, 1);
-  const item = cartList().find((x) => x.id === String(id));
+  const st = stockInfoOf(p, sku ? sku.id : null);
+  const key = cartKey(id, sku ? sku.id : '');
+  const inCart = (cartList().find((x) => cartKey(x.id, x.skuId) === key) || {}).qty || 0;
+  if (st.tracked && inCart >= st.left) {
+    return toast(st.left <= 0 ? '这件商品已售罄' : `库存只剩 ${st.left} 件，没法再加了`);
+  }
+  const n = cartAdd(id, 1, sku ? sku.id : '');
+  const item = cartList().find((x) => cartKey(x.id, x.skuId) === key);
   if (el) el.textContent = `✓ 已加购 ${item ? item.qty : 1} 件`;
-  return toast(`已加入购物车，共 ${n} 件`);
+  return toast(`${sku ? sku.name + ' ' : ''}已加入购物车，共 ${n} 件`);
 }
 
 /** 消息中心：由订单 / 售后记录派生，不额外存库 */
@@ -386,6 +420,7 @@ function orderProductsOf(order) {
   if (order.items && order.items.length) {
     return order.items.map((it) => ({
       productId: String(it.productId || ''),
+      skuName: it.skuName || '',
       title: it.title || '',
       qty: Number(it.qty) || 1,
     }));
@@ -465,21 +500,27 @@ async function api(path, options = {}) {
     // 预览网关会剥掉认证相关请求头，URL 参数作为兜底通道
     url += (path.includes('?') ? '&' : '?') + 't=' + encodeURIComponent(token);
   }
-  const res = await fetch(url, {
-    credentials: 'same-origin',
-    ...options,
-    headers: { ...headers, ...(options.headers || {}) },
-    body:
-      token && options.body && typeof options.body === 'string' && /^(POST|PUT|PATCH)$/i.test(options.method || '')
-        ? (() => {
-            try {
-              return JSON.stringify({ ...JSON.parse(options.body), __token: token });
-            } catch {
-              return options.body;
-            }
-          })()
-        : options.body,
-  });
+  let res;
+  try {
+    res = await fetch(url, {
+      credentials: 'same-origin',
+      ...options,
+      headers: { ...headers, ...(options.headers || {}) },
+      body:
+        token && options.body && typeof options.body === 'string' && /^(POST|PUT|PATCH)$/i.test(options.method || '')
+          ? (() => {
+              try {
+                return JSON.stringify({ ...JSON.parse(options.body), __token: token });
+              } catch {
+                return options.body;
+              }
+            })()
+          : options.body,
+    });
+  } catch (e) {
+    // fetch 抛错一定是网络层问题：断网 / DNS / 连接被掐，给一句人话
+    throw new Error(navigator.onLine === false ? '当前没有网络，请连接后重试' : '网络连接失败，请稍后重试');
+  }
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
     const err = new Error(data.message || `请求失败(${res.status})`);
@@ -814,8 +855,18 @@ function goodsCardHTML(p) {
   const idx = Math.max(0, (state.products || []).findIndex((x) => x.id === p.id));
   const fav = goodsFavOn(p.id);
   const sold = Number(p.sales) || 0;
+  const st = stockInfoOf(p);
+  const pr = priceRangeOf(p);
+  const skuCount = skuListOf(p).length;
+  const priceHTML =
+    pr.multi && pr.max > pr.min
+      ? `<b>${yuan(pr.min)}<i class="goods-from">起</i></b>`
+      : `<b>${yuan(pr.min)}</b>`;
   return `
-        <button class="goods-card${p.memberOnly && !viewerIsMember() ? ' is-locked' : ''}" data-act="goods" data-id="${esc(p.id)}">
+        <button class="goods-card${p.memberOnly && !viewerIsMember() ? ' is-locked' : ''}${
+          st.soldOut ? ' is-soldout' : ''
+        }" data-act="goods" data-id="${esc(p.id)}">
+          ${st.soldOut ? '<span class="goods-soldout">已售罄</span>' : ''}
           ${p.memberOnly ? '<span class="goods-badge">会员专享</span>' : ''}
           ${owned ? '<span class="goods-owned">已购</span>' : ''}
           <span class="goods-fav${fav ? ' on' : ''}" data-act="goods-fav" data-id="${esc(p.id)}" role="button" aria-label="${
@@ -834,10 +885,11 @@ function goodsCardHTML(p) {
           }
           ${p.desc ? `<span class="goods-desc">${esc(p.desc)}</span>` : ''}
           <span class="goods-foot">
-            <b>${yuan(memberPriceOf(p))}</b>
-            ${Number(p.memberPrice) > 0 ? `<s>${yuan(p.amount)}</s>` : ''}
-            <em>${esc(p.memberOnly && !viewerIsMember() ? '开通会员' : p.tag || '购买')}</em>
+            ${priceHTML}
+            ${!pr.multi && Number(p.memberPrice) > 0 ? `<s>${yuan(p.amount)}</s>` : ''}
+            <em>${esc(p.memberOnly && !viewerIsMember() ? '开通会员' : p.tag || (skuCount ? `${skuCount} 种规格` : '购买'))}</em>
           </span>
+          ${st.tracked && !st.soldOut && st.low ? `<span class="goods-stock">仅剩 ${st.left} 件</span>` : ''}
           ${sold ? `<span class="goods-sold">已售 ${sold}</span>` : ''}
         </button>`;
 }
@@ -1106,7 +1158,7 @@ function footprintStripHTML() {
                 : `<span class="fp-emoji">${GOODS_ICONS[idx % GOODS_ICONS.length]}</span>`
             }
             <span class="fp-name">${esc(p.title)}</span>
-            <span class="fp-price">${yuan(memberPriceOf(p))}</span>
+            <span class="fp-price">${priceTextOf(p)}</span>
           </button>`;
         })
         .join('')}
@@ -1140,9 +1192,15 @@ function renderHome() {
           ${logoHTML('hero-logo')}
           <span class="hero-appname">${esc(s.name || 'App')}</span>
         </div>
-        <button class="hero-avatar" data-act="${v ? 'go-mine' : 'go-login'}" aria-label="${v ? '我的' : '登录'}">
-          ${v ? avatarHTML(v, 'avatar-sm') : '<span class="avatar-sm">游</span>'}
-        </button>
+        <div class="hero-acts">
+          <button class="hero-icon" data-act="go-chat" aria-label="在线客服">
+            <span>💬</span>
+            <span class="chat-dot${state.chatUnread ? ' on' : ''}" id="chatDot"></span>
+          </button>
+          <button class="hero-avatar" data-act="${v ? 'go-mine' : 'go-login'}" aria-label="${v ? '我的' : '登录'}">
+            ${v ? avatarHTML(v, 'avatar-sm') : '<span class="avatar-sm">游</span>'}
+          </button>
+        </div>
       </div>
       <div class="hero-greet">${greeting()}，${v ? esc(v.nickname) : '欢迎光临'}</div>
       <div class="hero-title">${title}</div>
@@ -1225,7 +1283,12 @@ function bannerHTML() {
 /** 快捷入口宫格：后台添加什么就显示什么 */
 function entriesHTML() {
   const list = homeCfg().entries;
-  if (!list.length) return '';
+  // 金刚区最后一格固定为小游戏入口（合成大西瓜，跳 /game）
+  const gameEntry = `<button class="entry-item" data-act="go-game">
+    <span class="entry-icon">🍉</span>
+    <span class="entry-title">大西瓜</span>
+  </button>`;
+  if (!list.length) return `<div class="entry-grid">${gameEntry}</div>`;
   return `<div class="entry-grid">${list
     .map(
       (e, i) => `<button class="entry-item" data-act="home-entry" data-i="${i}">
@@ -1233,7 +1296,7 @@ function entriesHTML() {
         <span class="entry-title">${esc(e.title)}</span>
       </button>`
     )
-    .join('')}</div>`;
+    .join('')}${gameEntry}</div>`;
 }
 
 /* ---------------- 渲染：内容 ---------------- */
@@ -1619,11 +1682,71 @@ function memberPriceOf(p) {
   return p.amount;
 }
 
+/** 商品的启用规格（空数组 = 单规格商品） */
+function skuListOf(p) {
+  return p && Array.isArray(p.skus) ? p.skus.filter((k) => k && k.id && k.active !== false) : [];
+}
+
+/** 某个规格的实际售价：规格价 > 0 时用它（不再叠加会员价），否则跟随商品价 */
+function skuPriceOf(p, sku) {
+  if (sku && Number(sku.price) > 0) return Number(sku.price);
+  return memberPriceOf(p);
+}
+
+/** 展示价：多规格商品未选规格时显示「¥最低价 起」 */
+function displayPriceOf(p, skuId) {
+  const skus = skuListOf(p);
+  if (!skus.length) return { price: memberPriceOf(p), from: false };
+  const hit = skuId ? skus.find((k) => String(k.id) === String(skuId)) : null;
+  if (hit) return { price: skuPriceOf(p, hit), from: false };
+  return { price: Math.min(...skus.map((k) => skuPriceOf(p, k))), from: true };
+}
+
+/** 价格区间（多规格且价差不一致时显示 12.00 ~ 30.00） */
+function priceRangeOf(p) {
+  const skus = skuListOf(p);
+  if (!skus.length) return { multi: false, min: memberPriceOf(p), max: memberPriceOf(p) };
+  const prices = skus.map((k) => skuPriceOf(p, k));
+  return { multi: true, min: Math.min(...prices), max: Math.max(...prices) };
+}
+
+/** 卡片/列表用的价格文案：多规格低价不同就显示「¥12.00 起」 */
+function priceTextOf(p) {
+  const pr = priceRangeOf(p);
+  return pr.multi && pr.max > pr.min ? `${yuan(pr.min)} 起` : yuan(pr.min);
+}
+
 /**
  * 点「购买」的统一入口：登录校验 → 会员专享门禁 → 进收银台。
  * 会员商品（送会员天数）本身不受门禁限制，否则非会员永远开不了会员。
  */
-function startBuy(productId) {
+/**
+ * 库存信息：stock 为 null / undefined 表示不限量。
+ * 可用量 = 总库存 - 已支付销量（后端同口径，前端只做展示与拦截）
+ * 多规格商品：传 skuId 看该规格，不传则汇总所有规格（全部规格都设了库存才算限量）
+ */
+function stockInfoOf(p, skuId) {
+  const skus = skuListOf(p);
+  if (skus.length) {
+    if (skuId) {
+      const k = skus.find((x) => String(x.id) === String(skuId));
+      if (!k) return { tracked: true, left: 0, soldOut: true, low: false };
+      if (k.left === null || k.left === undefined) return { tracked: false, left: null, soldOut: false, low: false };
+      const left = Math.max(0, Number(k.left) || 0);
+      return { tracked: true, left, soldOut: left <= 0, low: left > 0 && left <= 5 };
+    }
+    if (skus.some((k) => k.left === null || k.left === undefined)) {
+      return { tracked: false, left: null, soldOut: false, low: false };
+    }
+    const left = skus.reduce((s, k) => s + Math.max(0, Number(k.left) || 0), 0);
+    return { tracked: true, left, soldOut: left <= 0, low: left > 0 && left <= 5 };
+  }
+  if (!p || p.stock === null || p.stock === undefined) return { tracked: false, left: null, soldOut: false, low: false };
+  const left = Math.max(0, Number(p.stock) - (Number(p.sales) || 0));
+  return { tracked: true, left, soldOut: left <= 0, low: left > 0 && left <= 5 };
+}
+
+function startBuy(productId, skuId) {
   if (!state.viewer) {
     closeSheet();
     state.tab = 'mine';
@@ -1633,33 +1756,60 @@ function startBuy(productId) {
   }
   const p = state.products.find((x) => x.id === productId);
   if (!p) return toast('商品不存在或已下架');
+  const skus = skuListOf(p);
+  const sku = skus.length ? skus.find((k) => String(k.id) === String(skuId || sheetState.skuId || '')) : null;
+  if (skus.length && !sku) {
+    toast('请先选择规格');
+    return;
+  }
+  const st = stockInfoOf(p, sku ? sku.id : null);
+  if (st.soldOut) {
+    toast(sku ? '这个规格已售罄，换个规格试试' : '这件商品已售罄，看看其他商品吧');
+    return;
+  }
   if (p.memberOnly && Number(p.memberDays) === 0 && !viewerIsMember()) {
     toast('该商品为会员专享，开通会员后即可购买');
     return memberSheet();
   }
   sheetState.type = 'confirm';
-  sheetState.product = { ...p, amount: memberPriceOf(p) };
+  sheetState.product = {
+    ...p,
+    amount: sku ? skuPriceOf(p, sku) : memberPriceOf(p),
+    skuId: sku ? sku.id : '',
+    skuName: sku ? sku.name : '',
+    title: sku ? `${p.title}（${sku.name}）` : p.title,
+  };
   sheetState.channel = preferredChannel(channelList());
   confirmSheet();
 }
 
 /* ---------------- 商品详情：看得清楚再买 ---------------- */
 
-/** 商品详情弹层：大图 + 会员价对比 + 描述 + 购买/分享 */
+/** 商品详情弹层：大图 + 规格 + 会员价对比 + 描述 + 购买/分享 */
 function goodsSheet(productId) {
   const p = (state.products || []).find((x) => x.id === productId);
   if (!p) return toast('商品不存在或已下架');
+  const skus = skuListOf(p);
+  // 规格选择：留在本次弹层状态里，重绘时不丢；默认第一个有货的规格
+  let picked = skus.find((k) => String(k.id) === String(sheetState.skuId || '')) || null;
+  if (!picked && skus.length) {
+    picked = skus.find((k) => !(k.left !== null && k.left !== undefined && Number(k.left) <= 0)) || skus[0];
+  }
   sheetState.type = 'goods';
   sheetState.product = p;
+  sheetState.skuId = picked ? picked.id : '';
   pushFootprint(p.id); // 记一笔浏览足迹（本机）
   const mp = Number(p.memberPrice) || 0;
   const isMember = viewerIsMember();
-  const hasMemberPrice = mp > 0 && mp < p.amount;
-  const showPrice = isMember && hasMemberPrice ? mp : p.amount;
+  const shown = displayPriceOf(p, picked ? picked.id : '');
+  const showPrice = shown.price;
+  const hasMemberPrice = mp > 0 && mp < p.amount && !(picked && Number(picked.price) > 0);
   const bought = boughtProductIds().has(p.id);
-  const sold = Number(p.sales) || (state.orders || []).filter((o) => o.productId === p.id && o.status === 'paid').length;
+  const sold = Number(p.sales) || 0;
   const fav = goodsFavOn(p.id);
-  const cartItem = cartList().find((x) => String(x.id) === String(p.id));
+  const cartItem = cartList().find(
+    (x) => String(x.id) === String(p.id) && String(x.skuId || '') === String(picked ? picked.id : '')
+  );
   const inCart = Boolean(cartItem);
   const inCartQty = cartItem ? cartItem.qty : 0;
   const idx = Math.max(0, state.products.findIndex((x) => x.id === p.id));
@@ -1673,8 +1823,16 @@ function goodsSheet(productId) {
         p.memberOnly ? '<span class="gs-tag">会员专享</span>' : ''
       }</div>`;
 
+  const st = stockInfoOf(p, picked ? picked.id : null);
   const metaChips = [
     p.tag ? `<span class="gs-chip">${esc(p.tag)}</span>` : '',
+    st.soldOut
+      ? '<span class="gs-chip is-warn">已售罄</span>'
+      : st.tracked && st.low
+        ? `<span class="gs-chip is-warn">仅剩 ${st.left} 件</span>`
+        : st.tracked
+          ? `<span class="gs-chip">库存 ${st.left} 件</span>`
+          : '',
     Number(p.memberDays) > 0 ? `<span class="gs-chip">送 ${p.memberDays} 天会员</span>` : '',
     bought ? '<span class="gs-chip is-on">你已购买过</span>' : '',
     sold ? `<span class="gs-chip">已售 ${sold}</span>` : '',
@@ -1688,7 +1846,28 @@ function goodsSheet(productId) {
          <b>${yuan(showPrice)}</b>
          ${isMember ? `<s>${yuan(p.amount)}</s><span class="gs-save">会员已省 ${yuan(save)}</span>` : `<span class="gs-save">会员价 ${yuan(mp)}</span>`}
        </div>`
-    : `<div class="gs-price"><b>${yuan(p.amount)}</b></div>`;
+    : `<div class="gs-price"><b>${yuan(showPrice)}</b>${shown.from ? '<span class="gs-save">起</span>' : ''}</div>`;
+
+  // 规格选择区：每个规格带价格与售罄标记，选中态高亮
+  const specHTML = skus.length
+    ? `<div class="gs-specs">
+         <div class="gs-spec-head">选择规格<span>${picked ? esc(picked.name) : '请选择'}</span></div>
+         <div class="gs-spec-list">
+           ${skus
+             .map((k) => {
+               const kSoldOut = k.left !== null && k.left !== undefined && Number(k.left) <= 0;
+               const on = picked && String(picked.id) === String(k.id);
+               return `<button class="gs-spec${on ? ' on' : ''}${kSoldOut ? ' is-out' : ''}" data-act="pick-sku" data-id="${esc(p.id)}" data-sku="${esc(
+                 k.id
+               )}" ${kSoldOut ? 'disabled' : ''}>
+                 <span>${esc(k.name)}</span>
+                 <i>${kSoldOut ? '售罄' : yuan(skuPriceOf(p, k))}</i>
+               </button>`;
+             })
+             .join('')}
+         </div>
+       </div>`
+    : '';
 
   const recs = (state.products || []).filter((x) => String(x.id) !== String(p.id)).slice(0, 6);
   const recHTML = recs.length
@@ -1703,7 +1882,7 @@ function goodsSheet(productId) {
                  : `<span class="fp-emoji">${GOODS_ICONS[xi % GOODS_ICONS.length]}</span>`
              }
              <span class="fp-name">${esc(x.title)}</span>
-             <span class="fp-price">${yuan(memberPriceOf(x))}</span>
+             <span class="fp-price">${priceTextOf(x)}</span>
            </button>`;
          })
          .join('')}</div>`
@@ -1715,12 +1894,17 @@ function goodsSheet(productId) {
     ${priceHTML}
     <p class="gs-desc">${esc(p.desc || '商家还没有填写商品描述')}</p>
     ${metaChips ? `<div class="gs-chips">${metaChips}</div>` : ''}
+    ${specHTML}
     <div class="gs-buy-row">
-      <button class="btn-ghost gs-cart" data-act="cart-add" data-id="${esc(p.id)}">
-        ${inCart ? `✓ 已加购 ${inCartQty} 件` : '加入购物车'}
+      <button class="btn-ghost gs-cart" data-act="cart-add" data-id="${esc(p.id)}" data-sku="${esc(picked ? picked.id : '')}" ${
+        st.soldOut || (st.tracked && inCartQty >= st.left) ? 'disabled' : ''
+      }>
+        ${st.soldOut ? '已售罄' : inCart ? `✓ 已加购 ${inCartQty} 件` : '加入购物车'}
       </button>
-      <button class="btn-primary" data-act="buy" data-id="${esc(p.id)}">
-        ${p.memberOnly && !isMember ? '开通会员后购买' : '立即购买'}
+      <button class="btn-primary" data-act="buy" data-id="${esc(p.id)}" data-sku="${esc(picked ? picked.id : '')}" ${
+        st.soldOut ? 'disabled' : ''
+      }>
+        ${st.soldOut ? '已售罄' : p.memberOnly && !isMember ? '开通会员后购买' : '立即购买'}
       </button>
     </div>
     <div class="gs-actions">
@@ -2162,10 +2346,15 @@ function cartLineHTML(r) {
       ? `<img src="${esc(p.image)}" alt="${esc(p.title)}" loading="lazy" />`
       : `<span class="cart-emoji">${GOODS_ICONS[idx % GOODS_ICONS.length]}</span>`
     : '<span class="cart-emoji">🚫</span>';
-  const memberOn = Boolean(p && viewerIsMember() && Number(p.memberPrice) > 0 && Number(p.memberPrice) < p.amount);
+  const memberOn = Boolean(
+    p && !r.skuId && viewerIsMember() && Number(p.memberPrice) > 0 && Number(p.memberPrice) < p.amount
+  );
   const tags = [
     r.gone ? '<span class="cart-tag is-bad">已下架</span>' : '',
+    !r.gone && r.soldOut ? '<span class="cart-tag is-bad">已售罄</span>' : '',
+    r.over ? `<span class="cart-tag is-bad">仅剩 ${r.left} 件</span>` : '',
     r.locked ? '<span class="cart-tag is-warn">会员专享</span>' : '',
+    r.skuName ? `<span class="cart-tag">${esc(r.skuName)}</span>` : '',
     memberOn ? '<span class="cart-tag is-ok">会员价</span>' : '',
     p && Number(p.memberDays) > 0 ? `<span class="cart-tag">送 ${p.memberDays} 天会员</span>` : '',
   ]
@@ -2176,22 +2365,22 @@ function cartLineHTML(r) {
     <div class="cart-item${r.gone ? ' is-gone' : ''}">
       <button class="cart-thumb" data-act="goods" data-id="${esc(r.id)}" ${r.gone ? 'disabled' : ''}>${thumb}</button>
       <div class="cart-main">
-        <div class="cart-name">${esc(p ? p.title : '商品已下架')}</div>
+        <div class="cart-name">${esc(p ? p.title : '商品已下架')}${r.skuName ? `<i class="cart-sku">${esc(r.skuName)}</i>` : ''}</div>
         ${tags ? `<div class="cart-tags">${tags}</div>` : ''}
         <div class="cart-bottom">
           <span class="cart-price">${p ? yuan(r.price) : ''}${memberOn ? `<s>${yuan(p.amount)}</s>` : ''}</span>
           <div class="stepper">
-            <button data-act="cart-qty" data-id="${esc(r.id)}" data-d="-1" aria-label="减少数量" ${
+            <button data-act="cart-qty" data-id="${esc(r.id)}" data-sku="${esc(r.skuId)}" data-d="-1" aria-label="减少数量" ${
               r.gone ? 'disabled' : ''
             }>−</button>
             <i>${r.qty}</i>
-            <button data-act="cart-qty" data-id="${esc(r.id)}" data-d="1" aria-label="增加数量" ${
-              r.gone ? 'disabled' : ''
+            <button data-act="cart-qty" data-id="${esc(r.id)}" data-sku="${esc(r.skuId)}" data-d="1" aria-label="增加数量" ${
+              r.gone || r.over || r.soldOut ? 'disabled' : ''
             }>+</button>
           </div>
         </div>
       </div>
-      <button class="cart-del" data-act="cart-remove" data-id="${esc(r.id)}" aria-label="删除">✕</button>
+      <button class="cart-del" data-act="cart-remove" data-id="${esc(r.id)}" data-sku="${esc(r.skuId)}" aria-label="删除">✕</button>
     </div>`;
 }
 
@@ -2220,7 +2409,7 @@ function renderCart() {
                        : `<span class="fp-emoji">${GOODS_ICONS[xi % GOODS_ICONS.length]}</span>`
                    }
                    <span class="fp-name">${esc(x.title)}</span>
-                   <span class="fp-price">${yuan(memberPriceOf(x))}</span>
+                   <span class="fp-price">${priceTextOf(x)}</span>
                  </button>`;
                })
                .join('')}</div>`
@@ -2228,12 +2417,12 @@ function renderCart() {
       }`;
   }
 
-  const payable = rows.filter((r) => !r.gone && !r.locked);
+  const payable = rows.filter((r) => !r.gone && !r.locked && !r.soldOut && !r.over);
   const total = payable.reduce((s, r) => s + r.sum, 0);
-  const listTotal = payable.reduce((s, r) => s + (r.product ? r.product.amount * r.qty : 0), 0);
+  const listTotal = payable.reduce((s, r) => s + ((r.product ? (r.skuId ? r.price : r.product.amount) : 0) * r.qty), 0);
   const count = rows.reduce((s, r) => s + r.qty, 0);
   const payCount = payable.reduce((s, r) => s + r.qty, 0);
-  const blocked = rows.filter((r) => r.gone || r.locked);
+  const blocked = rows.filter((r) => r.gone || r.locked || r.soldOut || r.over);
 
   return `
     <div class="cart-head">
@@ -2244,8 +2433,10 @@ function renderCart() {
       blocked.length
         ? `<p class="cart-hint">${
             blocked.some((r) => r.gone)
-              ? '有商品已下架，已自动跳过，可直接删除'
-              : '有会员专享商品，开通会员后即可一起结算'
+              ? '有商品或规格已下架，已自动跳过，可直接删除'
+              : blocked.some((r) => r.soldOut || r.over)
+                ? '有商品库存不足，已排除在结算外，请调整数量或删除'
+                : '有会员专享商品，开通会员后即可一起结算'
           }</p>`
         : ''
     }
@@ -2262,6 +2453,23 @@ function renderCart() {
     </div>`;
 }
 
+/** 确认订单顶部的收货地址块：已填展示，没填引导去填（点击进地址编辑） */
+function confirmAddrHTML() {
+  const a = (state.viewer && state.viewer.address) || {};
+  const has = Boolean(a.name || a.detail);
+  return `<button class="co-addr ${has ? '' : 'is-empty'}" data-act="edit-address" type="button">
+    <span class="co-addr-ic">📍</span>
+    <span class="co-addr-body">
+      ${
+        has
+          ? `<b>${esc(a.name || '未填收货人')}${a.phone ? ' · ' + esc(a.phone) : ''}</b><i>${esc(a.detail)}</i>`
+          : '<b>还没有收货地址</b><i>点击填写，方便商家发货</i>'
+      }
+    </span>
+    <span class="co-addr-edit">${has ? '修改' : '去填写'}</span>
+  </button>`;
+}
+
 /** 购物车结算前的确认弹层：列出明细 + 选支付方式 */
 function cartConfirmSheet() {
   const rows = cartPayableRows();
@@ -2269,19 +2477,21 @@ function cartConfirmSheet() {
   const total = rows.reduce((s, r) => s + r.sum, 0);
   const count = rows.reduce((s, r) => s + r.qty, 0);
   sheetState.type = 'cart-confirm';
-  sheetState.items = rows.map((r) => ({ productId: r.id, qty: r.qty }));
+  sheetState.items = rows.map((r) => ({ productId: r.id, skuId: r.skuId || '', skuName: r.skuName || '', qty: r.qty }));
   sheetState.total = total;
   if (!sheetState.channel) sheetState.channel = preferredChannel(channelList());
   const ch = sheetState.channel;
   const balanceEnough = state.balance >= total;
+  const needAddr = rows.some((r) => r.product && !(Number(r.product.memberDays) > 0));
   openSheet(`
     <h3>确认订单</h3>
     <p class="sheet-sub">共 ${count} 件商品</p>
+    ${needAddr ? confirmAddrHTML() : ''}
     <div class="co-list">
       ${rows
         .map(
           (r) => `<div class="co-line">
-            <span class="co-name">${esc(r.product.title)}</span>
+            <span class="co-name">${esc(r.product.title)}${r.skuName ? `<i class="co-sku">${esc(r.skuName)}</i>` : ''}</span>
             <i>×${r.qty}</i>
             <b>${yuan(r.sum)}</b>
           </div>`
@@ -2425,6 +2635,13 @@ function renderUserCenter() {
       <button class="mini-btn" data-act="go-content">看内容 ›</button>
     </div>
     <div class="card set-list">
+      <button class="set-row" data-act="go-chat">
+        <span>在线客服</span>
+        <i style="font-size:12px;color:var(--muted)">${
+          state.chatUnread ? state.chatUnread + ' 条新消息' : '有问题直接问商家'
+        }</i>
+        <i>›</i>
+      </button>
       <button class="set-row" data-act="open-favorites">
         <span>我的收藏</span>
         <i style="font-size:12px;color:var(--muted)">${
@@ -3007,6 +3224,7 @@ function skeletonHTML() {
 // 各 tab 的滚动位置：切走再切回来时还原，避免总是跳回顶部
 const tabScroll = { home: 0, content: 0, cart: 0, mine: 0 };
 let pendingScroll = null;
+let lastTabRendered = null;
 
 function render() {
   // 「我的」页与首页共用同一份订单：付款成功、刷新后立刻同步，避免刚付完看不到新订单
@@ -3019,6 +3237,13 @@ function render() {
   if (!state.loaded) {
     view.innerHTML = skeletonHTML();
     return;
+  }
+  // 换 tab 才播入场动画：同页局部重绘（刷新订单、筛选商品）不该整页闪一下
+  if (state.tab !== lastTabRendered) {
+    lastTabRendered = state.tab;
+    view.classList.remove('tab-enter');
+    void view.offsetWidth; // 强制重排，让动画能重复触发
+    view.classList.add('tab-enter');
   }
   view.innerHTML =
     state.tab === 'home'
@@ -3136,10 +3361,13 @@ function confirmSheet() {
   const p = sheetState.product;
   const ch = sheetState.channel;
   const balanceEnough = state.balance >= p.amount;
+  // 实体商品才需要收货地址；充值 / 内容解锁 / 会员卡不需要
+  const needAddr = !p.contentId && !p.recharge && !(Number(p.memberDays) > 0);
 
   const html = `
     <h3>确认订单</h3>
     <p class="sheet-sub">${p.title} · ${p.desc}</p>
+    ${needAddr ? confirmAddrHTML() : ''}
     <div class="amount-box">
       <div class="amount-label">支付金额</div>
       <div class="amount-big"><small>¥</small>${(p.amount / 100).toFixed(2)}</div>
@@ -3342,20 +3570,20 @@ async function doPay() {
       : null;
   try {
     const payload = cartItems
-      ? { items: cartItems.map((it) => ({ productId: it.productId, qty: it.qty })) }
+      ? { items: cartItems.map((it) => ({ productId: it.productId, skuId: it.skuId || '', qty: it.qty })) }
       : sheetState.product.contentId
         ? { contentId: sheetState.product.contentId }
         : sheetState.product.recharge
           ? { recharge: sheetState.product.amount }
-          : { productId: sheetState.product.id };
+          : { productId: sheetState.product.id, skuId: sheetState.product.skuId || '' };
     const created = await api('/api/orders', {
       method: 'POST',
       body: JSON.stringify(payload),
     });
     // 购物车下单：这几件从购物车移除（万一没付成，还能在「我的订单 → 继续支付」里找回这笔单）
     if (cartItems) {
-      const ids = cartItems.map((it) => String(it.productId));
-      cartSave(cartList().filter((x) => !ids.includes(x.id)));
+      const keys = cartItems.map((it) => `${it.productId}|${it.skuId || ''}`);
+      cartSave(cartList().filter((x) => !keys.includes(`${x.id}|${x.skuId || ''}`)));
     }
     const res = await api(`/api/orders/${created.order.id}/pay`, {
       method: 'POST',
@@ -3492,7 +3720,7 @@ function orderSheet(order) {
       ${
         order.items && order.items.length > 1
           ? `<div class="detail-row"><span class="k">商品</span><span class="v">${order.items
-              .map((it) => `${esc(it.title)} ×${it.qty}`)
+              .map((it) => `${esc(it.title)}${it.skuName ? `（${esc(it.skuName)}）` : ''} ×${it.qty}`)
               .join('<br />')}</span></div>`
           : `<div class="detail-row"><span class="k">商品</span><span class="v">${esc(order.title)}</span></div>`
       }
@@ -3510,6 +3738,13 @@ function orderSheet(order) {
       ${
         order.paidAt
           ? `<div class="detail-row"><span class="k">支付时间</span><span class="v">${timeText(order.paidAt)}</span></div>`
+          : ''
+      }
+      ${
+        order.shipping && (order.shipping.name || order.shipping.detail)
+          ? `<div class="detail-row"><span class="k">收货信息</span><span class="v">${esc(order.shipping.name || '未填收货人')}${
+              order.shipping.phone ? ' · ' + esc(order.shipping.phone) : ''
+            }<br />${esc(order.shipping.detail || '')}</span></div>`
           : ''
       }
       ${
@@ -3713,7 +3948,7 @@ function wishlistSheet() {
                 <b>${esc(p.title)}</b>
                 <i>${esc(p.desc || (p.memberOnly ? '会员专享' : '在售中'))}</i>
               </span>
-              <span class="wish-price">${yuan(memberPriceOf(p))}</span>
+              <span class="wish-price">${priceTextOf(p)}</span>
             </button>
             <div class="wish-acts">
               <button class="fav-sheet-btn" data-act="buy" data-id="${esc(p.id)}">购买</button>
@@ -3752,7 +3987,7 @@ function footprintSheet() {
                 : `<span class="fp-emoji">${GOODS_ICONS[idx % GOODS_ICONS.length]}</span>`
             }
             <span class="fp-line-main"><b>${esc(p.title)}</b><i>${agoText(at)}</i></span>
-            <span class="fp-price">${yuan(memberPriceOf(p))}</span>
+            <span class="fp-price">${priceTextOf(p)}</span>
           </button>`;
             })
             .join('')}</div>
@@ -4067,6 +4302,8 @@ view.addEventListener('click', async (e) => {
     return render();
   }
   if (act === 'edit-address') return addressSheet();
+  if (act === 'go-game') return void location.assign(withShare('/game'));
+  if (act === 'go-chat') return void location.assign(withShare('/chat'));
   if (act === 'settings') return settingsSheet();
   if (act === 'share-copy') return doShareCopy();
   if (act === 'share-more') return doShareMore();
@@ -4082,16 +4319,23 @@ view.addEventListener('click', async (e) => {
     return handleCartAdd(el);
   }
   if (act === 'cart-qty') {
-    const cur = cartList().find((x) => x.id === String(el.dataset.id));
+    const skuId = el.dataset.sku || '';
+    const cur = cartList().find((x) => x.id === String(el.dataset.id) && String(x.skuId || '') === String(skuId));
     if (!cur) return;
-    const next = cur.qty + (Number(el.dataset.d) || 0);
+    const d = Number(el.dataset.d) || 0;
+    const next = cur.qty + d;
     if (next > 99) return toast('单件商品最多 99 件');
-    cartSetQty(el.dataset.id, next);
+    const p = (state.products || []).find((x) => String(x.id) === String(el.dataset.id));
+    if (d > 0 && p) {
+      const st = stockInfoOf(p, cur.skuId);
+      if (st.tracked && cur.qty >= st.left) return toast(`库存只剩 ${st.left} 件`);
+    }
+    cartSetQty(el.dataset.id, next, skuId);
     if (state.tab === 'cart') render();
     return;
   }
   if (act === 'cart-remove') {
-    cartRemove(el.dataset.id);
+    cartRemove(el.dataset.id, el.dataset.sku || '');
     toast('已移出购物车');
     if (state.tab === 'cart') render();
     return;
@@ -4177,10 +4421,22 @@ view.addEventListener('click', async (e) => {
   if (act === 'open-balance') return balanceSheet();
 
   if (act === 'buy') {
-    startBuy(el.dataset.id);
+    startBuy(el.dataset.id, el.dataset.sku || '');
+    return;
+  }
+  if (act === 'pick-sku') {
+    if (el.disabled) return;
+    // 切换规格：记住滚动位置重绘详情，价格/库存/按钮一起更新
+    const box = document.querySelector('.sheet-body') || document.querySelector('.sheet');
+    const top = box ? box.scrollTop : 0;
+    sheetState.skuId = el.dataset.sku || '';
+    goodsSheet(el.dataset.id);
+    const box2 = document.querySelector('.sheet-body') || document.querySelector('.sheet');
+    if (box2) box2.scrollTop = top;
     return;
   }
   if (act === 'goods') {
+    sheetState.skuId = '';
     goodsSheet(el.dataset.id);
     return;
   }
@@ -4260,7 +4516,17 @@ sheetEl.addEventListener('click', async (e) => {
   const act = el.dataset.act;
 
   if (act === 'buy') {
-    startBuy(el.dataset.id);
+    startBuy(el.dataset.id, el.dataset.sku || '');
+    return;
+  }
+  if (act === 'pick-sku') {
+    if (el.disabled) return;
+    const box = document.querySelector('.sheet-body') || document.querySelector('.sheet');
+    const top = box ? box.scrollTop : 0;
+    sheetState.skuId = el.dataset.sku || '';
+    goodsSheet(el.dataset.id);
+    const box2 = document.querySelector('.sheet-body') || document.querySelector('.sheet');
+    if (box2) box2.scrollTop = top;
     return;
   }
   if (act === 'cart-add') {
@@ -4535,8 +4801,17 @@ sheetEl.addEventListener('click', async (e) => {
       const { viewer } = await api('/api/auth/profile', { method: 'POST', body: JSON.stringify({ address }) });
       state.viewer = viewer;
       state.viewer.orders = state.orders;
-      closeSheet();
       toast('地址已保存');
+      // 从确认订单页进来填地址：存完直接回确认单，新地址立即生效
+      if (sheetState.type === 'cart-confirm') {
+        render();
+        return cartConfirmSheet();
+      }
+      if (sheetState.type === 'confirm' && sheetState.product && !sheetState.product.recharge && !sheetState.product.contentId) {
+        render();
+        return confirmSheet();
+      }
+      closeSheet();
       render();
     } catch (err) {
       toast(err.message);
@@ -4781,6 +5056,39 @@ async function bootstrap() {
   render();
   registerSW();
   maybeShowInstallHint();
+  refreshChatUnread();
+  startChatUnreadPoll();
+}
+
+/** 客服未读：同步首页头部的红点 */
+function syncChatBadge() {
+  const dot = document.getElementById('chatDot');
+  if (dot) dot.classList.toggle('on', state.chatUnread > 0);
+}
+
+/** 拉一次客服未读数（未登录直接归零） */
+async function refreshChatUnread() {
+  if (!state.viewer) {
+    state.chatUnread = 0;
+    syncChatBadge();
+    return;
+  }
+  try {
+    const r = await api('/api/chat/unread');
+    state.chatUnread = Number(r.unread) || 0;
+  } catch (e) {
+    /* 未读拿不到不影响主流程 */
+  }
+  syncChatBadge();
+}
+
+let chatUnreadTimer = null;
+function startChatUnreadPoll() {
+  if (chatUnreadTimer) return;
+  chatUnreadTimer = setInterval(() => {
+    if (document.hidden || !state.viewer) return;
+    refreshChatUnread();
+  }, 60000);
 }
 
 /** 从收银台返回后：轮询订单状态拿到最终结果 */
@@ -4809,6 +5117,8 @@ async function pollOrder(orderId, tries = 12, interval = 450) {
   } catch (e) {
     /* ignore */
   }
+
+  setupNetworkWatch();
 
   try {
     await bootstrap();
@@ -4866,3 +5176,49 @@ async function pollOrder(orderId, tries = 12, interval = 450) {
     }
   }
 })();
+
+/* ---------------- 网络状态 / 图片兜底 ---------------- */
+
+/** 断网提示条：连上后自动重新拉数据，不用用户手动刷新 */
+function setupNetworkWatch() {
+  const bar = $('#offlineBar');
+  const text = $('#offlineText');
+  const paint = (offline) => {
+    if (bar) bar.hidden = !offline;
+    document.body.classList.toggle('is-offline', offline);
+  };
+
+  window.addEventListener('offline', () => paint(true));
+
+  window.addEventListener('online', async () => {
+    paint(false);
+    if (!state.loaded) return;
+    if (text) text.textContent = '网络已恢复，正在同步…';
+    toast('网络已恢复，正在同步');
+    const keep = view.scrollTop;
+    try {
+      pendingScroll = keep;
+      await bootstrap();
+      startCountdownTick();
+    } catch (e) {
+      pendingScroll = null;
+      toast(e.message || '同步失败，请下拉重试');
+    }
+  });
+
+  paint(navigator.onLine === false);
+}
+
+// 图片加载失败：给容器打标，CSS 用占位块兜住，避免露出破图图标
+document.addEventListener(
+  'error',
+  (e) => {
+    const el = e.target;
+    if (!el || el.tagName !== 'IMG') return;
+    if (el.classList.contains('img-broken')) return;
+    el.classList.add('img-broken');
+    const box = el.parentElement;
+    if (box) box.classList.add('img-fallback');
+  },
+  true
+);

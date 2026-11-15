@@ -42,6 +42,15 @@
       bindtap="onTapProduct"
       hover-class="product-hover"
     >
+      <image
+        wx:if="{{item.image}}"
+        class="product-img"
+        src="{{item.image}}"
+        mode="aspectFill"
+        lazy-load
+        data-idx="{{index}}"
+        binderror="onImgError"
+      />
       <view class="product-top">
         <view class="product-info">
           <view class="product-title-line">
