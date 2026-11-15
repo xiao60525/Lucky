@@ -912,6 +912,30 @@ function shippingSnapshot(addr) {
   return out;
 }
 
+/**
+ * 下单时的收货地址：优先用前端选中的地址簿条目，找不到就退回默认地址，
+ * 最后退回 app_users.address（老数据/未迁移用户）
+ */
+async function resolveShipping(userId, addressId, profile) {
+  const aid = String(addressId || '').trim();
+  if (aid && userId && store.enabled) {
+    try {
+      const { addresses } = await store.addrList(userId);
+      const hit = addresses.find((a) => a.id === aid) || addresses.find((a) => a.isDefault) || addresses[0];
+      if (hit) {
+        return shippingSnapshot({
+          name: hit.name,
+          phone: hit.phone,
+          detail: [hit.region, hit.detail].filter(Boolean).join(' '),
+        });
+      }
+    } catch (e) {
+      console.warn('[order] 读取地址簿失败，退回默认地址:', e.message);
+    }
+  }
+  return shippingSnapshot(profile && profile.address);
+}
+
 /** 订单明细：购物车订单有多件，老订单没有 items 就按单件补一条 */
 function orderItems(order) {
   const list = Array.isArray(order && order.items) ? order.items : [];
@@ -2126,7 +2150,7 @@ async function handleApi(req, res, url) {
       try {
         const buyer = await users.getUser(uid);
         cartMember = Boolean(buyer && users.isMember(buyer.profile));
-        cartShipping = shippingSnapshot(buyer && buyer.profile && buyer.profile.address);
+        cartShipping = await resolveShipping(uid, body.addressId, buyer && buyer.profile);
       } catch (e) {
         console.warn('[order:cart] 读取会员状态失败:', e.message);
       }
@@ -2253,7 +2277,7 @@ async function handleApi(req, res, url) {
       try {
         const buyer = await users.getUser(uid);
         buyerIsMember = Boolean(buyer && users.isMember(buyer.profile));
-        buyerShipping = shippingSnapshot(buyer && buyer.profile && buyer.profile.address);
+        buyerShipping = await resolveShipping(uid, body.addressId, buyer && buyer.profile);
       } catch (e) {
         console.warn('[order] 读取会员状态失败:', e.message);
       }
@@ -3149,6 +3173,85 @@ async function handleApi(req, res, url) {
       return sendJSON(res, 200, await store.dmUnread(uid));
     } catch (e) {
       return sendJSON(res, 200, { unread: 0, pending: 0, transferIn: 0 });
+    }
+  }
+
+  /* ---------------- 收货地址簿 ---------------- */
+
+  // 地址相关错误统一翻译
+  const addrFail = (res, e, fallback) => {
+    const m = String((e && e.message) || '');
+    if (m.includes('addr_missing')) return sendJSON(res, 404, { message: '这个地址不存在，可能已被删除' });
+    if (m.includes('addr_name_required')) return sendJSON(res, 400, { message: '请填写收货人姓名' });
+    if (m.includes('addr_phone_bad')) return sendJSON(res, 400, { message: '请填写正确的 11 位手机号' });
+    if (m.includes('addr_detail_short')) return sendJSON(res, 400, { message: '详细地址太短了，写清街道门牌' });
+    if (m.includes('addr_too_many')) return sendJSON(res, 400, { message: '最多保存 20 个收货地址' });
+    return sendJSON(res, 502, { message: fallback + '：' + m });
+  };
+
+  // 地址列表
+  if (pathname === '/api/address/list' && method === 'GET') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    try {
+      return sendJSON(res, 200, await store.addrList(uid));
+    } catch (e) {
+      return addrFail(res, e, '读取收货地址失败');
+    }
+  }
+
+  // 新增 / 编辑地址：body.id 为空即新增
+  if (pathname === '/api/address/save' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    const body = await readBody(req);
+    const name = String(body.name || '').trim();
+    const phone = String(body.phone || '').replace(/\D/g, '');
+    const detail = String(body.detail || '').trim();
+    if (!name) return sendJSON(res, 400, { message: '请填写收货人姓名' });
+    if (!/^1[3-9]\d{9}$/.test(phone)) return sendJSON(res, 400, { message: '请填写正确的 11 位手机号' });
+    if (detail.length < 4) return sendJSON(res, 400, { message: '详细地址太短了，写清街道门牌' });
+    try {
+      const out = await store.addrSave(uid, {
+        id: String(body.id || '').trim(),
+        name,
+        phone,
+        region: String(body.region || '').trim(),
+        detail,
+        tag: String(body.tag || '').trim(),
+        isDefault: Boolean(body.isDefault),
+      });
+      return sendJSON(res, 200, out);
+    } catch (e) {
+      return addrFail(res, e, '保存地址失败');
+    }
+  }
+
+  // 删除地址
+  if (pathname === '/api/address/delete' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    const body = await readBody(req);
+    const id = String(body.id || '').trim();
+    if (!id) return sendJSON(res, 400, { message: '缺少地址编号' });
+    try {
+      return sendJSON(res, 200, await store.addrDelete(uid, id));
+    } catch (e) {
+      return addrFail(res, e, '删除地址失败');
+    }
+  }
+
+  // 设为默认地址
+  if (pathname === '/api/address/default' && method === 'POST') {
+    const uid = currentUserId(req);
+    if (!uid) return sendJSON(res, 401, { message: '请先登录' });
+    const body = await readBody(req);
+    const id = String(body.id || '').trim();
+    if (!id) return sendJSON(res, 400, { message: '缺少地址编号' });
+    try {
+      return sendJSON(res, 200, await store.addrDefault(uid, id));
+    } catch (e) {
+      return addrFail(res, e, '设置默认地址失败');
     }
   }
 

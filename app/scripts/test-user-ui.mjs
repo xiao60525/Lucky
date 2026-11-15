@@ -123,6 +123,21 @@ const BOOTSTRAP = {
   orders: [],
 };
 
+// 多收货地址簿（对应 /api/address/*）
+const ADDRS = [
+  {
+    id: 'ad_base',
+    name: '张三',
+    phone: '13800001234',
+    phoneMasked: '138****1234',
+    region: '北京市',
+    detail: '朝阳区测试路 1 号',
+    tag: '家',
+    isDefault: true,
+    updatedAt: Date.now(),
+  },
+];
+
 let token = '';
 const calls = [];
 function fakeFetch(url, opts = {}) {
@@ -198,6 +213,38 @@ function fakeFetch(url, opts = {}) {
     Object.assign(VIEWER, body);
     if (body.nickname) VIEWER.initial = body.nickname.slice(0, 1);
     return json({ viewer: VIEWER });
+  }
+  if (path === '/api/address/list' && method === 'GET')
+    return token ? json({ addresses: ADDRS, focusId: '' }) : json({ message: '请先登录' }, 401);
+  if (path === '/api/address/save' && method === 'POST') {
+    const b = body || {};
+    let a = ADDRS.find((x) => x.id === b.id);
+    if (!a) {
+      a = { id: 'ad_' + (ADDRS.length + 1), isDefault: ADDRS.length === 0, updatedAt: Date.now() };
+      ADDRS.push(a);
+    }
+    Object.assign(a, {
+      name: b.name || '',
+      phone: String(b.phone || '').replace(/\D/g, ''),
+      phoneMasked: String(b.phone || '').replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2'),
+      region: b.region || '',
+      detail: b.detail || '',
+      tag: b.tag || '',
+      updatedAt: Date.now(),
+    });
+    if (b.isDefault) ADDRS.forEach((x) => (x.isDefault = x.id === a.id));
+    return json({ addresses: ADDRS, focusId: a.id });
+  }
+  if (path === '/api/address/default' && method === 'POST') {
+    ADDRS.forEach((x) => (x.isDefault = x.id === (body || {}).id));
+    return json({ addresses: ADDRS, focusId: (body || {}).id });
+  }
+  if (path === '/api/address/delete' && method === 'POST') {
+    const id = (body || {}).id;
+    const i = ADDRS.findIndex((x) => x.id === id);
+    if (i >= 0) ADDRS.splice(i, 1);
+    if (ADDRS.length && !ADDRS.some((x) => x.isDefault)) ADDRS[0].isDefault = true;
+    return json({ addresses: ADDRS, focusId: '' });
   }
   if (path === '/api/auth/password') return json({ ok: true });
   if (path === '/api/auth/phone') {
@@ -510,7 +557,12 @@ check('显示昵称', text('.profile-name').includes('测试用户'), text('.pro
 check('显示脱敏手机号', text('.profile-sub').includes('138****1234'), text('.profile-sub'));
 const stats = [...window.document.querySelectorAll('.stat b')].map((e) => e.textContent.trim());
 check('余额/积分两项', stats.length === 2 && stats[0] === '¥12.00' && stats[1] === '100', stats.join(','));
-check('收货地址已显示', text('.addr-name').includes('张三') && text('.addr-detail').includes('北京市'), text('.addr-detail'));
+check('我的页不再单独占一栏放地址', !$('.addr-row') && !text('#view').includes('还没有收货地址'));
+check(
+  '设置中心入口带地址数量',
+  text('[data-act="settings"]').includes('个地址') || text('[data-act="settings"]').includes('地址'),
+  text('[data-act="settings"]').replace(/\s+/g, ' ')
+);
 check('页面已无优惠券区块', !text('#view').includes('优惠券') && window.document.querySelectorAll('.coupon').length === 0);
 check('会员卡显示生效中', text('.member-card').includes('会员生效中') && text('.member-card').includes('剩'), text('.member-card'));
 
@@ -731,15 +783,61 @@ $('.sheet [data-act="toggle-dark"]').dispatchEvent(new window.MouseEvent('click'
 await wait(40);
 check('深色模式可关闭', !window.document.body.classList.contains('dark'));
 
-// 8. 改地址
-$('[data-act="edit-address"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+// 8. 收货地址：设置中心 → 地址簿 → 多地址增删改
+$('[data-act="settings"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
+$('.sheet [data-act="address-book"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(80);
+check('地址簿弹层打开', text('.sheet h3').includes('收货地址'), text('.sheet h3'));
+check('默认地址显示在列表里', $('.addr-card') && text('.addr-card').includes('张三') && text('.addr-card').includes('北京市'));
+check('默认地址有「默认」标记', Boolean($('.ac-def')));
+
+// 新增第二个地址
+$('.sheet [data-act="addr-add"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
 await wait(40);
+check('新增表单为空', ($('#addrName') || {}).value === '', ($('#addrName') || {}).value || '');
 $('#addrName').value = '李四';
 $('#addrPhone').value = '13900001111';
-$('#addrDetail').value = '上海市浦东新区测试路 2 号';
-$('[data-act="save-address"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
-await wait(80);
-check('地址已更新', text('.addr-name').includes('李四') && text('.addr-detail').includes('上海市'), text('.addr-detail'));
+$('#addrRegion').value = '上海市';
+$('#addrDetail').value = '浦东新区测试路 2 号';
+$('.sheet [data-act="addr-tag"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+$('[data-act="addr-save"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(120);
+check('新增地址已保存', window.document.querySelectorAll('.addr-card').length === 2, String(window.document.querySelectorAll('.addr-card').length));
+check('新地址内容正确', text('.sheet').includes('李四') && text('.sheet').includes('浦东新区测试路 2 号'), text('.sheet').slice(0, 90));
+
+// 设为默认
+const newCard = [...window.document.querySelectorAll('.addr-card')].find((c) => c.textContent.includes('李四'));
+newCard.querySelector('[data-act="addr-default"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(100);
+const defCard = [...window.document.querySelectorAll('.addr-card')].find((c) => c.classList.contains('is-default'));
+check('设为默认后默认标记跟着走', Boolean(defCard) && defCard.textContent.includes('李四'), defCard ? defCard.textContent.slice(0, 20) : '无');
+
+// 编辑地址
+[...window.document.querySelectorAll('.addr-card')]
+  .find((c) => c.textContent.includes('李四'))
+  .querySelector('[data-act="addr-edit"]')
+  .dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(40);
+check('编辑表单回填', ($('#addrName') || {}).value === '李四', ($('#addrName') || {}).value || '');
+$('#addrDetail').value = '浦东新区测试路 28 号';
+$('[data-act="addr-save"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(120);
+check('编辑后地址已更新', text('.sheet').includes('测试路 28 号'), text('.sheet').slice(0, 80));
+
+// 删除地址
+[...window.document.querySelectorAll('.addr-card')]
+  .find((c) => c.textContent.includes('李四'))
+  .querySelector('[data-act="addr-del"]')
+  .dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(120);
+check('删除后只剩一个地址', window.document.querySelectorAll('.addr-card').length === 1, String(window.document.querySelectorAll('.addr-card').length));
+check('删掉默认地址后自动补默认', Boolean($('.ac-def')));
+$('.sheet [data-act="addr-back-set"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
+await wait(60);
+check('可从地址簿返回设置中心', text('.sheet h3') === '设置', text('.sheet h3'));
+closeSheetForTest();
+await wait(30);
 
 // 9. 改密码校验（从设置中心进入）
 $('[data-act="settings"]').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));

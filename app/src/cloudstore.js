@@ -1166,6 +1166,74 @@ async function friendRemove(userId, otherId) {
   );
 }
 
+/* ---------------- 收货地址（多地址簿） ---------------- */
+
+/** 地址列表（默认地址排第一；老用户首次调用会把旧单地址迁成一条） */
+async function addrList(userId) {
+  const r = await call('app_addr_list', { p_secret: secret, p_user: String(userId || '') }, '读取收货地址');
+  return addrPayload(r);
+}
+
+/** 新增 / 编辑地址：id 传空即新增 */
+async function addrSave(userId, addr) {
+  const a = addr || {};
+  const r = await call(
+    'app_addr_save',
+    {
+      p_secret: secret,
+      p_user: String(userId || ''),
+      p_id: String(a.id || ''),
+      p_name: String(a.name || ''),
+      p_phone: String(a.phone || ''),
+      p_region: String(a.region || ''),
+      p_detail: String(a.detail || ''),
+      p_tag: String(a.tag || ''),
+      p_default: Boolean(a.isDefault),
+    },
+    '保存收货地址'
+  );
+  return addrPayload(r);
+}
+
+/** 删除地址（删掉默认的会自动把最近一条提为默认） */
+async function addrDelete(userId, id) {
+  const r = await call(
+    'app_addr_delete',
+    { p_secret: secret, p_user: String(userId || ''), p_id: String(id || '') },
+    '删除收货地址'
+  );
+  return addrPayload(r);
+}
+
+/** 设为默认地址 */
+async function addrDefault(userId, id) {
+  const r = await call(
+    'app_addr_default',
+    { p_secret: secret, p_user: String(userId || ''), p_id: String(id || '') },
+    '设置默认地址'
+  );
+  return addrPayload(r);
+}
+
+/** 地址返回结构统一成 { addresses, focusId } */
+function addrPayload(r) {
+  const list = Array.isArray(r && r.addresses) ? r.addresses : [];
+  return {
+    addresses: list.map((a) => ({
+      id: String((a && a.id) || ''),
+      name: String((a && a.name) || ''),
+      phone: String((a && a.phone) || ''),
+      phoneMasked: String((a && a.phoneMasked) || ''),
+      region: String((a && a.region) || ''),
+      detail: String((a && a.detail) || ''),
+      tag: String((a && a.tag) || ''),
+      isDefault: Boolean(a && a.isDefault),
+      updatedAt: Number((a && a.updatedAt) || 0),
+    })),
+    focusId: String((r && r.focusId) || ''),
+  };
+}
+
 module.exports = {
   enabled,
   endpoint,
@@ -1222,6 +1290,10 @@ module.exports = {
   dmTransferPending,
   dmUnread,
   friendRemove,
+  addrList,
+  addrSave,
+  addrDelete,
+  addrDefault,
   applyRefund,
   myRefunds,
   cancelRefund,

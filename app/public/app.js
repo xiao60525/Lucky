@@ -42,6 +42,10 @@ const state = {
   friendUnread: 0, // 好友私聊未读消息数
   friendPending: 0, // 待处理的好友申请数
   friendTransfer: 0, // 待我收款的好友转账笔数
+  addrs: [], // 收货地址簿（默认地址排第一）
+  addrLoaded: false, // 地址簿是否已拉过
+  addrBusy: false, // 正在拉地址簿，避免重复请求
+  checkoutAddrId: '', // 本次结算选中的地址（空=用默认地址）
 };
 
 const sheetState = { type: null, product: null, order: null, channel: 'wechat', productId: '', reviewStars: 5 };
@@ -2465,20 +2469,27 @@ function renderCart() {
     </div>`;
 }
 
-/** 确认订单顶部的收货地址块：已填展示，没填引导去填（点击进地址编辑） */
+/** 确认订单顶部的收货地址块：显示当前地址，点击可切换/新增 */
 function confirmAddrHTML() {
-  const a = (state.viewer && state.viewer.address) || {};
-  const has = Boolean(a.name || a.detail);
-  return `<button class="co-addr ${has ? '' : 'is-empty'}" data-act="edit-address" type="button">
+  if (!state.addrLoaded) ensureAddrs(() => {
+    if (sheetState.type === 'cart-confirm') cartConfirmSheet();
+    else if (sheetState.type === 'confirm') confirmSheet();
+  });
+  const a = currentAddress();
+  if (!a) {
+    return `<button class="co-addr is-empty" data-act="address-book" data-pick="1" type="button">
+      <span class="co-addr-ic">📍</span>
+      <span class="co-addr-body"><b>还没有收货地址</b><i>点击添加，方便商家发货</i></span>
+      <span class="co-addr-edit">去添加</span>
+    </button>`;
+  }
+  return `<button class="co-addr" data-act="address-book" data-pick="1" type="button">
     <span class="co-addr-ic">📍</span>
     <span class="co-addr-body">
-      ${
-        has
-          ? `<b>${esc(a.name || '未填收货人')}${a.phone ? ' · ' + esc(a.phone) : ''}</b><i>${esc(a.detail)}</i>`
-          : '<b>还没有收货地址</b><i>点击填写，方便商家发货</i>'
-      }
+      <b>${esc(a.name || '未填收货人')}${a.phone ? ' · ' + esc(a.phoneMasked || a.phone) : ''}</b>
+      <i>${esc(addrText(a) || '未填写详细地址')}</i>
     </span>
-    <span class="co-addr-edit">${has ? '修改' : '去填写'}</span>
+    <span class="co-addr-edit">${(state.addrs || []).length > 1 ? '切换' : '修改'}</span>
   </button>`;
 }
 
@@ -2530,15 +2541,15 @@ function cartConfirmSheet() {
 
 function renderUserCenter() {
   const v = state.viewer;
-  const addr = v.address || {};
   const orders = v.orders || [];
-  const hasAddr = Boolean(addr.detail || addr.name);
   const msgs = messageList();
   const unreadN = msgs.filter((m) => (m.at || 0) > msgLastRead()).length;
   const msgTotal = msgs.length;
   const wishN = goodsFavList().filter((id) => (state.products || []).some((p) => String(p.id) === id)).length;
   const fpN = footprintList().filter((x) => (state.products || []).some((p) => String(p.id) === String(x.id))).length;
   const cartN = cartCount();
+  const addrN = (state.addrs || []).length;
+  const addrDef = (state.addrs || []).find((a) => a.isDefault);
 
   const orderN = (k) => orders.filter(ORDER_FILTERS[k].match).length;
   const tIn = Number(state.friendTransfer) || 0;
@@ -2588,22 +2599,6 @@ function renderUserCenter() {
     </div>
 
     ${homeCfg().modules.member ? memberBannerHTML(v) : ''}
-
-    <button class="card addr-row${hasAddr ? '' : ' is-empty'}" data-act="edit-address">
-      <span class="ar-ic">📍</span>
-      <span class="ar-body">
-        <b class="addr-name">${
-          hasAddr
-            ? esc(addr.name || '未填姓名') +
-              ' <span>' +
-              esc((addr.phone || '').replace(/^(\d{3})\d{4}(\d{4})$/, '$1****$2')) +
-              '</span>'
-            : '还没有收货地址'
-        }</b>
-        <i class="addr-detail">${hasAddr ? esc(addr.detail || '未填写详细地址') : '点这里填写，下单发货要用'}</i>
-      </span>
-      <span class="ar-edit">${hasAddr ? '修改' : '去填写'} ›</span>
-    </button>
 
     <div class="card mine-card">
       <div class="mc-head">
@@ -2686,7 +2681,9 @@ function renderUserCenter() {
         </button>
         <button class="set-row" data-act="settings">
           <span class="sr-ic">⚙️</span>
-          <span class="sr-body"><b>设置中心</b><i>${isDark() ? '深色模式开 · ' : ''}账号安全 / 外观 / 通用</i></span>
+          <span class="sr-body"><b>设置中心</b><i>${addrN ? addrN + ' 个收货地址 · ' : ''}${isDark() ? '深色模式开 · ' : ''}账号安全 / 外观${
+            addrDef && addrDef.name ? ' · 默认 ' + esc(addrDef.name) : ''
+          }</i></span>
           <i class="sr-go">›</i>
         </button>
       </div>
@@ -2720,6 +2717,10 @@ async function doAuth(isRegister) {
     setToken(out.token);
     state.viewer = out.viewer;
     state.balance = Number(out.viewer.balance) || 0; // 余额支付弹层用自己账户的余额
+    state.addrLoaded = false;
+    state.addrBusy = false;
+    state.checkoutAddrId = '';
+    loadAddrs(true).catch(() => {});
     const { orders } = await api('/api/orders');
     state.orders = dropExpiredOrders(orders);
     state.viewer.orders = state.orders;
@@ -2977,16 +2978,245 @@ async function saveAvatar(avatar) {
   }
 }
 
-function addressSheet() {
-  const a = (state.viewer && state.viewer.address) || {};
+/* ---------------- 收货地址簿（多地址） ---------------- */
+
+const ADDR_TAGS = ['家', '公司', '学校', '其他'];
+
+/** 地址一行展示：地区 + 详细地址 */
+function addrText(a) {
+  if (!a) return '';
+  return [a.region, a.detail].filter(Boolean).join(' ');
+}
+
+/** 本次结算使用的地址：选中的 → 默认的 → 第一条 */
+function currentAddress() {
+  const list = state.addrs || [];
+  if (!list.length) return null;
+  return list.find((a) => a.id === state.checkoutAddrId) || list.find((a) => a.isDefault) || list[0];
+}
+
+/** 拉一次地址簿（带缓存，force=true 强制刷新） */
+async function loadAddrs(force) {
+  if (!state.viewer) return [];
+  if (state.addrLoaded && !force) return state.addrs;
+  const r = await api('/api/address/list');
+  state.addrs = Array.isArray(r.addresses) ? r.addresses : [];
+  state.addrLoaded = true;
+  // 选中的地址被删掉了就回到默认
+  if (state.checkoutAddrId && !state.addrs.some((a) => a.id === state.checkoutAddrId)) {
+    state.checkoutAddrId = '';
+  }
+  return state.addrs;
+}
+
+/** 地址还没拉过时补拉一次，拉完回调重绘（避免弹层里空着） */
+function ensureAddrs(cb) {
+  if (state.addrLoaded || !state.viewer || state.addrBusy) return;
+  state.addrBusy = true;
+  loadAddrs(true)
+    .then(() => {
+      if (typeof cb === 'function') cb();
+    })
+    .catch(() => {})
+    .then(() => {
+      state.addrBusy = false;
+    });
+}
+
+/** 地址簿弹层：mode = manage（管理） / pick（下单时选地址） */
+async function addressBookSheet(mode) {
+  if (!state.viewer) {
+    state.tab = 'mine';
+    render();
+    return toast('登录后才能管理收货地址');
+  }
+  sheetState.type = 'address';
+  sheetState.addrMode = mode === 'pick' ? 'pick' : 'manage';
+  openSheet('<h3>收货地址</h3><p class="sheet-sub">加载中…</p>');
+  try {
+    await loadAddrs(true);
+  } catch (e) {
+    return openSheet(`<h3>收货地址</h3><p class="sheet-sub">${esc(e.message || '读取失败')}</p>
+      <button class="btn-ghost" data-act="close" style="margin-top:14px">关闭</button>`);
+  }
+  paintAddressBook();
+}
+
+/** 从结算页打开地址簿：记住返回目标，选完/返回都能回到原来的确认单 */
+function openAddrBook(mode) {
+  const back = sheetState.type === 'cart-confirm' || sheetState.type === 'confirm' ? sheetState.type : '';
+  sheetState.addrBack = mode === 'pick' ? back : '';
+  addressBookSheet(mode);
+}
+
+function paintAddressBook() {
+  const list = state.addrs || [];
+  const picking = sheetState.addrMode === 'pick';
+  const picked = currentAddress();
+  const rows = list.length
+    ? list
+        .map((a) => {
+          const on = picking && picked && picked.id === a.id;
+          return `<div class="addr-card${a.isDefault ? ' is-default' : ''}${on ? ' is-on' : ''}">
+        <button class="ac-main" data-act="addr-pick" data-id="${esc(a.id)}" type="button">
+          <div class="ac-top">
+            <b>${esc(a.name)}</b>
+            <span class="ac-phone">${esc(a.phoneMasked || a.phone)}</span>
+            ${a.tag ? `<em class="ac-tag">${esc(a.tag)}</em>` : ''}
+            ${a.isDefault ? '<em class="ac-def">默认</em>' : ''}
+          </div>
+          <div class="ac-detail">${esc(addrText(a) || '未填写详细地址')}</div>
+        </button>
+        <div class="ac-ops">
+          ${a.isDefault ? '' : `<button class="ac-op" data-act="addr-default" data-id="${esc(a.id)}">设为默认</button>`}
+          <button class="ac-op" data-act="addr-edit" data-id="${esc(a.id)}">编辑</button>
+          <button class="ac-op danger" data-act="addr-del" data-id="${esc(a.id)}">删除</button>
+        </div>
+      </div>`;
+        })
+        .join('')
+    : `<div class="addr-empty">
+        <div class="ae-ic">📭</div>
+        <p>还没有收货地址</p>
+        <i>添加后下单时可以直接选，不用每次重填</i>
+      </div>`;
+
   openSheet(`
-    <h3 class="sheet-title">收货地址</h3>
+    <div class="addr-head">
+      <h3>收货地址</h3>
+      <button class="addr-add" data-act="addr-add">＋ 新增</button>
+    </div>
+    <p class="sheet-sub">${list.length ? `共 ${list.length} 个地址${picking ? '，点一下选中' : '，最多保存 20 个'}` : '填一次，以后下单直接选'}</p>
+    <div class="addr-list">${rows}</div>
+    ${
+      picking
+        ? '<button class="btn-ghost" data-act="addr-back-pay" style="margin-top:14px">返回结算</button>'
+        : '<button class="btn-ghost" data-act="addr-back-set" style="margin-top:14px">返回设置</button>'
+    }
+  `);
+}
+
+/** 新增 / 编辑表单 */
+function addressFormSheet(id) {
+  const a = (state.addrs || []).find((x) => String(x.id) === String(id || '')) || {};
+  const isNew = !id;
+  const isDefault = isNew ? !(state.addrs || []).length : Boolean(a.isDefault);
+  openSheet(`
+    <h3>${isNew ? '新增收货地址' : '编辑收货地址'}</h3>
+    <p class="sheet-sub">姓名、手机号和详细地址都要填，下单时直接调用</p>
     <label class="field"><span>收货人</span><input id="addrName" maxlength="20" value="${esc(a.name || '')}" placeholder="姓名" /></label>
     <label class="field"><span>手机号</span><input id="addrPhone" type="tel" inputmode="numeric" maxlength="11" value="${esc(a.phone || '')}" placeholder="11 位手机号" /></label>
-    <label class="field"><span>详细地址</span><input id="addrDetail" maxlength="120" value="${esc(a.detail || '')}" placeholder="省市区 + 街道门牌" /></label>
-    <button class="btn-primary" data-act="save-address" style="margin-top:14px">保存</button>
-    <button class="btn-ghost" data-act="close" style="margin-top:10px">取消</button>
+    <label class="field"><span>所在地区</span><input id="addrRegion" maxlength="40" value="${esc(a.region || '')}" placeholder="省 / 市 / 区（选填）" /></label>
+    <label class="field field-area"><span>详细地址</span><textarea id="addrDetail" maxlength="120" rows="2" placeholder="街道、门牌号、楼层房间号">${esc(a.detail || '')}</textarea></label>
+    <p class="sheet-group">地址标签</p>
+    <div class="tag-row">
+      ${ADDR_TAGS.map(
+        (t) => `<button class="tag-chip${a.tag === t ? ' on' : ''}" data-act="addr-tag" data-tag="${esc(t)}">${esc(t)}</button>`
+      ).join('')}
+    </div>
+    <button class="set-row addr-def-row" data-act="addr-toggle-default">
+      <span>设为默认地址</span>
+      <span class="switch${isDefault ? ' on' : ''}" id="addrDefSwitch"><span class="knob"></span></span>
+    </button>
+    <button class="btn-primary" data-act="addr-save" data-id="${esc(id || '')}" style="margin-top:14px">保存</button>
+    <button class="btn-ghost" data-act="addr-book" style="margin-top:10px">返回地址列表</button>
   `);
+}
+
+/** 保存地址（新增或编辑） */
+async function saveAddressForm(id) {
+  const name = (($('#addrName') || {}).value || '').trim();
+  const phone = (($('#addrPhone') || {}).value || '').replace(/\D/g, '');
+  const region = (($('#addrRegion') || {}).value || '').trim();
+  const detail = (($('#addrDetail') || {}).value || '').trim();
+  if (!name) return toast('请填写收货人');
+  if (!/^1[3-9]\d{9}$/.test(phone)) return toast('请填写正确的 11 位手机号');
+  if (detail.length < 4) return toast('详细地址太短了，写清街道门牌');
+  const sw = $('#addrDefSwitch');
+  const isDefault = sw ? sw.classList.contains('on') : false;
+  const tagBtn = window.document.querySelector('.tag-chip.on');
+  const tag = tagBtn ? tagBtn.dataset.tag || '' : '';
+  const btn = window.document.querySelector('[data-act="addr-save"]');
+  if (btn) {
+    btn.disabled = true;
+    btn.textContent = '保存中…';
+  }
+  try {
+    const r = await api('/api/address/save', {
+      method: 'POST',
+      body: JSON.stringify({ id: id || '', name, phone, region, detail, tag, isDefault }),
+    });
+    state.addrs = r.addresses || [];
+    const savedId = r.focusId || '';
+    if (savedId) state.checkoutAddrId = savedId;
+    toast(id ? '地址已更新' : '地址已添加');
+    paintAddressBook();
+    render();
+  } catch (e) {
+    toast(e.message || '保存失败');
+    if (btn) {
+      btn.disabled = false;
+      btn.textContent = '保存';
+    }
+  }
+}
+
+/** 设为默认 */
+async function setDefaultAddress(id) {
+  try {
+    const r = await api('/api/address/default', { method: 'POST', body: JSON.stringify({ id }) });
+    state.addrs = r.addresses || [];
+    toast('已设为默认地址');
+    paintAddressBook();
+    render();
+  } catch (e) {
+    toast(e.message || '设置失败');
+  }
+}
+
+/** 删除地址（二次确认） */
+async function deleteAddress(id) {
+  const a = (state.addrs || []).find((x) => String(x.id) === String(id)) || {};
+  if (!window.confirm(`确定删除「${a.name || '这个'}」的收货地址吗？`)) return;
+  try {
+    const r = await api('/api/address/delete', { method: 'POST', body: JSON.stringify({ id }) });
+    state.addrs = r.addresses || [];
+    if (state.checkoutAddrId === id) state.checkoutAddrId = '';
+    toast('地址已删除');
+    paintAddressBook();
+    render();
+  } catch (e) {
+    toast(e.message || '删除失败');
+  }
+}
+
+/** 在地址簿里点中一条：结算场景直接带回确认单 */
+async function pickAddress(id) {
+  state.checkoutAddrId = String(id || '');
+  const target = (state.addrs || []).find((a) => a.id === state.checkoutAddrId) || null;
+  if (sheetState.addrMode === 'pick') {
+    if (sheetState.addrBack === 'cart-confirm') {
+      cartConfirmSheet();
+      return;
+    }
+    if (sheetState.addrBack === 'confirm') {
+      confirmSheet();
+      return;
+    }
+    // 从「我的」直接进来选：顺手设为默认，下次结算更省事
+    if (target && !target.isDefault) {
+      try {
+        const r = await api('/api/address/default', { method: 'POST', body: JSON.stringify({ id: target.id }) });
+        state.addrs = r.addresses || [];
+      } catch (e) {
+        /* 设默认失败不影响选择 */
+      }
+    }
+    paintAddressBook();
+    render();
+    return toast('已选择：' + addrText(target || {}));
+  }
+  addressFormSheet(state.checkoutAddrId);
 }
 
 function passwordSheet() {
@@ -3019,6 +3249,11 @@ function logout() {
   state.viewer = null;
   state.orders = [];
   state.balance = 0; // 游客没有余额概念，避免残留上一个用户的数字
+  // 地址属于个人隐私数据，退出时一定要清掉
+  state.addrs = [];
+  state.addrLoaded = false;
+  state.addrBusy = false;
+  state.checkoutAddrId = '';
   toast('已退出登录');
   render();
 }
@@ -3060,14 +3295,28 @@ function localStorageSize() {
   }
 }
 
-/** 设置中心弹层：账号安全 / 外观 / 通用 / 其他 */
+/** 设置中心弹层：账号安全 / 收货地址 / 外观 / 通用 / 其他 */
 function settingsSheet() {
+  sheetState.type = 'settings';
+  if (!state.addrLoaded) {
+    ensureAddrs(() => {
+      if (sheetState.type === 'settings') settingsSheet();
+    });
+  }
   const dark = isDark();
+  const addrs = state.addrs || [];
+  const def = addrs.find((a) => a.isDefault);
+  const addrSub = addrs.length
+    ? `${addrs.length} 个地址${def ? ' · 默认 ' + (def.name || '') + ' ' + (def.phoneMasked || '') : ' · 还没设默认'}`
+    : '添加后可保存多个地址，下单直接选';
   openSheet(`
     <h3 class="sheet-title">设置</h3>
     <p class="sheet-group">账号与安全</p>
     <button class="set-row" data-act="change-password"><span>修改密码</span><i>›</i></button>
-    <button class="set-row" data-act="edit-address"><span>收货地址</span><i>›</i></button>
+    <button class="set-row" data-act="address-book">
+      <span class="sr-body"><b>收货地址</b><i>${esc(addrSub)}</i></span>
+      <i>›</i>
+    </button>
     <p class="sheet-group">外观</p>
     <button class="set-row" data-act="toggle-dark">
       <span>深色模式</span>
@@ -3623,6 +3872,17 @@ async function doPay() {
         : sheetState.product.recharge
           ? { recharge: sheetState.product.amount }
           : { productId: sheetState.product.id, skuId: sheetState.product.skuId || '' };
+    // 实体商品带上选中的收货地址（服务端会再校验，找不到就退回默认地址）
+    const needShip = cartItems
+      ? cartItems.some((it) => {
+          const p = (state.products || []).find((x) => String(x.id) === String(it.productId));
+          return p && !p.contentId && !p.recharge && !(Number(p.memberDays) > 0);
+        })
+      : !sheetState.product.contentId && !sheetState.product.recharge && !(Number(sheetState.product.memberDays) > 0);
+    if (needShip) {
+      const a = currentAddress();
+      if (a) payload.addressId = a.id;
+    }
     const created = await api('/api/orders', {
       method: 'POST',
       body: JSON.stringify(payload),
@@ -4349,7 +4609,7 @@ view.addEventListener('click', async (e) => {
     state.tab = 'content';
     return render();
   }
-  if (act === 'edit-address') return addressSheet();
+  if (act === 'edit-address' || act === 'address-book') return openAddrBook(el.dataset.pick === '1' ? 'pick' : 'manage');
   if (act === 'go-game') return void location.assign(withShare('/game'));
   if (act === 'go-chat') return void location.assign(withShare('/chat'));
   if (act === 'go-friends') {
@@ -4662,7 +4922,36 @@ sheetEl.addEventListener('click', async (e) => {
     return settingsSheet(); // 重绘开关状态
   }
   if (act === 'change-password') return passwordSheet();
-  if (act === 'edit-address') return addressSheet();
+  if (act === 'address-book') return openAddrBook(el.dataset.pick === '1' ? 'pick' : 'manage');
+  if (act === 'addr-book') return addressBookSheet(sheetState.addrMode || 'manage');
+  if (act === 'addr-back-set') return settingsSheet();
+  if (act === 'addr-back-pay') {
+    if (sheetState.addrBack === 'cart-confirm') return cartConfirmSheet();
+    if (sheetState.addrBack === 'confirm') return confirmSheet();
+    return settingsSheet();
+  }
+  if (act === 'addr-add') return addressFormSheet('');
+  if (act === 'addr-edit') return addressFormSheet(el.dataset.id || '');
+  if (act === 'addr-pick') {
+    // 管理模式下点卡片是「编辑」，选地址模式下才是「选中」
+    if ((sheetState.addrMode || 'manage') === 'pick') return pickAddress(el.dataset.id || '');
+    return addressFormSheet(el.dataset.id || '');
+  }
+  if (act === 'addr-default') return setDefaultAddress(el.dataset.id || '');
+  if (act === 'addr-del') return deleteAddress(el.dataset.id || '');
+  if (act === 'addr-save') return saveAddressForm(el.dataset.id || '');
+  if (act === 'addr-tag') {
+    const chips = window.document.querySelectorAll('.tag-chip');
+    const on = el.classList.contains('on');
+    Array.prototype.forEach.call(chips, (c) => c.classList.remove('on'));
+    if (!on) el.classList.add('on');
+    return;
+  }
+  if (act === 'addr-toggle-default') {
+    const sw = $('#addrDefSwitch');
+    if (sw) sw.classList.toggle('on');
+    return;
+  }
   if (act === 'about') return aboutSheet();
   if (act === 'refresh') {
     closeSheet();
@@ -4847,36 +5136,6 @@ sheetEl.addEventListener('click', async (e) => {
       toast(err.message);
     }
     return;
-  }
-
-  if (act === 'save-address') {
-    const address = {
-      name: (($('#addrName') || {}).value || '').trim(),
-      phone: (($('#addrPhone') || {}).value || '').replace(/\D/g, ''),
-      detail: (($('#addrDetail') || {}).value || '').trim(),
-    };
-    if (!address.name) return toast('请填写收货人');
-    if (address.phone && address.phone.length !== 11) return toast('手机号需 11 位');
-    if (!address.detail) return toast('请填写详细地址');
-    try {
-      const { viewer } = await api('/api/auth/profile', { method: 'POST', body: JSON.stringify({ address }) });
-      state.viewer = viewer;
-      state.viewer.orders = state.orders;
-      toast('地址已保存');
-      // 从确认订单页进来填地址：存完直接回确认单，新地址立即生效
-      if (sheetState.type === 'cart-confirm') {
-        render();
-        return cartConfirmSheet();
-      }
-      if (sheetState.type === 'confirm' && sheetState.product && !sheetState.product.recharge && !sheetState.product.contentId) {
-        render();
-        return confirmSheet();
-      }
-      closeSheet();
-      render();
-    } catch (err) {
-      toast(err.message);
-    }
   }
 
   if (act === 'save-password') {
@@ -5103,6 +5362,10 @@ async function bootstrap() {
   state.orders = data.orders;
   await loadViewer();
   if (state.viewer) state.viewer.orders = state.orders;
+  // 地址簿：登录后后台拉一次，设置中心与结算页直接有数据
+  if (state.viewer) {
+    loadAddrs(true).catch(() => {});
+  }
   // 我的评价（「待评价」计数要用）：不阻塞首屏，回来补一次渲染
   if (state.viewer) {
     refreshMyReviews().then(() => {

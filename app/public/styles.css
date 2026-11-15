@@ -2915,3 +2915,86 @@ body.dark .set-row:active { background: rgba(255, 255, 255, 0.05); }
 body.dark .share-btn { background: #262a36; color: #a9abf5; }
 body.dark .addr-row.is-empty .ar-ic { background: rgba(217, 100, 11, 0.2); }
 .addr-row .addr-name span { font-size: 12px; color: var(--muted); font-weight: 400; margin-left: 2px; }
+
+/* ------------------------------------------------------------------
+   收货地址簿（多地址）
+------------------------------------------------------------------ */
+.addr-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.addr-head h3 { margin: 0; }
+.addr-add {
+  flex: none; font-size: 12.5px; font-weight: 600; color: var(--accent);
+  background: rgba(47, 107, 255, 0.09); padding: 6px 12px; border-radius: 999px;
+  transition: transform 0.12s;
+}
+.addr-add:active { transform: scale(0.95); }
+
+.addr-list { display: flex; flex-direction: column; gap: 10px; margin-top: 12px; }
+.addr-card {
+  position: relative; border: 1px solid var(--line); border-radius: 14px;
+  background: #fff; overflow: hidden; transition: box-shadow 0.15s, border-color 0.15s;
+}
+.addr-card.is-default {
+  border-color: rgba(47, 107, 255, 0.4);
+  background: linear-gradient(180deg, rgba(47, 107, 255, 0.055), #fff 62%);
+}
+.addr-card.is-on { border-color: var(--accent); box-shadow: 0 0 0 2px rgba(47, 107, 255, 0.16); }
+.ac-main { display: block; width: 100%; text-align: left; padding: 12px 13px 10px; }
+.ac-main:active { background: rgba(0, 0, 0, 0.02); }
+.ac-top { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+.ac-top b { font-size: 14.5px; font-weight: 700; letter-spacing: -0.2px; }
+.ac-phone { font-size: 13px; color: var(--muted); }
+.ac-tag {
+  font-style: normal; font-size: 10.5px; padding: 1px 7px; border-radius: 7px;
+  background: var(--soft); color: var(--muted);
+}
+.ac-def {
+  font-style: normal; font-size: 10.5px; font-weight: 600; padding: 1px 7px; border-radius: 7px;
+  background: rgba(47, 107, 255, 0.12); color: var(--accent);
+}
+.ac-detail {
+  margin-top: 5px; font-size: 12.5px; line-height: 1.5; color: var(--muted);
+  word-break: break-all;
+}
+.ac-ops { display: flex; border-top: 1px solid var(--line); }
+.ac-op {
+  flex: 1; padding: 9px 0; font-size: 12.5px; color: var(--muted);
+  border-left: 1px solid var(--line);
+}
+.ac-op:first-child { border-left: 0; }
+.ac-op:active { background: rgba(0, 0, 0, 0.035); }
+.ac-op.danger { color: var(--danger); }
+
+.addr-empty { text-align: center; padding: 26px 10px 22px; }
+.ae-ic { font-size: 30px; }
+.addr-empty p { margin: 8px 0 4px; font-size: 14px; font-weight: 600; }
+.addr-empty i { font-style: normal; font-size: 12px; color: var(--muted); }
+
+.tag-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 2px 0 12px; }
+.tag-chip {
+  font-size: 12.5px; padding: 6px 14px; border-radius: 999px;
+  border: 1px solid var(--line); color: var(--muted); background: transparent;
+}
+.tag-chip.on {
+  border-color: var(--accent); color: var(--accent);
+  background: rgba(47, 107, 255, 0.08); font-weight: 600;
+}
+.field-area textarea {
+  width: 100%; padding: 10px 14px; font-size: 15px; line-height: 1.5;
+  border: 1px solid var(--line); border-radius: 14px; background: #fafbff;
+  color: var(--text); outline: none; resize: none; font-family: inherit;
+  transition: border-color 0.15s, background 0.15s;
+}
+.field-area textarea:focus { border-color: var(--accent); background: #fff; }
+.addr-def-row {
+  border: 1px solid var(--line); border-radius: 14px;
+  padding: 12px 14px; margin-bottom: 4px;
+}
+
+body.dark .addr-card { background: #22252f; border-color: #343948; }
+body.dark .addr-card.is-default {
+  background: linear-gradient(180deg, rgba(122, 150, 255, 0.12), #22252f 62%);
+  border-color: rgba(122, 150, 255, 0.38);
+}
+body.dark .addr-add { background: rgba(122, 150, 255, 0.14); color: #a9b6ff; }
+body.dark .field-area textarea { background: #1e2129; border-color: #343948; }
+body.dark .field-area textarea:focus { background: #23262f; }
