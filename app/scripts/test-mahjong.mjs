@@ -1,6 +1,6 @@
 /**
  * 南京麻将 · 逻辑与界面自测（jsdom）
- * 覆盖：胡牌判定（平胡/七对/对对胡）、番型算花、发牌、出牌、AI 出牌、页面渲染
+ * 覆盖：胡牌判定（平胡/七对/对对胡）、番型算花、144 张带花（补花）、不吃牌、发牌、出牌、AI、渲染
  * 用法：node scripts/test-mahjong.mjs
  */
 import { readFileSync } from 'node:fs';
@@ -107,6 +107,17 @@ try {
   });
   ok('对对胡 +40', names(dui).includes('对对胡'), names(dui).join('/'));
 
+  const withHua = MJ.scoreOf({
+    hand: S('m1 m2 m3 m4 m5 m6 m7 m8 m9 s1 s2 s3 p5 p5'),
+    melds: [],
+    selfDraw: false,
+    gangDraw: false,
+    wallLeft: 40,
+    flowerCount: 3,
+  });
+  ok('每张花牌 +2 花', withHua.flowers === 40 + 6, String(withHua.flowers));
+  ok('花牌单列一行番型', names(withHua).includes('花牌 ×3'), names(withHua).join('/'));
+
   const gangkai = MJ.scoreOf({
     hand: S('m1 m2 m3 m4 m5 m6 m7 m8 m9 s1 s2 s3 p5 p5'),
     melds: [],
@@ -116,10 +127,62 @@ try {
   });
   ok('杠上开花 +40 且海底 +10', names(gangkai).includes('杠上开花') && names(gangkai).includes('海底捞月'), names(gangkai).join('/'));
 
-  // ---------- 3. 发牌 ----------
+  // ---------- 2.5 胡牌权 ----------
+  const pingHand = S('m1 m2 m3 m4 m5 m6 m7 m8 m9 s1 s2 s3 p5 p5');
+  const pengMelds = [{ type: 'peng', tiles: ['z1', 'z1', 'z1'], from: 1 }];
+  const pengHand = S('m1 m2 m3 m4 m5 m6 m7 m8 m9 s1 s2 s3 p5 p5');
+  const fakeP = (n) => ({ flowers: Array.from({ length: n }, () => 'h1'), melds: pengMelds });
+  ok('门清有胡牌权', MJ.hasWinRight({ flowers: [], melds: [] }, pingHand, []) === true);
+  ok('碰过牌且硬花不足 4 张 → 无胡牌权', MJ.hasWinRight(fakeP(3), pengHand, pengMelds) === false);
+  ok('碰过牌但亮出 4 张硬花 → 可以胡', MJ.hasWinRight(fakeP(4), pengHand, pengMelds) === true);
+  ok(
+    '大胡（对对胡）不受胡牌权限制',
+    MJ.hasWinRight(fakeP(0), S('m1 m1 m1 m2 m2 m2 s3 s3 s3 p4 p4'), pengMelds) === true
+  );
+
+  // ---------- 3. 发牌：144 张带花 ----------
   const st = MJ.state;
-  ok('四家各发 13 张（庄家多摸一张）', [0, 1, 2, 3].every((i) => st.players[i].hand.length >= 13), st.players.map((p) => p.hand.length).join('/'));
-  ok('牌墙数量正确', st.wall.length + st.players.reduce((s2, p) => s2 + p.hand.length, 0) === 136, String(st.wall.length));
+  const sumBy = (fn) => st.players.reduce((a, p) => a + fn(p), 0);
+  ok('四家各发 13 张主牌', [0, 1, 2, 3].every((i) => st.players[i].hand.length === 13), st.players.map((p) => p.hand.length).join('/'));
+  ok(
+    '牌张总数 144（108 序数 + 16 风牌 + 20 硬花）',
+    st.wall.length + sumBy((p) => p.hand.length) + sumBy((p) => p.flowers.length) === 144,
+    `牌墙 ${st.wall.length} + 手牌 ${sumBy((p) => p.hand.length)} + 花牌 ${sumBy((p) => p.flowers.length)}`
+  );
+  const huaInWall = st.wall.filter((t) => MJ.isHua(t.k)).length;
+  ok(
+    '20 张硬花一张不少（牌墙里或已亮出）',
+    huaInWall + sumBy((p) => p.flowers.length) === MJ.HUA_TOTAL && MJ.HUA_TOTAL === 20,
+    `${huaInWall + sumBy((p) => p.flowers.length)} / ${MJ.HUA_TOTAL}`
+  );
+  ok('硬花不会进手牌', st.players.every((p) => p.hand.every((t) => !MJ.isHua(t.k))));
+  ok('中发白不在手牌牌种里（当硬花用）', st.players.every((p) => p.hand.every((t) => !/^z[567]$/.test(t.k))));
+  const allTileKinds = st.wall.map((t) => t.k).concat(...st.players.map((p) => p.flowers));
+  ok(
+    '中发白各 4 张（12 张硬花）',
+    ['f1', 'f2', 'f3'].every((k) => allTileKinds.filter((x) => x === k).length === 4),
+    ['f1', 'f2', 'f3'].map((k) => k + ':' + allTileKinds.filter((x) => x === k).length).join(' ')
+  );
+  ok(
+    '季花各 1 张',
+    MJ.HUA_KINDS.every((k) => allTileKinds.filter((x) => x === k).length === 1),
+    MJ.HUA_KINDS.join(',')
+  );
+
+  // 补花：往牌墙顶塞一张花牌，摸牌时应亮出并继续补
+  const p1 = st.players[1];
+  const hb = p1.flowers.length;
+  const handBefore = p1.hand.length;
+  st.wall.push(MJ.newTile('h3'));
+  const drew = MJ.drawFor(p1);
+  ok(
+    '摸到花牌自动亮出并从牌尾补一张',
+    drew && drew.k[0] !== 'h' && p1.flowers.length >= hb + 1 && p1.hand.length === handBefore + 1,
+    `花 ${hb} -> ${p1.flowers.length}，手牌 ${handBefore} -> ${p1.hand.length}`
+  );
+
+  // 不吃牌
+  ok('没有吃牌逻辑（南京麻将只碰不吃）', typeof MJ.chiOptions === 'undefined' && typeof window.chiOptions === 'undefined');
   ok('手牌已排序', (() => {
     const keys = st.players[0].hand.map((t) => t.k);
     const idxOf = (k) => (k[0] === 'z' ? 27 + Number(k.slice(1)) - 1 : ['m', 's', 'p'].indexOf(k[0]) * 9 + Number(k.slice(1)) - 1);
@@ -130,9 +193,15 @@ try {
   // ---------- 4. 出牌与 AI ----------
   const me = st.players[0];
   const before = me.hand.length;
+  const discardKind = me.hand[0].k;
   MJ.doDiscard(0, 0);
   ok('人类出牌后手牌 -1', me.hand.length === before - 1, `${before} -> ${me.hand.length}`);
-  ok('出牌进入牌河', me.river.length === 1, String(me.river.length));
+  // 打出的牌可能被别家立刻碰走（碰牌会把牌从牌河取走），两种都算正常
+  ok(
+    '出牌进入牌河（或被别家碰走）',
+    me.river.length === 1 || st.players.some((p, i) => i > 0 && p.melds.some((m) => m.tiles[0] === discardKind)),
+    `牌河 ${me.river.length} 张`
+  );
 
   const aiPick = MJ.pickDiscard(st.players[1]);
   ok('AI 能选出可打的手牌', aiPick >= 0 && aiPick < st.players[1].hand.length, String(aiPick));
@@ -143,16 +212,20 @@ try {
   ok('牌桌四家都在', ['seatTop', 'seatLeft', 'seatRight', 'seatMe'].every((id) => doc.getElementById(id).innerHTML.length > 0));
   ok('我的牌渲染成牌面', doc.querySelectorAll('#seatMe .hand .tile').length >= 13, String(doc.querySelectorAll('#seatMe .hand .tile').length));
   ok('中央显示牌墙剩余', /牌墙剩/.test(doc.getElementById('centerBox').textContent), doc.getElementById('centerBox').textContent.replace(/\s+/g, ' ').slice(0, 40));
-  ok('对手显示牌背', doc.querySelectorAll('#seatTop .back').length >= 13, String(doc.querySelectorAll('#seatTop .back').length));
+  ok('对手显示牌背', doc.querySelectorAll('#seatTop .back').length >= 10, String(doc.querySelectorAll('#seatTop .back').length));
 
   // 规则弹层
   doc.getElementById('ruleBtn').dispatchEvent(new window.MouseEvent('click', { bubbles: true }));
   ok('规则弹层可打开', doc.getElementById('ov').classList.contains('show') && /南京麻将 · 玩法/.test(doc.getElementById('ovPanel').textContent));
   ok('规则里有算花说明', /底 20 花/.test(doc.getElementById('ovPanel').textContent));
+  ok('规则写明 144 张带花不吃', /144 张/.test(doc.getElementById('ovPanel').textContent) && /不吃/.test(doc.getElementById('ovPanel').textContent));
+  ok(
+    '规则写明硬花 20 张（含中发白）与胡牌权',
+    /硬花 20 张/.test(doc.getElementById('ovPanel').textContent) &&
+      /红中/.test(doc.getElementById('ovPanel').textContent) &&
+      /胡牌权/.test(doc.getElementById('ovPanel').textContent)
+  );
 
-  // 吃牌组合
-  const chi = MJ.chiOptions(0, 'm5');
-  ok('吃牌组合返回数组', Array.isArray(chi), JSON.stringify(chi));
 
   // ---------- 6. 整局自动跑完（检验回合流不会卡死） ----------
   dom.window.document.getElementById('ov').classList.remove('show');

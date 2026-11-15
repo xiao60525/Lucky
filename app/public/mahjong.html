@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
-<title>南京麻将 · 小游戏</title>
+<title>南京麻将 · 144 张带花</title>
 <meta name="robots" content="noindex, nofollow" />
 <link rel="icon" href="data:," />
 <style>
@@ -89,6 +89,15 @@
   .tile.s-z.z-zhong b { color:#c0362c; }
   .tile.s-z.z-fa b { color:#2f7d4f; }
   .tile.s-z.z-bai b { color:#5a6b8c; }
+  .tile.s-h {
+    background:linear-gradient(180deg,#fffaea 0%,#f8eed4 72%,#ecdfbe 100%);
+    border-color:#e2cfa0;
+  }
+  .tile.s-h b { color:#a1651b; }
+  .meld.hua-meld {
+    border:1px dashed rgba(232,192,106,.55); border-radius:5px; padding:1px; gap:1px;
+  }
+  .pinfo .hua { color:#9ed8a9; }
 
   .tile.sm { width:22px; height:30px; border-radius:4px; box-shadow:0 1px 0 #cfc3a6; }
   .tile.sm b { font-size:11px; }
@@ -215,9 +224,11 @@
 <script>
 /* =====================================================================
    南京麻将（本地桌简化版）
-   - 136 张：万/条/筒 1-9 各 4 张 + 东南西北中发白 各 4 张
-   - 可以吃（只吃上家）、碰、明杠、暗杠、补杠、点炮胡、自摸
-   - 花数：底 20 花 + 门清/对对胡/混一色/清一色/七对/豪华七对/杠开/自摸/缺一门/海底
+   - 144 张：万/条/筒 108 + 东南西北 16 + 硬花 20（春夏秋冬·梅兰竹菊 8 张 + 中发白各 4 张）
+   - 不吃（南京麻将只碰不吃）、碰、明杠、暗杠、补杠、点炮胡、自摸
+   - 摸到硬花即亮出，从牌尾补一张（补花），每张硬花 +2 花
+   - 胡牌权：小胡须门清或 4 张以上硬花，大胡不限
+   - 花数：底 20 花 + 门清/对对胡/混一色/清一色/七对/豪华七对/杠开/自摸/缺一门/海底 + 花牌
    ===================================================================== */
 (function () {
   'use strict';
@@ -226,16 +237,26 @@
   var SUIT_ORDER = ['m', 's', 'p', 'z'];
   var SUIT_CN = { m: '万', s: '条', p: '筒', z: '' };
   var ZI = ['东', '南', '西', '北', '中', '发', '白'];
+  // 南京麻将 144 张 = 124 张主牌 + 20 张硬花
+  // 硬花：春夏秋冬、梅兰竹菊各 1 张（8 张）+ 红中/发财/白板各 4 张（12 张）
+  var HUA_TXT = ['春', '夏', '秋', '冬', '梅', '兰', '竹', '菊'];
+  var HUA_KINDS = HUA_TXT.map(function (_, i) { return 'h' + (i + 1); });
+  var JIAN = ['f1', 'f2', 'f3'];                                   // 红中 / 发财 / 白板
+  var JIAN_TXT = { f1: '中', f2: '发', f3: '白' };
+  var JIAN_CLS = { f1: 'z-zhong', f2: 'z-fa', f3: 'z-bai' };
+  var HUA_TOTAL = HUA_KINDS.length + JIAN.length * 4;               // 20 张硬花
 
+  /** 手牌牌种：万条筒 27 + 东南西北 4（中发白是硬花，不当字牌用） */
   function allKinds() {
     var out = [];
     for (var s = 0; s < 3; s++) for (var n = 1; n <= 9; n++) out.push(SUIT_ORDER[s] + n);
-    for (var z = 0; z < 7; z++) out.push('z' + (z + 1));
+    for (var z = 0; z < 4; z++) out.push('z' + (z + 1));
     return out;
   }
   var KINDS = allKinds();
 
   function idx(k) {
+    if (k[0] === 'h') return -1; // 花牌不进手牌、不参与牌型
     if (k[0] === 'z') return 27 + Number(k.slice(1)) - 1;
     return SUIT_ORDER.indexOf(k[0]) * 9 + Number(k.slice(1)) - 1;
   }
@@ -244,7 +265,10 @@
   }
   function suitOf(k) { return k[0]; }
   function isHonor(k) { return k[0] === 'z'; }
+  function isHua(k) { return k[0] === 'h' || k[0] === 'f'; }
   function faceOf(k) {
+    if (k[0] === 'f') return { suit: 'f', num: '', txt: JIAN_TXT[k] || '花', cls: 's-h s-z ' + (JIAN_CLS[k] || '') };
+    if (k[0] === 'h') return { suit: 'h', num: '', txt: HUA_TXT[Number(k.slice(1)) - 1], cls: 's-h' };
     if (k[0] === 'z') return { suit: 'z', num: '', txt: ZI[Number(k.slice(1)) - 1], cls: 's-z z-' + ['dong','nan','xi','bei','zhong','fa','bai'][Number(k.slice(1)) - 1] };
     var s = k[0];
     var cls = s === 'm' ? 's-m' : s === 's' ? 's-s' : 's-p';
@@ -253,19 +277,22 @@
   function tileHTML(k, size) {
     var f = faceOf(k);
     var sz = size ? ' ' + size : '';
-    if (k[0] === 'z') return '<span class="tile' + sz + ' ' + f.cls + '"><b>' + f.txt + '</b></span>';
+    if (k[0] === 'z' || isHua(k)) return '<span class="tile' + sz + ' ' + f.cls + '"><b>' + f.txt + '</b></span>';
     return '<span class="tile' + sz + ' ' + f.cls + '"><b>' + f.num + '</b><i>' + f.txt + '</i></span>';
   }
   function discardHTML(k, last) {
     var f = faceOf(k);
-    if (k[0] === 'z') return '<span class="dt ' + f.cls + (last ? ' last' : '') + '"><b>' + f.txt + '</b></span>';
+    if (k[0] === 'z' || isHua(k)) return '<span class="dt ' + f.cls + (last ? ' last' : '') + '"><b>' + f.txt + '</b></span>';
     return '<span class="dt ' + f.cls + (last ? ' last' : '') + '"><b>' + f.num + '</b><i>' + f.txt + '</i></span>';
   }
 
   /* ---------------- 胡牌判定 ---------------- */
   function countsOf(kinds) {
     var c = new Array(34).fill(0);
-    for (var i = 0; i < kinds.length; i++) c[idx(kinds[i])]++;
+    for (var i = 0; i < kinds.length; i++) {
+      if (isHua(kinds[i])) continue; // 花牌不参与牌型
+      c[idx(kinds[i])]++;
+    }
     return c;
   }
   function meldsOK(c) {
@@ -286,7 +313,7 @@
     }
     return false;
   }
-  /** kinds：手牌（含刚摸/刚吃到的那张），meldCount：已副露组数 */
+  /** kinds：手牌（含刚摸到的那张），meldCount：已副露组数 */
   function canWin(kinds, meldCount) {
     meldCount = meldCount || 0;
     if (kinds.length !== 14 - meldCount * 3) return false;
@@ -335,6 +362,30 @@
     return { quads: quads };
   }
 
+  /** 大胡：七对 / 清一色 / 混一色 / 对对胡 / 全球独钓 —— 不受胡牌权限制 */
+  function isBigHu(hand, melds) {
+    melds = melds || [];
+    if (sevenPairs(hand)) return true;
+    var all = hand.slice();
+    melds.forEach(function (m) { all = all.concat(m.tiles); });
+    var suits = {};
+    all.forEach(function (k) { suits[k[0]] = 1; });
+    var numSuits = ['m', 's', 'p'].filter(function (s2) { return suits[s2]; });
+    if (numSuits.length === 1) return true;                    // 清一色 / 混一色
+    if (isAllTriplets(hand)) return true;                      // 对对胡（副露也必是刻）
+    if (melds.length === 4 && hand.length === 2) return true;  // 全球独钓
+    return false;
+  }
+
+  /** 胡牌权：小胡必须门清、或亮出 4 张以上硬花；大胡不限（南京麻将口口相传的规矩） */
+  function hasWinRight(p, hand, melds) {
+    var ms = melds || (p && p.melds) || [];
+    var menqing = ms.every(function (m) { return m.type === 'angang'; });
+    if (menqing) return true;
+    if (p && p.flowers && p.flowers.length >= 4) return true;
+    return isBigHu(hand, ms);
+  }
+
   /** 番型与花数（简化版南京算花：底 20 花起） */
   function scoreOf(info) {
     var hand = info.hand, melds = info.melds || [];
@@ -360,8 +411,7 @@
       else if (sp.quads >= 3) add('超超豪华七对', 240);
     } else {
       if (menqing) add('门清', 20);
-      var allTripletMelds = melds.every(function (m) { return m.type !== 'chi'; });
-      if (allTripletMelds && isAllTriplets(hand)) add('对对胡', 40);
+      if (isAllTriplets(hand)) add('对对胡', 40);
     }
 
     if (!sp) {
@@ -371,6 +421,9 @@
 
     // 缺一门：万条筒里只用到两门（清一色/混一色另算，不重复计）
     if (numSuits.length === 2) add('缺一门', 10);
+    // 亮出的花牌：每张 +2 花
+    var flowerN = Number(info.flowerCount) || 0;
+    if (flowerN > 0) add('花牌 ×' + flowerN, flowerN * 2);
     if (info.selfDraw) add('自摸', 10);
     if (info.gangDraw) add('杠上开花', 40);
     if (info.wallLeft <= 8) add('海底捞月', 10);
@@ -393,14 +446,28 @@
     return arr;
   }
 
+  /** 发牌：摸到花牌直接亮出并继续补，直到凑够 n 张主牌 */
+  function dealTo(p, n) {
+    var got = 0;
+    while (got < n && state.wall.length) {
+      var t = state.wall.pop();
+      if (isHua(t.k)) { p.flowers.push(t.k); continue; }
+      p.hand.push(t);
+      got++;
+    }
+  }
+
   function newGame(seed) {
     var wall = [];
     KINDS.forEach(function (k) { for (var i = 0; i < 4; i++) wall.push(newTile(k)); });
+    // 20 张硬花：春夏秋冬 · 梅兰竹菊 各 1 张 + 红中 / 发财 / 白板 各 4 张 → 合计 144 张
+    HUA_KINDS.forEach(function (k) { wall.push(newTile(k)); });
+    JIAN.forEach(function (k) { for (var j = 0; j < 4; j++) wall.push(newTile(k)); });
     shuffle(wall);
     state = {
       wall: wall,
       players: NAMES.map(function (n, i) {
-        return { i: i, name: n, hand: [], melds: [], river: [], score: 0 };
+        return { i: i, name: n, hand: [], melds: [], flowers: [], river: [], score: 0 };
       }),
       turn: 0,
       dealer: 0,
@@ -416,9 +483,7 @@
       seed: seed || Date.now(),
       log: [],
     };
-    for (var p = 0; p < 4; p++) {
-      for (var n = 0; n < 13; n++) state.players[p].hand.push(state.wall.pop());
-    }
+    for (var p = 0; p < 4; p++) dealTo(state.players[p], 13);
     sortHand(state.players[0]);
     state.phase = 'play';
     return state;
@@ -435,8 +500,9 @@
 
   function pinfoHTML(p, showTurn) {
     var on = showTurn && state.turn === p.i && !state.over;
+    var hua = p.flowers && p.flowers.length ? '<em class="hua">花 ' + p.flowers.length + '</em>' : '';
     return '<div class="pinfo' + (on ? ' turn' : '') + '"><b>' + p.name + '</b>' +
-      '<em>' + (p.score >= 0 ? '+' : '') + p.score + '</em></div>';
+      '<em>' + (p.score >= 0 ? '+' : '') + p.score + '</em>' + hua + '</div>';
   }
   function backsHTML(n, vertical) {
     var out = '';
@@ -444,10 +510,18 @@
     return '<div class="backs' + (vertical ? ' v' : '') + '">' + out + '</div>';
   }
   function meldsHTML(p, size) {
-    if (!p.melds.length) return '';
-    return '<div class="melds">' + p.melds.map(function (m) {
-      return '<div class="meld">' + m.tiles.map(function (k) { return tileHTML(k, size || 'xs'); }).join('') + '</div>';
-    }).join('') + '</div>';
+    var out = '';
+    // 亮出的花牌单独一组（虚线框），一眼能数清
+    if (p.flowers && p.flowers.length) {
+      out += '<div class="meld hua-meld">' +
+        p.flowers.map(function (k) { return tileHTML(k, size || 'xs'); }).join('') + '</div>';
+    }
+    if (p.melds.length) {
+      out += p.melds.map(function (m) {
+        return '<div class="meld">' + m.tiles.map(function (k) { return tileHTML(k, size || 'xs'); }).join('') + '</div>';
+      }).join('');
+    }
+    return out ? '<div class="melds">' + out + '</div>' : '';
   }
   function riverHTML(p, vertical) {
     if (!p.river.length) return '';
@@ -465,7 +539,7 @@
     // 对家
     $('seatTop').innerHTML =
       pinfoHTML(top, true) +
-      (top.melds.length ? meldsHTML(top) : '') +
+      meldsHTML(top) +
       backsHTML(top.hand.length) +
       riverHTML(top);
 
@@ -496,7 +570,7 @@
     }).join('');
     $('seatMe').innerHTML =
       riverHTML(me) +
-      (me.melds.length ? meldsHTML(me, 'sm') : '') +
+      meldsHTML(me, 'sm') +
       '<div class="hand">' + handHTML + '</div>' +
       '<div class="tipbar">' + tipText() + '</div>';
 
@@ -506,7 +580,11 @@
 
   function tipText() {
     if (state.over) return '点击「再来一局」继续';
-    if (state.phase === 'human-claim') return '可以吃碰杠胡，选一个动作';
+    if (state.phase === 'human-claim') return '可以碰杠胡，选一个动作';
+    if (state.turn === 0 && state.phase === 'human-discard') {
+      var so = state.players[0] && selfOptionsOf(state.players[0]);
+      if (so && so.noRight) return '牌型已成但无胡牌权：需门清或 4 张硬花（大胡不限）';
+    }
     var waits = tingList(state.players[0]);
     var tingTxt = waits.length ? ' · 听 ' + waits.slice(0, 6).map(kindName).join('、') : '';
     if (state.turn !== 0) return '等待 ' + NAMES[state.turn] + ' 出牌' + tingTxt;
@@ -531,8 +609,8 @@
       base.splice(at >= 0 ? at : base.length - 1, 1);
     }
     if (base.length !== need) return out;
-    for (var i = 0; i < 34; i++) {
-      var k = kindOf(i);
+    for (var i = 0; i < KINDS.length; i++) {
+      var k = KINDS[i];
       if (canWin(base.concat([k]), meldCount)) out.push(k);
     }
     return out;
@@ -552,12 +630,6 @@
       if (c.options.indexOf('hu') >= 0) btns.push('<button class="act hu" data-act="do-hu">胡</button>');
       if (c.options.indexOf('gang') >= 0) btns.push('<button class="act" data-act="do-gang">杠</button>');
       if (c.options.indexOf('peng') >= 0) btns.push('<button class="act" data-act="do-peng">碰</button>');
-      if (c.chis && c.chis.length) {
-        c.chis.forEach(function (ch, i) {
-          btns.push('<button class="act" data-act="do-chi" data-i="' + i + '">吃<span class="sub">' +
-            ch.map(kindName).join(' ') + '</span></button>');
-        });
-      }
       btns.push('<button class="act ghost" data-act="do-pass">过</button>');
       box.innerHTML = btns.join('');
       clearTimeout(actTimer);
@@ -581,13 +653,18 @@
 
   /* ---------------- 摸牌 / 出牌 ---------------- */
   function drawFor(p) {
-    if (!state.wall.length) { drawGame(); return null; }
-    var t = state.wall.pop();
-    p.hand.push(t);
-    sortHand(p);
-    state.justDrew = t;
-    state.gangDraw = false;
-    return t;
+    // 补花：摸到花牌亮出后继续摸，直到摸到一张主牌（牌墙摸完则荒庄）
+    while (state.wall.length) {
+      var t = state.wall.pop();
+      if (isHua(t.k)) { p.flowers.push(t.k); continue; }
+      p.hand.push(t);
+      sortHand(p);
+      state.justDrew = t;
+      state.gangDraw = false;
+      return t;
+    }
+    drawGame();
+    return null;
   }
 
   function beginTurn(p) {
@@ -616,7 +693,10 @@
       var pl = state.players[p];
       var t = drawFor(pl);
       if (!t) return;
-      if (canWin(handKinds(pl), pl.melds.length)) { win(p, t.k, null, true); return; }
+      if (canWin(handKinds(pl), pl.melds.length) && hasWinRight(pl, handKinds(pl), pl.melds)) {
+        win(p, t.k, null, true);
+        return;
+      }
       // 暗杠 / 补杠
       var g = selfOptionsOf(pl);
       if (g.angang && Math.random() < 0.75) { doGang(p, g.angang, 'angang'); return; }
@@ -626,9 +706,12 @@
   }
 
   function selfOptionsOf(p) {
-    var out = { hu: false, angang: '', bugang: '' };
+    var out = { hu: false, angang: '', bugang: '', noRight: false };
     var kinds = handKinds(p);
-    out.hu = canWin(kinds, p.melds.length);
+    var can = canWin(kinds, p.melds.length);
+    // 牌型已经胡了，但小胡要门清或 4 张硬花，否则没有胡牌权
+    out.noRight = can && !hasWinRight(p, kinds, p.melds);
+    out.hu = can && !out.noRight;
     var c = countsOf(kinds);
     for (var i = 0; i < 34; i++) if (c[i] === 4) { out.angang = kindOf(i); break; }
     for (var j = 0; j < p.melds.length; j++) {
@@ -672,8 +755,6 @@
       if (c[j]) s += Math.abs(d) === 1 ? 16 : 7;
     }
     if ((i % 9 === 0) || (i % 9 === 8)) s -= 3;
-    // 已碰过这门的多留牌没啥用
-    if (p.melds.some(function (m) { return m.type === 'chi' && m.tiles.some(function (t) { return t[0] === k[0]; }); })) s -= 4;
     return s;
   }
 
@@ -692,27 +773,13 @@
     resolveClaims(p, t.k);
   }
 
-  /* ---------------- 吃碰杠胡的争牌处理 ---------------- */
+  /* ---------------- 碰杠胡的争牌处理 ---------------- */
   function nextSeat(p) { return (p + 1) % 4; }
 
-  function chiOptions(p, k) {
-    if (isHonor(k)) return [];
-    var pl = state.players[p];
-    var c = countsOf(handKinds(pl));
-    var i = idx(k), base = i - (i % 9), num = i % 9;
-    var out = [];
-    var has = function (j) { return j >= base && j <= base + 8 && c[j] > 0; };
-    // 边张/嵌张都算
-    if (has(i - 2) && has(i - 1)) out.push([kindOf(i - 2), kindOf(i - 1)]);
-    if (has(i - 2) && has(i + 1)) out.push([kindOf(i - 2), kindOf(i + 1)]);
-    if (has(i - 1) && has(i + 1)) out.push([kindOf(i - 1), kindOf(i + 1)]);
-    if (has(i + 1) && has(i + 2)) out.push([kindOf(i + 1), kindOf(i + 2)]);
-    return out;
-  }
-
-  /** 争牌队列：胡 > 杠/碰 > 吃，同级按离出牌者的远近 */
+  /** 争牌队列：胡 > 杠/碰，同级按离出牌者的远近（南京麻将不吃牌） */
   function resolveClaims(from, k) {
     if (state.over) return;
+    if (isHua(k)) { beginTurn(nextSeat(from)); return; } // 花牌不可能出现在牌河，兜底
     var q = [];
     for (var d = 1; d <= 3; d++) {
       var who = (from + d) % 4;
@@ -722,12 +789,12 @@
       var item = {
         p: who,
         dist: d,
-        hu: canWin(kinds.concat([k]), pl.melds.length),
+        hu: canWin(kinds.concat([k]), pl.melds.length) &&
+          hasWinRight(pl, kinds.concat([k]), pl.melds),
         gang: c[idx(k)] === 3,
         peng: c[idx(k)] >= 2,
-        chis: who === nextSeat(from) ? chiOptions(who, k) : [],
       };
-      if (item.hu || item.gang || item.peng || item.chis.length) q.push(item);
+      if (item.hu || item.gang || item.peng) q.push(item);
     }
     if (!q.length) {
       setTimeout(function () { beginTurn(nextSeat(from)); }, 260);
@@ -760,7 +827,7 @@
     var huC = q.filter(function (c) { return c.hu; })[0];
     if (huC) {
       if (huC.p === 0) {
-        state.claim = { from: from, k: k, options: ['hu'], chis: [] };
+        state.claim = { from: from, k: k, options: ['hu'] };
         state.phase = 'human-claim';
         render();
         return;
@@ -777,7 +844,7 @@
         var opts = [];
         if (bigC.gang) opts.push('gang');
         opts.push('peng');
-        state.claim = { from: from, k: k, options: opts, chis: [] };
+        state.claim = { from: from, k: k, options: opts };
         state.phase = 'human-claim';
         render();
         return;
@@ -797,25 +864,6 @@
       return;
     }
 
-    // 3) 吃（只有下家能）
-    var chiC = q.filter(function (c) { return c.chis.length; })[0];
-    if (chiC) {
-      if (chiC.p === 0) {
-        state.claim = { from: from, k: k, options: [], chis: chiC.chis };
-        state.phase = 'human-claim';
-        render();
-        return;
-      }
-      if (wantChi(chiC.p, k)) {
-        q.length = 0;
-        doChi(chiC.p, chiC.chis[0], k, from);
-        return;
-      }
-      q.splice(q.indexOf(chiC), 1);
-      setTimeout(processClaims, 120);
-      return;
-    }
-
     finishClaims();
   }
 
@@ -826,10 +874,6 @@
     for (var i = 0; i < 34; i++) if (c[i] >= 2) pairs++;
     if (isHonor(k)) return true;
     return pairs >= 3 || Math.random() < 0.55;
-  }
-  function wantChi(p, k) {
-    if (isHonor(k)) return false;
-    return Math.random() < 0.45;
   }
 
   /* ---------------- 执行副露 ---------------- */
@@ -856,28 +900,13 @@
     setTimeout(function () { if (!state.over) afterMeldDiscard(p); }, 380);
   }
 
-  function doChi(p, tiles, k, from) {
-    var pl = state.players[p];
-    var ok = true;
-    tiles.forEach(function (t) { if (takeFromHand(pl, t, 1).length < 1) ok = false; });
-    if (!ok) { beginTurn(nextSeat(from)); return; }
-    var set = tiles.concat([k]).sort(function (a, b) { return idx(a) - idx(b); });
-    pl.melds.push({ type: 'chi', tiles: set, from: from });
-    removeRiverTile(from, k);
-    state.last = null;
-    state.turn = p;
-    state.phase = 'ai';
-    render();
-    setTimeout(function () { if (!state.over) afterMeldDiscard(p); }, 380);
-  }
-
   function removeRiverTile(from, k) {
     var r = state.players[from].river;
     var i = r.lastIndexOf(k);
     if (i >= 0) r.splice(i, 1);
   }
 
-  /** 吃碰后由该家出牌（AI 自动，人类进入出牌阶段） */
+  /** 碰杠后由该家出牌（AI 自动，人类进入出牌阶段） */
   function afterMeldDiscard(p) {
     if (state.over) return;
     state.turn = p;
@@ -918,13 +947,10 @@
     render();
     setTimeout(function () {
       if (state.over) return;
-      var t2 = state.wall.pop();
-      if (!t2) { drawGame(); return; }
-      pl.hand.push(t2);
-      sortHand(pl);
-      state.justDrew = t2;
+      var t2 = drawFor(pl);
+      if (!t2) return;
       state.gangDraw = true;
-      if (canWin(handKinds(pl), pl.melds.length)) {
+      if (canWin(handKinds(pl), pl.melds.length) && hasWinRight(pl, handKinds(pl), pl.melds)) {
         if (p === 0) {
           state.selfOptions = { hu: true, angang: '', bugang: '' };
           state.phase = 'human-self';
@@ -956,6 +982,7 @@
       selfDraw: selfDraw,
       gangDraw: state.gangDraw,
       wallLeft: state.wall.length,
+      flowerCount: pl.flowers.length,
     });
     var delta = sc.flowers;
     var detail = [];
@@ -1046,7 +1073,6 @@
     if (type === 'hu') { win(0, c.k, c.from, false); return; }
     if (type === 'peng') { doPeng(0, c.k, c.from); return; }
     if (type === 'gang') { doGang(0, c.k, 'ming', c.from); return; }
-    if (type === 'chi') { doChi(0, c.chis[arg], c.k, c.from); return; }
   }
 
   /* ---------------- 事件 ---------------- */
@@ -1061,7 +1087,6 @@
     if (act === 'do-hu') return humanClaim('hu');
     if (act === 'do-peng') return humanClaim('peng');
     if (act === 'do-gang') return humanClaim('gang');
-    if (act === 'do-chi') return humanClaim('chi', Number(t.dataset.i || 0));
     if (act === 'do-pass') return doPass();
     if (act === 'self-hu') {
       var me = state.players[0];
@@ -1098,19 +1123,29 @@
 
   function showRules() {
     $('ovPanel').innerHTML =
-      '<h2>南京麻将 · 玩法</h2><p class="sub">本地桌简化版，136 张</p>' +
+      '<h2>南京麻将 · 玩法</h2><p class="sub">本地桌简化版，144 张 · 带花 · 不吃</p>' +
       '<div class="rules">' +
-        '<h3>牌张</h3><ul><li>万 / 条 / 筒 1-9 各 4 张，东南西北中发白各 4 张，共 136 张</li>' +
+        '<h3>牌张（144 张）</h3><ul>' +
+        '<li>万 / 条 / 筒 1-9 各 4 张，共 108 张</li>' +
+        '<li>东南西北各 4 张，共 16 张</li>' +
+        '<li>硬花 20 张：春、夏、秋、冬、梅、兰、竹、菊各 1 张，红中 / 发财 / 白板各 4 张</li>' +
         '<li>庄家 14 张先手，其余各 13 张</li></ul>' +
-        '<h3>能吃能碰</h3><ul><li>吃：只能吃上家打出的牌</li><li>碰 / 明杠：任意一家打出</li>' +
+        '<h3>不吃，只碰杠</h3><ul>' +
+        '<li>没有吃牌，上家打出的牌也只能碰、杠或胡</li>' +
+        '<li>碰 / 明杠：任意一家打出</li>' +
         '<li>暗杠、补杠：自己回合内进行，杠后从牌尾补一张</li></ul>' +
-        '<h3>胡牌</h3><ul><li>四副面子 + 一对将，或七对（不能有吃碰）</li>' +
+        '<h3>补花</h3><ul><li>摸到硬花（含中发白）立即亮出，再从牌尾补一张，补到不是花为止</li>' +
+        '<li>发牌时摸到硬花也直接亮出补牌；硬花不参与胡牌牌型，也不能碰、不能杠</li></ul>' +
+        '<h3>胡牌权</h3><ul><li>成小胡要有胡牌权：门清，或手上亮出 4 张以上硬花</li>' +
+        '<li>七对、对对胡、清一色、混一色、全球独钓等大胡不受此限</li></ul>' +
+        '<h3>胡牌</h3><ul><li>四副面子 + 一对将，或七对（不能有碰杠）</li>' +
         '<li>可以自摸，也可以胡别人点的炮</li></ul>' +
         '<h3>算花（底 20 花）</h3><ul>' +
         '<li>门清 +20、对对胡 +40、混一色 +40、清一色 +60</li>' +
         '<li>七对 +80、豪华七对再加 +80、超豪华 +160</li>' +
         '<li>自摸 +10、杠上开花 +40、海底捞月 +10</li>' +
-        '<li>缺一门（万条筒只用两门）+10</li></ul>' +
+        '<li>缺一门（万条筒只用两门）+10</li>' +
+        '<li>亮出的花牌每张 +2 花</li></ul>' +
         '<h3>结算</h3><ul><li>自摸：其余三家各付花数</li><li>点炮：点炮一家包三家（3 倍花数）</li></ul>' +
       '</div>' +
       '<div class="btns"><button class="act" data-act="close-ov">知道了</button></div>';
@@ -1146,8 +1181,14 @@
     tingList: tingList,
     beginTurn: beginTurn,
     doDiscard: doDiscard,
-    chiOptions: chiOptions,
     pickDiscard: pickDiscard,
+    isHua: isHua,
+    hasWinRight: hasWinRight,
+    isBigHu: isBigHu,
+    HUA_TOTAL: HUA_TOTAL,
+    drawFor: drawFor,
+    newTile: newTile,
+    HUA_KINDS: HUA_KINDS.slice(),
   };
 })();
 </script>
